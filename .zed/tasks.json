@@ -1,0 +1,23 @@
+[
+  {
+    "label": "Agent: Git Status",
+    "command": "git status --short",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  },
+  {
+    "label": "Agent: Diff Check",
+    "command": "git diff --check",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  },
+  {
+    "label": "Agent: Changed Files",
+    "command": "git diff --name-only",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  }
+]
