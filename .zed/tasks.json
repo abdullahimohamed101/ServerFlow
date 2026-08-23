@@ -64,5 +64,43 @@
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true,
     "save": "all"
+  },
+
+  {
+    "label": "Quality: Fast",
+    "command": "powershell.exe",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ".\\scripts\\quality.ps1",
+      "-Mode",
+      "Fast"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "hide": "never",
+    "use_new_terminal": true,
+    "save": "all"
+  },
+
+  {
+    "label": "Quality: Full",
+    "command": "powershell.exe",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ".\\scripts\\quality.ps1",
+      "-Mode",
+      "Full"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always",
+    "hide": "never",
+    "use_new_terminal": true,
+    "save": "all"
   }
 ]
