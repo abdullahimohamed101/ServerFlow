@@ -1,0 +1,68 @@
+[
+  {
+    "label": "Worktree: Initialize",
+    "command": "powershell.exe",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ".\\scripts\\setup-worktree.ps1"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "hooks": [
+      "create_worktree"
+    ],
+    "reveal": "always",
+    "hide": "never",
+    "use_new_terminal": true,
+    "save": "all"
+  },
+
+  {
+    "label": "Agent: Git Status",
+    "command": "git",
+    "args": [
+      "status",
+      "--short"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  },
+
+  {
+    "label": "Agent: Diff Check",
+    "command": "git",
+    "args": [
+      "diff",
+      "--check"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  },
+
+  {
+    "label": "Agent: Changed Files",
+    "command": "git",
+    "args": [
+      "diff",
+      "--name-only"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "save": "all"
+  },
+
+  {
+    "label": "Agent: Full Diff",
+    "command": "git",
+    "args": [
+      "diff"
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "save": "all"
+  }
+]
