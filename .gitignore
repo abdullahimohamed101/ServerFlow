@@ -1,0 +1,37 @@
+# Binaries
+/infergrid
+/infergrid.exe
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+coverage.html
+coverage.out
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Benchmark artifacts
+benchmark/reports/*.json
+benchmark/reports/*.html
