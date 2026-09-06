@@ -1,6 +1,6 @@
 # Setup
 
-Tooling requirements for InferGrid development.
+Tooling requirements for ServerFlow development.
 
 ## Required
 
@@ -36,12 +36,12 @@ go test ./...
 
 ## Module Path
 
-The Go module path is currently `infergrid` because no git remote exists yet.
+The Go module path is currently `serverflow` because no git remote exists yet.
 
 If a remote is added later, rename it in one step:
 
 ```bash
-go mod edit -module github.com/<org>/infergrid
+go mod edit -module github.com/<org>/serverflow
 ```
 
 and update imports accordingly.

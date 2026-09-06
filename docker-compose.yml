@@ -1,10 +1,10 @@
-# InferGrid Phase 0 skeleton.
+# ServerFlow Phase 0 skeleton.
 #
-# NOTE: This compose file is a skeleton. No InferGrid application images
+# NOTE: This compose file is a skeleton. No ServerFlow application images
 # exist yet, so only shared infrastructure services are defined. Application
 # services arrive in later phases (see spec section 58). This file is not
 # validated locally because Docker is not installed on the development machine.
-name: infergrid
+name: serverflow
 
 services:
   redis:
@@ -22,7 +22,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: infergrid
+      POSTGRES_DB: serverflow
     ports:
       - "5432:5432"
     healthcheck:

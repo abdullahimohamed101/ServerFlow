@@ -1,6 +1,6 @@
-# InferGrid
+# ServerFlow
 
-A distributed LLM inference control plane and routing layer. InferGrid
+A distributed LLM inference control plane and routing layer. ServerFlow
 serves open-source large language models through an OpenAI-compatible API,
 scheduling inference requests across GPU-backed vLLM workers while
 optimizing latency, throughput, utilization, reliability, and fairness.

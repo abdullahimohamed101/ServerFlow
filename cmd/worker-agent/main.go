@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 
-	"infergrid/internal/config"
-	"infergrid/internal/telemetry"
+	"serverflow/internal/config"
+	"serverflow/internal/telemetry"
 )
 
 func main() {

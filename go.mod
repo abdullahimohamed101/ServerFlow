@@ -1,4 +1,4 @@
-module infergrid
+module serverflow
 
 go 1.24.0
 

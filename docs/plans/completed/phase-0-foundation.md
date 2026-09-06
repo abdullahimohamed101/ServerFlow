@@ -6,7 +6,7 @@ Depends on: nothing (repo is a clean scaffold)
 
 ## Outcome
 
-Establish the InferGrid monorepo foundation per spec §48 and §58 Phase  ̂0:
+Establish the ServerFlow monorepo foundation per spec §48 and §58 Phase  ̂0:
 
 - Go workspace/module with a buildable, testable skeleton
 - Typed configuration package (file/env/flags, validated, fail-fast)
@@ -41,7 +41,7 @@ Monorepo per spec §48, created as a full skeleton with `.gitkeep` placeholders.
 
 ### Module path
 
-`infergrid` — no git remote exists, so no fake GitHub path. If a remote is added later, `go mod edit -module` renames it in one step. Documented in `docs/development/setup.md`.
+`serverflow` — no git remote exists, so no fake GitHub path. If a remote is added later, `go mod edit -module` renames it in one step. Documented in `docs/development/setup.md`.
 
 ### Configuration (`internal/config`)
 
@@ -128,7 +128,7 @@ docs/plans/active/phase-0-foundation.md (this file)
 - **Go not installed** — acceptance cannot be fully verified until installed. Default: install latest stable via winget (needs approval). If user declines, deliver code + CI and mark local verification as pending
 - **No Docker** — compose skeleton unvalidated; deferred
 - **Network blocked in sandbox** — first `go mod download` requires approval
-- **Module path `infergrid`** — rename needed if a remote is added later (documented)
+- **Module path `serverflow`** — rename needed if a remote is added later (documented)
 - **Windows has no `make`** — Makefile targets mirrored by `quality.ps1` + direct go commands
 - **Go version directive** — `go.mod` pins a conservative version; toolchain auto-upgrades if newer Go installed
 
@@ -136,7 +136,7 @@ docs/plans/active/phase-0-foundation.md (this file)
 
 1. (Optional, user-approved) Create branch `feature/phase-0-foundation`
 2. Create directory skeleton + `.gitkeep` placeholders
-3. `go.mod` (`module infergrid`) + `go.work`
+3. `go.mod` (`module serverflow`) + `go.work`
 4. `internal/config`: structs, loader (defaults→YAML→env→flags), validation, tests
 5. `internal/telemetry`: slog JSON logger + field helpers, tests
 6. `cmd/*/main.go` stubs exercising config + logger

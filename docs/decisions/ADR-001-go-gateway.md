@@ -5,7 +5,7 @@ Date: 2026-08-28
 
 ## Context
 
-InferGrid's core engineering contribution is the control plane and routing
+ServerFlow's core engineering contribution is the control plane and routing
 layer between clients and inference engines: gateway, scheduler, worker
 registry, rate limiting, event pipeline, and observability. These
 components must handle many concurrent streaming HTTP connections, run

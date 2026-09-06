@@ -1,5 +1,5 @@
 // Package config provides typed, validated configuration for all
-// InferGrid components. Configuration is loaded from defaults, an
+// ServerFlow components. Configuration is loaded from defaults, an
 // optional YAML file, environment variables, and CLI flags, in that
 // order. No component other than this package should read environment
 // variables directly.
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Config is the root configuration for every InferGrid component.
+// Config is the root configuration for every ServerFlow component.
 
 // Each binary loads the same shape and uses only the sections it needs.
 type Config struct {
@@ -88,7 +88,7 @@ func Default() Config {
 			Address: "redis:6379",
 		},
 		Postgres: PostgresConfig{
-			DSN: "postgres://postgres:postgres@postgres:5432/infergrid?sslmode=disable",
+			DSN: "postgres://postgres:postgres@postgres:5432/serverflow?sslmode=disable",
 		},
 		Log: LogConfig{
 			Level: "info",

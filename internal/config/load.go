@@ -43,13 +43,13 @@ func applyFile(cfg *Config, path string) error {
 }
 
 // applyEnv overlays environment variables onto the config. Only
-// variables with the INFERGRID_ prefix are considered. Invalid values
+// variables with the SERVERFLOW_ prefix are considered. Invalid values
 // are ignored so a misconfigured variable cannot crash startup; the
 // validation pass still catches structurally invalid config.
 
 func applyEnv(cfg *Config) {
 	env := func(key string) (string, bool) {
-		return os.LookupEnv("INFERGRID_" + key)
+		return os.LookupEnv("SERVERFLOW_" + key)
 	}
 	if v, ok := env("GATEWAY_PORT"); ok {
 		if n, err := strconv.Atoi(v); err == nil {

@@ -1,4 +1,4 @@
-# OpenTelemetry collector configuration for InferGrid.
+# OpenTelemetry collector configuration for ServerFlow.
 
 # Phase 0: skeleton. Pipelines are filled in as components emit
 # traces/metrics (Phase 10-11).

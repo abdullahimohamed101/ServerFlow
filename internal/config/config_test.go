@@ -85,9 +85,9 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
-	t.Setenv("INFERGRID_GATEWAY_PORT", "7070")
-	t.Setenv("INFERGRID_SCHEDULER_STRATEGY", "random")
-	t.Setenv("INFERGRID_WORKER_HEARTBEAT_INTERVAL", "3s")
+	t.Setenv("SERVERFLOW_GATEWAY_PORT", "7070")
+	t.Setenv("SERVERFLOW_SCHEDULER_STRATEGY", "random")
+	t.Setenv("SERVERFLOW_WORKER_HEARTBEAT_INTERVAL", "3s")
 
 	cfg, err := Load("")
 	if err != nil {

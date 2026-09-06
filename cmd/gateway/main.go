@@ -1,4 +1,4 @@
-// Command gateway is the InferGrid API gateway entry point. In Phase 0
+// Command gateway is the ServerFlow API gateway entry point. In Phase 0
 // it only exercises configuration and logging; HTTP serving arrives in Phase 2.
 package main
 
@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"infergrid/internal/config"
-	"infergrid/internal/telemetry"
+	"serverflow/internal/config"
+	"serverflow/internal/telemetry"
 )
 
 func main() {

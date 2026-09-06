@@ -1,4 +1,4 @@
-// Package telemetry provides structured JSON logging for all InferGrid
+// Package telemetry provides structured JSON logging for all ServerFlow
 // components. It wraps the standard library log/slog so every binary
 // produces machine-readable logs with consistent request context fields.
 package telemetry

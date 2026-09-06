@@ -1,4 +1,4 @@
-// Command control-plane is the InferGrid control plane entry point. In
+// Command control-plane is the ServerFlow control plane entry point. In
 // Phase 0 it only exercises configuration and logging; registry and
 // placement controllers arrive in later phases.
 package main
@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 
-	"infergrid/internal/config"
-	"infergrid/internal/telemetry"
+	"serverflow/internal/config"
+	"serverflow/internal/telemetry"
 )
 
 func main() {

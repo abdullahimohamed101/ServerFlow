@@ -2,7 +2,7 @@
 
 ## System Overview
 
-InferGrid is a distributed inference control plane for open-source LLMs.
+ServerFlow is a distributed inference control plane for open-source LLMs.
 Clients send OpenAI-compatible chat/completion requests to an API gateway,
 which authenticates, rate-limits, validates, and streams responses. A
 scheduler picks the most appropriate healthy inference worker for each
@@ -148,7 +148,7 @@ go run ./cmd/gateway -config config.yaml
 
 ## Known Architectural Risks
 
-- **Module path is `infergrid`**; if a git remote is added later, the
+- **Module path is `serverflow`**; if a git remote is added later, the
   module path should be renamed via `go mod edit -module`.
 - **`go test -race` requires cgo** (a C compiler); not available on
   this Windows dev machine yet. CI runs it on Linux.

@@ -1,4 +1,4 @@
-# Prometheus scrape configuration for InferGrid.
+# Prometheus scrape configuration for ServerFlow.
 
 # Phase 0: no targets exist yet; the file is a skeleton so the
 # docker-compose service has something to mount. Targets are added
@@ -7,6 +7,6 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  # - job_name: infergrid-gateway
+  # - job_name: serverflow-gateway
   #   static_configs:
   #     - targets: ["gateway:8080"]
