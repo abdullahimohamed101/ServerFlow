@@ -1,5 +1,12 @@
 # Architecture
 
+## Source of Truth
+
+The authoritative build specification for ServerFlow is
+docs/architecture/serverflow-spec.md (formerly infergrid). This
+architecture document summarizes the current implementation; the spec
+defines the full phased plan, requirements, and acceptance criteria.
+
 ## System Overview
 
 ServerFlow is a distributed inference control plane for open-source LLMs.

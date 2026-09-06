@@ -94,6 +94,9 @@ Completion requires evidence:
 
 ## Repository Knowledge
 
+Source of truth (read first):
+See docs/architecture/serverflow-spec.md
+
 Architecture:
 See ARCHITECTURE.md
 
