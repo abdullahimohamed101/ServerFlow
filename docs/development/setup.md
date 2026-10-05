@@ -16,7 +16,7 @@ Tooling requirements for ServerFlow development.
 | Docker + Compose | 16 | multi-service local deployment |
 | Python 3.10+ | 1 | vLLM runtime tooling |
 | vLLM | 1 | inference runtime (GPU required) |
-| Kubernetes |  ​17 | cluster deployment |
+| Kubernetes | 17 | cluster deployment |
 | golangci-lint | any | stricter linting |
 
 ## Windows Notes
