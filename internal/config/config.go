@@ -97,7 +97,7 @@ func Default() Config {
 }
 
 // Validate returns an error describing the first invalid setting, or
-// nil ifthe configuration is valid. Callers must invoke this after
+// nil if the configuration is valid. Callers must invoke this after
 // loading and before starting any component (fail fast).
 func (c *Config) Validate() error {
 	if c.Gateway.Port <= 0 || c.Gateway.Port > 65535 {

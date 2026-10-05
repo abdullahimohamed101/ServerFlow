@@ -3,7 +3,7 @@
 ## Source of Truth
 
 The authoritative build specification for ServerFlow is
-docs/architecture/serverflow-spec.md (formerly infergrid). This
+docs/architecture/serverflow-spec.md (formerly InferGrid). This
 architecture document summarizes the current implementation; the spec
 defines the full phased plan, requirements, and acceptance criteria.
 
@@ -19,7 +19,7 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase  ​0, only the foundation exists: configuration, structured
+As of Phase 0, only the foundation exists: configuration, structured
 logging, the repository skeleton, and CI. No inference or routing is
 implemented yet.
 
@@ -35,29 +35,29 @@ client-facing contracts.
 ### Inference Router / Scheduler
 Purpose: choose the best worker for each request via pluggable strategies.
 Location: `internal/scheduler`. Owns: worker selection, scheduling
-invariants. Status: planned (Phase 5.
+invariants. Status: planned (Phase 5).
 
 
 
 ### Worker Agent
 Purpose: register worker, report heartbeats/metrics, proxy requests to
 local vLLM. Location: `cmd/worker-agent` + `internal/worker`. Owns:
-worker lifecycle, capacity reporting. Status: planned (Phase 4.
+worker lifecycle, capacity reporting. Status: planned (Phase 4).
 
 
 
 ### Control Plane
 Purpose: worker registry, model inventory, placement, scaling, policy.
 Location: `cmd/control-plane` + `internal/registry`. Owns: desired
-cluster state. Status: planned (later phases.
+cluster state. Status: planned (later phases).
 
 
 
 ### Shared Services
-Purpose: distributed ephemeral state (Redis,, durable metadata (PostgreSQL,,
-async lifecycle events (Kafka,, metrics (Prometheus,, dashboards (Grafana,,
-tracing (OpenTelemetry,. Location: `internal/redis`, `internal/postgres`,
-`internal/events`, `observability/`. Status: skeleton only (Phase 0.
+Purpose: distributed ephemeral state (Redis), durable metadata (PostgreSQL),
+async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
+tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
+`internal/events`, `observability/`. Status: skeleton only (Phase 0).
 
 
 
@@ -104,7 +104,7 @@ cmd/*  →  internal/*  →  pkg/protocol
 | Kafka | inference/worker lifecycle events | 12 |
 | Prometheus | operational metrics | 10 |
 | Grafana | dashboards | 10 |
-| OpenTelemetry | distributed tracing |  ​11 |
+| OpenTelemetry | distributed tracing | 11 |
 
 ## Testing Architecture
 

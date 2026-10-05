@@ -9,9 +9,9 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phase 0 (repository foundation). No inference or routing
-> exists yet. See `docs/plans/active/phase-0-foundation.md` for the
-> current execution plan.
+> Status: Phase 0 (repository foundation) is complete. No inference or
+> routing exists yet. See `docs/plans/completed/phase-0-foundation.md`;
+> Phase 1 is next.
 
 ## Repository Layout
 
@@ -49,7 +49,7 @@ On Windows (no `make`), use the existing quality gate:
 
 | Phase | Description | Status |
 | --- | --- | --- |
-| 0 | Repository foundation | In progress |
+| 0 | Repository foundation | Complete |
 | 1 | Single-worker vLLM baseline | Not started |
 | 2 | Gateway MVP | Not started |
 | 3 | Mock worker framework | Not started |
@@ -78,4 +78,4 @@ On Windows (no `make`), use the existing quality gate:
 ## Development
 
 See `docs/development/setup.md` for tooling requirements and Windows notes.
-See `docs/plans/active/` for the current execution plan.
+See `docs/plans/active/` for the current execution plan (empty between phases).
