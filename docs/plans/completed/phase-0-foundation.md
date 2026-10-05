@@ -1,6 +1,6 @@
 # Phase 0 — Repository Foundation
 
-Status: Active
+Status: Completed
 Owner: coding agent
 Depends on: nothing (repo is a clean scaffold)
 
@@ -97,7 +97,7 @@ docs/{architecture,adr,benchmarks,operations,development}/.gitkeep
 README.md, ARCHITECTURE.md
 docs/development/setup.md
 docs/decisions/ADR-001-go-gateway.md
-docs/plans/active/phase-0-foundation.md (this file)
+docs/plans/completed/phase-0-foundation.md (this file)
 ```
 
 ## Acceptance Criteria
