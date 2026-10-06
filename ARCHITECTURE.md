@@ -19,9 +19,10 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 0, only the foundation exists: configuration, structured
-logging, the repository skeleton, and CI. No inference or routing is
-implemented yet.
+As of Phase 2, the foundation (configuration, structured logging, CI) and
+the gateway MVP exist. The gateway proxies OpenAI-compatible requests,
+including streaming, to a single statically configured upstream. There is no
+scheduler, worker registry, authentication, or rate limiting yet.
 
 ## Major Components
 
@@ -30,7 +31,14 @@ Purpose: OpenAI-compatible HTTP API: auth, rate limiting, validation,
 streaming proxy, scheduler invocation.
 Location: `cmd/gateway` + `internal/gateway`. Owns: request lifecycle,
 client-facing contracts.
- Status: planned (Phase 2).
+ Status: MVP implemented (Phase 2): `/healthz`, `/readyz`, `/metrics`,
+`/v1/models`, `/v1/chat/completions` (stream and non-stream), request IDs,
+structured logs, Prometheus metrics, graceful shutdown. Proxies to one
+configured upstream behind the `gateway.Upstream` interface, which the worker
+registry and scheduler replace in Phases 4-5. Overhead measurements are in
+`docs/benchmarks/phase-2-gateway-overhead.md`. Wire types and the error model
+live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
+`pkg/protocol` (ADR-003).
 
 ### Inference Router / Scheduler
 Purpose: choose the best worker for each request via pluggable strategies.
