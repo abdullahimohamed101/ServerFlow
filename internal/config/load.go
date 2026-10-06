@@ -56,6 +56,40 @@ func applyEnv(cfg *Config) {
 			cfg.Gateway.Port = n
 		}
 	}
+	if v, ok := env("GATEWAY_UPSTREAM_URL"); ok {
+		cfg.Gateway.UpstreamURL = v
+	}
+	if v, ok := env("GATEWAY_MODELS"); ok {
+		cfg.Gateway.Models = splitList(v)
+	}
+	if v, ok := env("GATEWAY_READINESS_PATH"); ok {
+		cfg.Gateway.ReadinessPath = v
+	}
+	if v, ok := env("GATEWAY_MAX_REQUEST_BYTES"); ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Gateway.MaxRequestBytes = n
+		}
+	}
+	if v, ok := env("GATEWAY_MAX_TOKENS_LIMIT"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Gateway.MaxTokensLimit = n
+		}
+	}
+	if v, ok := env("GATEWAY_UPSTREAM_HEADER_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Gateway.UpstreamHeaderTimeout = d
+		}
+	}
+	if v, ok := env("GATEWAY_UPSTREAM_IDLE_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Gateway.UpstreamIdleTimeout = d
+		}
+	}
+	if v, ok := env("GATEWAY_SHUTDOWN_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Gateway.ShutdownTimeout = d
+		}
+	}
 	if v, ok := env("SCHEDULER_STRATEGY"); ok {
 		cfg.Scheduler.Strategy = v
 	}
@@ -83,4 +117,15 @@ func applyEnv(cfg *Config) {
 	if v, ok := env("LOG_LEVEL"); ok {
 		cfg.Log.Level = strings.ToLower(v)
 	}
+}
+
+// splitList splits a comma-separated value into trimmed, non-empty items.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

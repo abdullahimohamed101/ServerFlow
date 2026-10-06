@@ -9,9 +9,11 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phase 0 (repository foundation) is complete. No inference or
-> routing exists yet. See `docs/plans/completed/phase-0-foundation.md`;
-> Phase 1 is next.
+> Status: Phase 0 (foundation) is complete. Phase 2 (gateway MVP) is in
+> progress: the gateway serves an OpenAI-compatible API in front of a single
+> configured upstream. There is no scheduler or worker registry yet. Phase 1
+> is deferred until a GPU is available. See
+> `docs/plans/active/phase-2-gateway-mvp.md`.
 
 ## Repository Layout
 
@@ -31,13 +33,25 @@ docs/          architecture, ADRs, benchmarks, operations, development
 
 ## Quick Start
 
-Phase 0 requires only Go 1.24+.
+Building and testing requires only Go 1.24+.
 
 ```bash
 go build ./...
 go vet ./...
 go test ./...
 ```
+
+Run the gateway against any OpenAI-compatible server (for example vLLM):
+
+```bash
+SERVERFLOW_GATEWAY_UPSTREAM_URL=http://localhost:8000 \
+SERVERFLOW_GATEWAY_MODELS=my-model \
+go run ./cmd/gateway
+```
+
+Endpoints: `GET /healthz`, `/readyz`, `/metrics`, `/v1/models`, and
+`POST /v1/chat/completions` (streaming supported). See `internal/config` for all
+`gateway.*` settings and their `SERVERFLOW_GATEWAY_*` environment variables.
 
 On Windows (no `make`), use the existing quality gate:
 
@@ -50,8 +64,8 @@ On Windows (no `make`), use the existing quality gate:
 | Phase | Description | Status |
 | --- | --- | --- |
 | 0 | Repository foundation | Complete |
-| 1 | Single-worker vLLM baseline | Not started |
-| 2 | Gateway MVP | Not started |
+| 1 | Single-worker vLLM baseline | Deferred (needs a GPU) |
+| 2 | Gateway MVP | In progress |
 | 3 | Mock worker framework | Not started |
 | 4 | Worker registry | Not started |
 | 5 | Scheduler framework | Not started |

@@ -7,6 +7,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -26,9 +28,26 @@ type Config struct {
 }
 
 // GatewayConfig configures the HTTP API gateway. Port is the listen
-// port for the HTTP server.
+// port for the HTTP server. UpstreamURL and Models describe the single
+// OpenAI-compatible upstream the gateway proxies to until the worker
+// registry and scheduler replace them; ReadinessPath is probed on the
+// upstream by /readyz. MaxRequestBytes and MaxTokensLimit bound client
+// input. UpstreamHeaderTimeout bounds the wait for upstream response
+// headers; vLLM sends headers for a non-streaming request only after the
+// whole generation finishes, so raise it if long non-streaming completions
+// must be supported. UpstreamIdleTimeout bounds the silence between upstream
+// body reads, so a stalled stream cannot hold a connection forever.
+// ShutdownTimeout bounds graceful shutdown.
 type GatewayConfig struct {
-	Port int `yaml:"port"`
+	Port                  int           `yaml:"port"`
+	UpstreamURL           string        `yaml:"upstream_url"`
+	Models                []string      `yaml:"models"`
+	ReadinessPath         string        `yaml:"readiness_path"`
+	MaxRequestBytes       int64         `yaml:"max_request_bytes"`
+	MaxTokensLimit        int           `yaml:"max_tokens_limit"`
+	UpstreamHeaderTimeout time.Duration `yaml:"upstream_header_timeout"`
+	UpstreamIdleTimeout   time.Duration `yaml:"upstream_idle_timeout"`
+	ShutdownTimeout       time.Duration `yaml:"shutdown_timeout"`
 }
 
 // SchedulerConfig configures the request scheduling strategy. Strategy
@@ -72,7 +91,15 @@ type LogConfig struct {
 func Default() Config {
 	return Config{
 		Gateway: GatewayConfig{
-			Port: 8080,
+			Port:                  8080,
+			UpstreamURL:           "http://localhost:8000",
+			Models:                []string{"default"},
+			ReadinessPath:         "/v1/models",
+			MaxRequestBytes:       1 << 20,
+			MaxTokensLimit:        4096,
+			UpstreamHeaderTimeout: 60 * time.Second,
+			UpstreamIdleTimeout:   120 * time.Second,
+			ShutdownTimeout:       30 * time.Second,
 		},
 		Scheduler: SchedulerConfig{
 			Strategy: "least-work",
@@ -103,6 +130,9 @@ func (c *Config) Validate() error {
 	if c.Gateway.Port <= 0 || c.Gateway.Port > 65535 {
 		return fmt.Errorf("gateway.port must be in 1-65535, got %d", c.Gateway.Port)
 	}
+	if err := c.Gateway.validate(); err != nil {
+		return err
+	}
 	switch c.Scheduler.Strategy {
 	case "random", "round-robin", "least-active", "least-queue", "least-work":
 	default:
@@ -127,6 +157,49 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log.level %q is not supported", c.Log.Level)
+	}
+	return nil
+}
+
+func (g *GatewayConfig) validate() error {
+	// The URL may carry credentials, so error messages never echo it.
+	u, err := url.Parse(g.UpstreamURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("gateway.upstream_url must be an http(s) URL with a host")
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("gateway.upstream_url must not contain credentials, a query, or a fragment")
+	}
+	if len(g.Models) == 0 {
+		return fmt.Errorf("gateway.models must list at least one model")
+	}
+	seen := make(map[string]bool, len(g.Models))
+	for _, m := range g.Models {
+		if m == "" {
+			return fmt.Errorf("gateway.models must not contain an empty name")
+		}
+		if seen[m] {
+			return fmt.Errorf("gateway.models contains duplicate %q", m)
+		}
+		seen[m] = true
+	}
+	if !strings.HasPrefix(g.ReadinessPath, "/") {
+		return fmt.Errorf("gateway.readiness_path must start with /, got %q", g.ReadinessPath)
+	}
+	if g.MaxRequestBytes <= 0 {
+		return fmt.Errorf("gateway.max_request_bytes must be > 0")
+	}
+	if g.MaxTokensLimit <= 0 {
+		return fmt.Errorf("gateway.max_tokens_limit must be > 0")
+	}
+	if g.UpstreamHeaderTimeout <= 0 {
+		return fmt.Errorf("gateway.upstream_header_timeout must be > 0")
+	}
+	if g.UpstreamIdleTimeout <= 0 {
+		return fmt.Errorf("gateway.upstream_idle_timeout must be > 0")
+	}
+	if g.ShutdownTimeout <= 0 {
+		return fmt.Errorf("gateway.shutdown_timeout must be > 0")
 	}
 	return nil
 }
