@@ -1,6 +1,6 @@
 # Phase 2 — Gateway MVP
 
-Status: Implemented on branch `feature/phase-2-gateway`; uncommitted, awaiting independent verification, review, and PR approval
+Status: Completed (merged in PR #3, 2026-10-06; CI green on master)
 Owner: coding agent
 Depends on: Phase 0 (complete). Phase 1 is deferred; see Decisions D1.
 Spec: `docs/architecture/serverflow-spec.md` §6–9, §23–25, §28–29, §31, §50–51, §58 Phase 2
