@@ -9,16 +9,17 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phase 0 (foundation) is complete. Phase 2 (gateway MVP) is in
-> progress: the gateway serves an OpenAI-compatible API in front of a single
-> configured upstream. There is no scheduler or worker registry yet. Phase 1
-> is deferred until a GPU is available. See
-> `docs/plans/active/phase-2-gateway-mvp.md`.
+> Status: Phases 0, 2 and 3 are complete. The gateway serves an OpenAI-compatible
+> API in front of a single configured upstream, and a configurable mock worker
+> (`docs/development/mock-worker.md`) stands in for that upstream without a GPU.
+> There is no scheduler or worker registry yet (Phase 4 is next). Phase 1 is
+> deferred until a GPU is available. See `docs/plans/completed/` for finished
+> plans and `docs/plans/active/` for the current one.
 
 ## Repository Layout
 
 ```text
-cmd/             binaries (gateway, worker-agent, control-plane, usage-consumer, benchmark)
+cmd/             binaries (gateway, mock-worker, worker-agent, control-plane, usage-consumer, benchmark)
 internal/       shared libraries (config, telemetry, and future packages)
 pkg/            public protocol types
 worker/         worker runtime + vLLM integration
@@ -65,8 +66,8 @@ On Windows (no `make`), use the existing quality gate:
 | --- | --- | --- |
 | 0 | Repository foundation | Complete |
 | 1 | Single-worker vLLM baseline | Deferred (needs a GPU) |
-| 2 | Gateway MVP | In progress |
-| 3 | Mock worker framework | Not started |
+| 2 | Gateway MVP | Complete |
+| 3 | Mock worker framework | Complete |
 | 4 | Worker registry | Not started |
 | 5 | Scheduler framework | Not started |
 | 6 | Multi-worker routing | Not started |

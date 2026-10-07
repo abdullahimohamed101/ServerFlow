@@ -19,10 +19,11 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 2, the foundation (configuration, structured logging, CI) and
-the gateway MVP exist. The gateway proxies OpenAI-compatible requests,
-including streaming, to a single statically configured upstream. There is no
-scheduler, worker registry, authentication, or rate limiting yet.
+As of Phase 3, the foundation (configuration, structured logging, CI), the
+gateway MVP, and a configurable mock worker exist. The gateway proxies
+OpenAI-compatible requests, including streaming, to a single statically
+configured upstream; the mock worker is a GPU-free stand-in for that upstream.
+There is no scheduler, worker registry, authentication, or rate limiting yet.
 
 ## Major Components
 
@@ -39,6 +40,14 @@ registry and scheduler replace in Phases 4-5. Overhead measurements are in
 `docs/benchmarks/phase-2-gateway-overhead.md`. Wire types and the error model
 live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
 `pkg/protocol` (ADR-003).
+
+### Mock Worker
+Purpose: a configurable fake vLLM (latency, tokens/s, queueing, failures) so the
+platform can be built and tested without a GPU. Location: `cmd/mock-worker` +
+`internal/mockworker`. Owns: simulated generation, a bounded FIFO queue, failure
+injection, and provisional worker stats. It is passive: it does not register or
+send heartbeats (Phase 4). See `docs/development/mock-worker.md`. Status:
+implemented (Phase 3).
 
 ### Inference Router / Scheduler
 Purpose: choose the best worker for each request via pluggable strategies.
@@ -159,6 +168,7 @@ Run:
 
 ```bash
 go run ./cmd/gateway -config config.yaml
+go run ./cmd/mock-worker --model=mock-model --addr=127.0.0.1:9001   # GPU-free upstream; see docs/development/mock-worker.md
 ```
 
 ## Known Architectural Risks
