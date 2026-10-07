@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster
 
 fmt:
 	gofmt -w .
@@ -34,4 +34,25 @@ mock-workers:
 	bin/mock-worker --addr=127.0.0.1:9001 --worker-id=mock-fast --model=mock-model --tokens-per-second=100 --ttft=100ms & \
 	bin/mock-worker --addr=127.0.0.1:9002 --worker-id=mock-medium --model=mock-model --tokens-per-second=60 --ttft=150ms & \
 	bin/mock-worker --addr=127.0.0.1:9003 --worker-id=mock-slow --model=mock-model --tokens-per-second=20 --ttft=300ms & \
+	wait
+
+# A local cluster: a control plane on :9090 and three mock workers (:9001-9003 at
+# 100, 60, 20 tokens/s), each with its own worker agent. Ctrl-C stops everything.
+# Look at it with: curl -s localhost:9090/v1/workers
+dev-cluster:
+	go build -o bin/control-plane ./cmd/control-plane
+	go build -o bin/worker-agent ./cmd/worker-agent
+	go build -o bin/mock-worker ./cmd/mock-worker
+	@echo "dev cluster: control plane :9090, workers :9001 (100 tok/s), :9002 (60), :9003 (20); Ctrl-C to stop"
+	@trap 'kill 0' INT TERM; \
+	bin/control-plane & \
+	sleep 1; \
+	bin/mock-worker --addr=127.0.0.1:9001 --model=mock-model --tokens-per-second=100 --ttft=100ms & \
+	bin/mock-worker --addr=127.0.0.1:9002 --model=mock-model --tokens-per-second=60 --ttft=150ms & \
+	bin/mock-worker --addr=127.0.0.1:9003 --model=mock-model --tokens-per-second=20 --ttft=300ms & \
+	for n in 1 2 3; do \
+		SERVERFLOW_WORKER_ID=mock-$$n SERVERFLOW_WORKER_MODEL=mock-model \
+		SERVERFLOW_WORKER_BACKEND_URL=http://127.0.0.1:900$$n SERVERFLOW_WORKER_ADVERTISE_URL=http://127.0.0.1:900$$n \
+		bin/worker-agent & \
+	done; \
 	wait
