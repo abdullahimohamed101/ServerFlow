@@ -18,7 +18,7 @@ and observability. See `ARCHITECTURE.md` for the full picture.
 ## Repository Layout
 
 ```text
-cmd/             binaries (gateway, worker-agent, control-plane, usage-consumer, benchmark)
+cmd/             binaries (gateway, mock-worker, worker-agent, control-plane, usage-consumer, benchmark)
 internal/       shared libraries (config, telemetry, and future packages)
 pkg/            public protocol types
 worker/         worker runtime + vLLM integration
@@ -66,7 +66,7 @@ On Windows (no `make`), use the existing quality gate:
 | 0 | Repository foundation | Complete |
 | 1 | Single-worker vLLM baseline | Deferred (needs a GPU) |
 | 2 | Gateway MVP | In progress |
-| 3 | Mock worker framework | Not started |
+| 3 | Mock worker framework | In progress |
 | 4 | Worker registry | Not started |
 | 5 | Scheduler framework | Not started |
 | 6 | Multi-worker routing | Not started |
