@@ -19,11 +19,13 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 3, the foundation (configuration, structured logging, CI), the
-gateway MVP, and a configurable mock worker exist. The gateway proxies
-OpenAI-compatible requests, including streaming, to a single statically
-configured upstream; the mock worker is a GPU-free stand-in for that upstream.
-There is no scheduler, worker registry, authentication, or rate limiting yet.
+As of Phase 4, the foundation (configuration, structured logging, CI), the
+gateway MVP, a configurable mock worker, and the worker registry exist. The
+gateway proxies OpenAI-compatible requests, including streaming, to a single
+statically configured upstream; the mock worker is a GPU-free stand-in for that
+upstream; worker agents register workers with a control plane that tracks their
+state and health. The gateway does not read the registry yet. There is no
+scheduler, API-key authentication, or rate limiting yet.
 
 ## Major Components
 
@@ -57,16 +59,23 @@ invariants. Status: planned (Phase 5).
 
 
 ### Worker Agent
-Purpose: register worker, report heartbeats/metrics, proxy requests to
-local vLLM. Location: `cmd/worker-agent` + `internal/worker`. Owns:
-worker lifecycle, capacity reporting. Status: planned (Phase 4).
+Purpose: register worker, report heartbeats/metrics. It sits beside the
+inference backend and is not in the data path. Location: `cmd/worker-agent` +
+`internal/worker`. Owns: worker lifecycle, capacity reporting. Status:
+implemented (Phase 4) with a mock-worker backend; a vLLM backend arrives in
+Phase 13.
 
 
 
 ### Control Plane
 Purpose: worker registry, model inventory, placement, scaling, policy.
-Location: `cmd/control-plane` + `internal/registry`. Owns: desired
-cluster state. Status: planned (later phases).
+Location: `cmd/control-plane` + `internal/registry` (core, `server`, `client`).
+Owns: desired cluster state. Status: the in-memory worker registry is
+implemented (Phase 4): registration, heartbeats, a state machine, health
+derived from heartbeat age, eligibility, and model lookup, behind a
+shared-secret bearer token. Placement and scaling are later phases. See
+`docs/architecture/worker-lifecycle.md` and ADR-010. Wire types live in
+`pkg/protocol`.
 
 
 
@@ -169,6 +178,8 @@ Run:
 ```bash
 go run ./cmd/gateway -config config.yaml
 go run ./cmd/mock-worker --model=mock-model --addr=127.0.0.1:9001   # GPU-free upstream; see docs/development/mock-worker.md
+go run ./cmd/control-plane                                         # worker registry on 127.0.0.1:9090
+make dev-cluster                                                   # control plane + 3 mock workers + agents
 ```
 
 ## Known Architectural Risks

@@ -188,13 +188,13 @@ func TestModelsHealthAndStatsShape(t *testing.T) {
 	}
 	_, body := e.get(t, "/stats")
 	for _, k := range []string{"worker_id", "model", "status", "active_requests", "queue_depth", "queued_input_tokens",
-		"recent_tokens_per_second", "completed", "failed", "rejected", "cancelled", "tokens_generated", "configured_ttft_ms", "configured_tokens_per_second"} {
+		"recent_tokens_per_second", "completed", "failed", "rejected", "cancelled", "tokens_generated", "max_concurrency", "queue_size", "configured_ttft_ms", "configured_tokens_per_second"} {
 		if !strings.Contains(body, `"`+k+`"`) {
 			t.Fatalf("/stats is missing %q: %s", k, body)
 		}
 	}
 	s := e.stats(t)
-	if s.Model != "qwen-7b" || s.Status != "ready" || s.ConfiguredTTFTMillis != 30 || s.ConfiguredTokensPerSecond != 200 {
+	if s.Model != "qwen-7b" || s.Status != "ready" || s.ConfiguredTTFTMillis != 30 || s.ConfiguredTokensPerSecond != 200 || s.MaxConcurrency != 2 || s.QueueSize != 2 {
 		t.Fatalf("unexpected stats %+v", s)
 	}
 }

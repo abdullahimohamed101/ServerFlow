@@ -103,6 +103,35 @@ func applyEnv(cfg *Config) {
 			cfg.Worker.UnhealthyTimeout = d
 		}
 	}
+	for key, dst := range map[string]*time.Duration{
+		"WORKER_SUSPECT_TIMEOUT": &cfg.Worker.SuspectTimeout,
+		"WORKER_LOST_TIMEOUT":    &cfg.Worker.LostTimeout,
+		"WORKER_RETENTION":       &cfg.Worker.Retention,
+	} {
+		if v, ok := env(key); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
+		}
+	}
+	for key, dst := range map[string]*string{
+		"WORKER_ID":                &cfg.Worker.ID,
+		"WORKER_MODEL":             &cfg.Worker.Model,
+		"WORKER_BACKEND_URL":       &cfg.Worker.BackendURL,
+		"WORKER_ADVERTISE_URL":     &cfg.Worker.AdvertiseURL,
+		"WORKER_CONTROL_PLANE_URL": &cfg.Worker.ControlPlaneURL,
+		"CONTROL_PLANE_ADDR":       &cfg.ControlPlane.Addr,
+		"CONTROL_PLANE_TOKEN":      &cfg.ControlPlane.Token,
+	} {
+		if v, ok := env(key); ok {
+			*dst = v
+		}
+	}
+	if v, ok := env("CONTROL_PLANE_MAX_WORKERS"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ControlPlane.MaxWorkers = n
+		}
+	}
 	if v, ok := env("ADMISSION_MAX_GLOBAL_REQUESTS"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Admission.MaxGlobalRequests = n

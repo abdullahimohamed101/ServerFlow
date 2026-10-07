@@ -57,7 +57,7 @@ func mockWorkerBinary(t *testing.T) string {
 	return builtPath
 }
 
-type worker struct {
+type mockProc struct {
 	cmd    *exec.Cmd
 	addr   string // the address it actually listens on
 	stderr *lockedBuf
@@ -79,7 +79,7 @@ func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l
 
 // startWorker launches the binary on a free loopback port and waits for its
 // startup log line, which reports the real address.
-func startWorker(t *testing.T, args ...string) *worker {
+func startWorker(t *testing.T, args ...string) *mockProc {
 	t.Helper()
 	bin := mockWorkerBinary(t)
 	cmd := exec.Command(bin, append([]string{"--addr=127.0.0.1:0", "--seed=1"}, args...)...)
@@ -90,7 +90,7 @@ func startWorker(t *testing.T, args ...string) *worker {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	w := &worker{cmd: cmd, stderr: &lockedBuf{}, exited: make(chan error, 1)}
+	w := &mockProc{cmd: cmd, stderr: &lockedBuf{}, exited: make(chan error, 1)}
 	addrc := make(chan string, 1)
 	go func() {
 		sc := bufio.NewScanner(pipe)
@@ -126,7 +126,7 @@ func startWorker(t *testing.T, args ...string) *worker {
 	return w
 }
 
-func (w *worker) url() string {
+func (w *mockProc) url() string {
 	_, port, _ := strings.Cut(w.addr, ":")
 	if i := strings.LastIndex(w.addr, ":"); i >= 0 {
 		port = w.addr[i+1:]
@@ -134,7 +134,7 @@ func (w *worker) url() string {
 	return "http://127.0.0.1:" + port
 }
 
-func (w *worker) wait(t *testing.T, d time.Duration) error {
+func (w *mockProc) wait(t *testing.T, d time.Duration) error {
 	t.Helper()
 	select {
 	case err := <-w.exited:
@@ -187,7 +187,7 @@ func TestProcessPortInUseExitsNonZero(t *testing.T) {
 
 func TestProcessWorkerIDComesFromTheRealPort(t *testing.T) {
 	a, b := startWorker(t), startWorker(t) // both asked for port 0
-	id := func(w *worker) string {
+	id := func(w *mockProc) string {
 		resp, err := http.Get(w.url() + "/stats")
 		if err != nil {
 			t.Fatal(err)
