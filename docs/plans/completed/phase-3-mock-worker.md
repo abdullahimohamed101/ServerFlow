@@ -1,6 +1,6 @@
 # Phase 3 — Mock Worker Framework
 
-Status: Implemented on branch `feature/phase-3-mock-worker`; independently verified and reviewed; awaiting commit and PR approval
+Status: Completed (implemented, independently verified twice and reviewed once; merged with its PR)
 Owner: coding agent
 Depends on: Phase 2 (complete). Phase 1 is deferred (needs a GPU); this phase is what makes GPU-free development possible.
 Spec: `docs/architecture/serverflow-spec.md` §10–12, §24, §32, §53–54, §58 Phase 3, §63
