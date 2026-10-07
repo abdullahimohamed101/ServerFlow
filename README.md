@@ -9,12 +9,14 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2 and 3 are complete. The gateway serves an OpenAI-compatible
-> API in front of a single configured upstream, and a configurable mock worker
-> (`docs/development/mock-worker.md`) stands in for that upstream without a GPU.
-> There is no scheduler or worker registry yet (Phase 4 is next). Phase 1 is
-> deferred until a GPU is available. See `docs/plans/completed/` for finished
-> plans and `docs/plans/active/` for the current one.
+> Status: Phases 0, 2, 3 and 4 are complete. The gateway serves an
+> OpenAI-compatible API in front of a single configured upstream; a configurable
+> mock worker (`docs/development/mock-worker.md`) stands in for that upstream
+> without a GPU; and a control plane tracks workers through register, heartbeat,
+> and death (`docs/architecture/worker-lifecycle.md`). The gateway does not use
+> the registry yet: the scheduler (Phase 5) connects them. Phase 1 is deferred
+> until a GPU is available. See `docs/plans/completed/` for finished plans and
+> `docs/plans/active/` for the current one.
 
 ## Repository Layout
 
@@ -54,6 +56,14 @@ Endpoints: `GET /healthz`, `/readyz`, `/metrics`, `/v1/models`, and
 `POST /v1/chat/completions` (streaming supported). See `internal/config` for all
 `gateway.*` settings and their `SERVERFLOW_GATEWAY_*` environment variables.
 
+Run a local cluster (a control plane plus three mock workers, each with an agent):
+
+```bash
+make dev-cluster
+curl -s localhost:9090/v1/workers     # who is registered, their state and health
+curl -s 'localhost:9090/v1/workers?model=mock-model&eligible=true'
+```
+
 On Windows (no `make`), use the existing quality gate:
 
 ```powershell
@@ -68,7 +78,7 @@ On Windows (no `make`), use the existing quality gate:
 | 1 | Single-worker vLLM baseline | Deferred (needs a GPU) |
 | 2 | Gateway MVP | Complete |
 | 3 | Mock worker framework | Complete |
-| 4 | Worker registry | Not started |
+| 4 | Worker registry | Complete |
 | 5 | Scheduler framework | Not started |
 | 6 | Multi-worker routing | Not started |
 | 7 | Baseline benchmark harness | Not started |
