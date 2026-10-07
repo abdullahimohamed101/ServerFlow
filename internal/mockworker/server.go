@@ -191,6 +191,8 @@ type Stats struct {
 	Rejected                  int64   `json:"rejected"`
 	Cancelled                 int64   `json:"cancelled"`
 	TokensGenerated           int64   `json:"tokens_generated"`
+	MaxConcurrency            int     `json:"max_concurrency"`
+	QueueSize                 int     `json:"queue_size"`
 	ConfiguredTTFTMillis      int64   `json:"configured_ttft_ms"`
 	ConfiguredTokensPerSecond float64 `json:"configured_tokens_per_second"`
 }
@@ -211,6 +213,8 @@ func (s *Server) Stats() Stats {
 		Rejected:                  e.Rejected,
 		Cancelled:                 e.Cancelled,
 		TokensGenerated:           e.Tokens,
+		MaxConcurrency:            s.cfg.MaxConcurrency,
+		QueueSize:                 s.cfg.QueueSize,
 		ConfiguredTTFTMillis:      s.cfg.TTFT.Milliseconds(),
 		ConfiguredTokensPerSecond: s.cfg.TokensPerSecond,
 	}

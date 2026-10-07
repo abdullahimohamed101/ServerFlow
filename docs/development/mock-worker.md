@@ -103,7 +103,7 @@ SIGTERM during a drain force-quits immediately.
 {"worker_id":"mock-9001","model":"qwen-7b","status":"ready","active_requests":2,
  "queue_depth":1,"queued_input_tokens":14,"recent_tokens_per_second":96.4,
  "completed":120,"failed":3,"rejected":0,"cancelled":2,"tokens_generated":7680,
- "configured_ttft_ms":200,"configured_tokens_per_second":50}
+ "max_concurrency":4,"queue_size":32,"configured_ttft_ms":200,"configured_tokens_per_second":50}
 ```
 
 The fields are the spec §10 worker metadata that makes sense without a GPU.
