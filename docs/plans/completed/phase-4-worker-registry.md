@@ -299,6 +299,20 @@ attacks, one-way drain, timeouts, hostile control plane and backend). Findings a
 - **Accepted gap**: the control plane's exit code when `Serve` returns an error cannot be
   provoked from outside (the listener is already bound and the token check runs earlier).
 
+## Inputs for the Phase 5 plan (required hand-off)
+
+When the Phase 5 plan is written, its "Inputs from earlier phases" section must carry these
+requirements from Phase 4. They are not optional follow-ups:
+
+1. **Re-check the address at dial time.** The registry only validates the spelling of a worker's
+   address; it cannot see what a hostname resolves to. Before the gateway connects to a registered
+   address (Phase 5 designs it, Phase 6 routes with it), it must check the address it actually
+   dials, rejecting unspecified, link-local (cloud metadata), multicast and broadcast targets, with
+   an allow-list hook. See ADR-010 (trust model for registered addresses).
+2. **Serve from cached snapshots when the control plane is down.** The scheduler must keep routing
+   from its last good view of eligible workers (with a bounded staleness) instead of failing every
+   request, and must treat only READY and healthy workers as eligible (`Registry.Eligible`).
+
 ## Known Limitations / Follow-ups
 
 - The registry is in memory and single-process; there is no failover (ADR-010).
