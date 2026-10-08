@@ -45,6 +45,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if p := infoFrom(r.Context()).principal; p != nil && p.Policy.AllowedModels != nil {
+		// A tenant sees only the models it may use.
+		visible := make([]string, 0, len(models))
+		for _, m := range models {
+			if p.Policy.AllowsModel(m) {
+				visible = append(visible, m)
+			}
+		}
+		models = visible
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(api.ModelsBody(models))
 }
@@ -77,7 +87,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ireq, err := api.ParseChatRequest(body, api.Limits{Models: s.cfg.Models, MaxTokensLimit: s.cfg.MaxTokensLimit, AnyModel: s.router != nil})
+	lim := api.Limits{Models: s.cfg.Models, MaxTokensLimit: s.cfg.MaxTokensLimit, AnyModel: s.router != nil}
+	if p := info.principal; p != nil && p.Policy.AllowedModels != nil {
+		lim.Allowed = p.Policy.AllowsModel
+	}
+	ireq, err := api.ParseChatRequest(body, lim)
 	if err != nil {
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) {
@@ -91,6 +105,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	info.stream = ireq.Stream
 	ireq.RequestID = info.id
+	if p := info.principal; p != nil {
+		// Carried for the scheduler and later phases; quotas and priority are not enforced yet.
+		ireq.TenantID, ireq.Priority = p.TenantID, p.Policy.Priority
+	}
 
 	if s.router != nil {
 		s.forwardRegistry(w, r, rc, ireq, body, info, start)

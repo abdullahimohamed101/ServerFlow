@@ -22,6 +22,9 @@ type metrics struct {
 	ttft     *prometheus.HistogramVec
 	attempts *prometheus.CounterVec
 	retries  *prometheus.CounterVec
+	// authRejects counts requests refused by authentication, by status only: tenants and
+	// reasons are unbounded or sensitive and stay out of the labels.
+	authRejects *prometheus.CounterVec
 }
 
 func newMetrics() *metrics {
@@ -53,11 +56,15 @@ func newMetrics() *metrics {
 			Name: "inference_retries_total",
 			Help: "Attempts that were abandoned for a retry on another worker, by model and failure class.",
 		}, []string{"model", "reason"}),
+		authRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "auth_rejections_total",
+			Help: "Requests refused by API key authentication, by HTTP status (401, 403 or 503).",
+		}, []string{"status"}),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.requests, m.active, m.duration, m.ttft, m.attempts, m.retries,
+		m.requests, m.active, m.duration, m.ttft, m.attempts, m.retries, m.authRejects,
 	)
 	return m
 }
@@ -93,4 +100,9 @@ func (m *metrics) observeRetry(model, reason string) {
 		model = "unknown"
 	}
 	m.retries.WithLabelValues(model, reason).Inc()
+}
+
+// observeAuthReject counts a request refused by authentication.
+func (m *metrics) observeAuthReject(status int) {
+	m.authRejects.WithLabelValues(strconv.Itoa(status)).Inc()
 }

@@ -12,8 +12,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
+	"serverflow/internal/postgres"
 	"serverflow/internal/telemetry"
 )
 
@@ -37,6 +39,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// With auth.mode=required the gateway must be able to verify keys, so a database that is
+	// unreachable or not migrated is a startup failure, not a surprise at the first request.
+	var authn *auth.Authenticator
+	if cfg.Auth.Mode == config.AuthModeRequired {
+		store, err := openAuthStore(ctx, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+			os.Exit(1)
+		}
+		defer store.Close()
+		authn = auth.New(store, auth.Config{
+			CacheTTL: cfg.Auth.CacheTTL, NegativeTTL: cfg.Auth.NegativeTTL, CacheSize: cfg.Auth.CacheSize,
+			StaleGrace: cfg.Auth.StaleGrace, Logger: logger,
+		})
+		logger.Info("api key authentication required", "component", "gateway", "cache_ttl", cfg.Auth.CacheTTL.String(),
+			"negative_ttl", cfg.Auth.NegativeTTL.String(), "cache_size", cfg.Auth.CacheSize, "stale_grace", cfg.Auth.StaleGrace.String())
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Gateway.Port))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
@@ -59,9 +79,39 @@ func main() {
 			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models)
 	}
 
+	if authn != nil {
+		srv.SetAuthenticator(authn)
+	}
+
 	if err := srv.Serve(ctx, ln); err != nil {
 		logger.Error("gateway stopped with error", "component", "gateway", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("gateway stopped", "component", "gateway")
+}
+
+// openAuthStore connects to PostgreSQL for key lookups and checks that the schema is current.
+// Errors never contain the DSN's password.
+func openAuthStore(ctx context.Context, cfg config.Config) (*postgres.Store, error) {
+	if err := cfg.Postgres.ValidatePostgresTransport(); err != nil {
+		return nil, err
+	}
+	store, err := postgres.Open(ctx, postgres.Config{DSN: cfg.Postgres.DSN, MaxConns: cfg.Postgres.MaxConns, ConnectTimeout: cfg.Postgres.ConnectTimeout})
+	if err != nil {
+		return nil, fmt.Errorf("auth.mode is required but the database is not usable: %w", err)
+	}
+	sctx, cancel := context.WithTimeout(ctx, cfg.Postgres.ConnectTimeout)
+	defer cancel()
+	status, err := store.MigrationStatuses(sctx)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("auth.mode is required but the database schema is not usable: %w", err)
+	}
+	for _, m := range status {
+		if !m.Applied {
+			store.Close()
+			return nil, fmt.Errorf("auth.mode is required but migration %04d_%s is not applied; run serverflow-admin migrate up", m.Version, m.Name)
+		}
+	}
+	return store, nil
 }

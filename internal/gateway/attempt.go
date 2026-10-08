@@ -95,8 +95,8 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		if apiErr.Code == api.CodeModelNotFound {
 			level = slog.LevelDebug
 		}
-		s.log.Log(r.Context(), level, "no worker selected", "request_id", info.id, "attempt_id", info.attemptID,
-			"strategy", s.router.strategy, "error_code", apiErr.Code)
+		s.log.Log(r.Context(), level, "no worker selected", append([]any{"request_id", info.id, "attempt_id", info.attemptID,
+			"strategy", s.router.strategy, "error_code", apiErr.Code}, tenantAttrs(info)...)...)
 		s.fail(w, info, apiErr)
 		return
 	}
@@ -149,8 +149,8 @@ func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	ctx, cancel := context.WithCancel(withAttemptID(r.Context(), id))
 	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancel)
 	idle.Stop()
-	s.log.Debug("worker selected", "request_id", info.id, "attempt_id", id, "attempt", idx+1, "strategy", s.router.strategy,
-		"worker_id", target.worker.WorkerID, "model", ireq.Model)
+	s.log.Debug("worker selected", append([]any{"request_id", info.id, "attempt_id", id, "attempt", idx + 1, "strategy", s.router.strategy,
+		"worker_id", target.worker.WorkerID, "model", ireq.Model}, tenantAttrs(info)...)...)
 	return &attemptRun{rec: idx, target: target, ctx: ctx, cancel: cancel, idle: idle}, nil
 }
 
@@ -254,6 +254,7 @@ func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	if run.resp != nil {
 		attrs = append(attrs, "worker_status", run.resp.StatusCode)
 	}
+	attrs = append(attrs, tenantAttrs(info)...)
 	s.log.Log(context.Background(), level, "attempt finished", attrs...)
 }
 

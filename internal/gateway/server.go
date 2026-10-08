@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"time"
 
+	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/scheduler"
@@ -41,6 +42,8 @@ type Server struct {
 	ready      *readiness
 	metrics    *metrics
 	handler    http.Handler
+	// authn, when set, requires an API key on /v1 requests (auth.mode=required).
+	authn *auth.Authenticator
 	// bodyReadTimeout bounds how long a client may take to send its request body.
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
@@ -66,8 +69,8 @@ func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *S
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.Handle("GET /metrics", s.metrics.handler())
-	mux.HandleFunc("GET /v1/models", s.handleModels)
-	mux.HandleFunc("POST "+chatCompletionsPath, s.handleChatCompletions)
+	mux.Handle("GET /v1/models", s.authenticate(s.handleModels))
+	mux.Handle("POST "+chatCompletionsPath, s.authenticate(s.handleChatCompletions))
 	s.handler = s.withRequest(mux)
 	return s
 }
@@ -91,10 +94,13 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if s.router != nil {
 		s.router.policy.SetSelf(ln.Addr()) // a worker must not be able to loop requests back through us
 	}
+	bctx, stopBackground := context.WithCancel(ctx)
+	defer stopBackground()
 	if s.background != nil {
-		bctx, stopBackground := context.WithCancel(ctx)
-		defer stopBackground()
 		go s.background(bctx)
+	}
+	if s.authn != nil {
+		go s.authn.Run(bctx) // records last_used_at; never on the request path
 	}
 
 	select {
