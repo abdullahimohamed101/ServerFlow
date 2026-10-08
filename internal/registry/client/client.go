@@ -86,7 +86,11 @@ type Client struct {
 // bearer token to whatever host the redirect names.
 func New(baseURL, token string, hc *http.Client) *Client {
 	if hc == nil {
-		hc = &http.Client{Timeout: 5 * time.Second}
+		// The control plane is internal and the bearer token must not be handed to
+		// a proxy named in the environment.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.Proxy = nil
+		hc = &http.Client{Timeout: 5 * time.Second, Transport: tr}
 	}
 	c := *hc
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -134,7 +138,12 @@ func (c *Client) do(ctx context.Context, method, path string, header http.Header
 		}
 		return e
 	}
-	if out != nil && len(raw) > 0 {
+	if out != nil {
+		// A success with nothing in it is not an answer: treating it as "no workers" would
+		// wipe a caller's view instead of failing closed.
+		if len(raw) == 0 {
+			return errors.New("control plane: empty response")
+		}
 		if err := json.Unmarshal(raw, out); err != nil {
 			return fmt.Errorf("control plane: bad response: %w", err)
 		}
@@ -197,10 +206,15 @@ func (c *Client) Workers(ctx context.Context, q Query) ([]protocol.WorkerSnapsho
 		path += "?" + v.Encode()
 	}
 	var out struct {
-		Workers []protocol.WorkerSnapshot `json:"workers"`
+		Workers *[]protocol.WorkerSnapshot `json:"workers"`
 	}
-	err := c.do(ctx, http.MethodGet, path, nil, nil, &out)
-	return out.Workers, err
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Workers == nil {
+		return nil, errors.New("control plane: bad response: no workers list")
+	}
+	return *out.Workers, nil
 }
 
 // Worker returns one worker.

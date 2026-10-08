@@ -297,3 +297,49 @@ func TestDefaultTimeoutAndResponseCap(t *testing.T) {
 		t.Fatal("a response over the size cap must be an error")
 	}
 }
+
+func TestTheDefaultClientIgnoresProxyEnvironmentVariables(t *testing.T) {
+	c := New("http://127.0.0.1:1", "token-token-token-token", nil)
+	tr, ok := c.hc.Transport.(*http.Transport)
+	if !ok || tr.Proxy != nil {
+		t.Fatalf("the bearer token must not be handed to a proxy named in the environment: %#v", c.hc.Transport)
+	}
+}
+
+func TestAnEmptyOrListlessSuccessIsAnErrorNotAnEmptyRegistry(t *testing.T) {
+	for name, body := range map[string]string{"empty body": "", "null list": `{"workers":null}`, "no list": `{}`} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, body)
+		}))
+		ws, err := New(ts.URL, "tok-tok-tok-tok-tok-tok", nil).Workers(context.Background(), Query{})
+		ts.Close()
+		if err == nil || ws != nil {
+			t.Errorf("%s must fail instead of reading as zero workers: %v %v", name, ws, err)
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"workers":[]}`) }))
+	defer ts.Close()
+	if ws, err := New(ts.URL, "tok-tok-tok-tok-tok-tok", nil).Workers(context.Background(), Query{}); err != nil || ws == nil || len(ws) != 0 {
+		t.Fatalf("an explicit empty list is a real answer: %v %v", ws, err)
+	}
+}
+
+func TestAnEmptySuccessBodyIsAnErrorForEveryCallThatExpectsOne(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer ts.Close()
+	c := New(ts.URL, "tok-tok-tok-tok-tok-tok", nil)
+	if _, err := c.Worker(context.Background(), "w1"); err == nil {
+		t.Error("Worker must not read an empty body as a zero worker")
+	}
+	if _, err := c.Models(context.Background()); err == nil {
+		t.Error("Models must not read an empty body as no models")
+	}
+	if _, err := c.Register(context.Background(), protocol.WorkerInfo{}); err == nil {
+		t.Error("Register must not read an empty body as a registration")
+	}
+	// Calls that expect no body are unaffected.
+	if err := c.Heartbeat(context.Background(), "w1", protocol.Heartbeat{}); err != nil {
+		t.Errorf("Heartbeat expects no body: %v", err)
+	}
+}
