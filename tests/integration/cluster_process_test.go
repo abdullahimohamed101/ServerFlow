@@ -157,7 +157,7 @@ func startControlPlaneProc(t *testing.T, cpAddr, token string) *proc {
 }
 
 func startMockProc(t *testing.T, addr string) *proc {
-	return startProc(t, "mock-worker", "mock-worker starting", nil, "--addr="+addr, "--model="+model, "--ttft=10ms", "--seed=1")
+	return startProc(t, "mock-worker", "mock-worker starting", nil, "--addr="+addr, "--model="+model, "--ttft=10ms", "--tokens-per-second=1000", "--output-tokens=8", "--seed=1")
 }
 
 func startAgentProc(t *testing.T, cpAddr, token, id, mockAddr string) *proc {

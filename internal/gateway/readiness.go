@@ -11,11 +11,16 @@ const (
 	probeCacheTTL = 2 * time.Second
 )
 
+// prober reports whether the thing the gateway forwards to can take requests.
+type prober interface {
+	Probe(ctx context.Context) error
+}
+
 // readiness caches the result of probing the upstream so /readyz traffic
 // cannot turn into probe traffic. The lock is held during the probe so
 // concurrent callers share one probe.
 type readiness struct {
-	upstream Upstream
+	upstream prober
 	mu       sync.Mutex
 	checked  time.Time
 	err      error

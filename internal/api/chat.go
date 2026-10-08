@@ -14,6 +14,9 @@ import (
 type Limits struct {
 	Models         []string
 	MaxTokensLimit int
+	// AnyModel skips the check against Models. The gateway sets it when the
+	// worker registry, not a static list, decides which models exist.
+	AnyModel bool
 }
 
 // Fields the gateway validates. Go's encoding/json matches keys
@@ -47,7 +50,7 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 	} else if err := json.Unmarshal(raw, &model); err != nil || model == "" {
 		return nil, ErrInvalidRequest("`model` must be a non-empty string")
 	}
-	if !contains(lim.Models, model) {
+	if !lim.AnyModel && !contains(lim.Models, model) {
 		return nil, ErrModelNotFound(model)
 	}
 

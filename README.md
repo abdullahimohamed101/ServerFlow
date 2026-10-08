@@ -9,12 +9,14 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3 and 4 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4 and 5 are complete. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
-> and death (`docs/architecture/worker-lifecycle.md`). The gateway does not use
-> the registry yet: the scheduler (Phase 5) connects them. Phase 1 is deferred
+> and death (`docs/architecture/worker-lifecycle.md`). With
+> `gateway.worker_source: registry` the gateway chooses a worker per request with
+> a configurable scheduler (`docs/architecture/scheduling.md`); retries come in
+> Phase 6. Phase 1 is deferred
 > until a GPU is available. See `docs/plans/completed/` for finished plans and
 > `docs/plans/active/` for the current one.
 
@@ -79,7 +81,7 @@ On Windows (no `make`), use the existing quality gate:
 | 2 | Gateway MVP | Complete |
 | 3 | Mock worker framework | Complete |
 | 4 | Worker registry | Complete |
-| 5 | Scheduler framework | Not started |
+| 5 | Scheduler framework | Complete |
 | 6 | Multi-worker routing | Not started |
 | 7 | Baseline benchmark harness | Not started |
 | 8 | Redis integration | Not started |

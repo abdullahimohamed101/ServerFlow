@@ -478,3 +478,153 @@ func TestAnAgentWontSendTheTokenOverCleartextToAnotherMachine(t *testing.T) {
 		}
 	}
 }
+
+// --- Phase 5: worker source and scheduler ------------------------------------------------------
+
+func registryConfig() Config {
+	cfg := Default()
+	cfg.Gateway.WorkerSource = WorkerSourceRegistry
+	return cfg
+}
+
+func TestWorkerSourceDefaultsKeepThePhase2Behaviour(t *testing.T) {
+	cfg := Default()
+	if cfg.Gateway.WorkerSource != WorkerSourceStatic {
+		t.Fatalf("the default must stay static, got %q", cfg.Gateway.WorkerSource)
+	}
+	if cfg.Scheduler.Strategy != "round-robin" {
+		t.Fatalf("the default strategy must be one that exists, got %q", cfg.Scheduler.Strategy)
+	}
+	if cfg.Gateway.RegistryRefresh != time.Second || cfg.Gateway.RegistryMaxStaleness != 10*time.Second ||
+		cfg.Gateway.ControlPlaneURL != "http://127.0.0.1:9090" || len(cfg.Gateway.WorkerNetworks) != 0 {
+		t.Fatalf("registry defaults changed: %+v", cfg.Gateway)
+	}
+	rc := registryConfig()
+	if err := rc.Validate(); err != nil {
+		t.Fatalf("the registry source with defaults must be valid: %v", err)
+	}
+}
+
+func TestValidateRegistrySource(t *testing.T) {
+	const token = "a-sufficiently-long-shared-secret"
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string // "" means valid
+	}{
+		{"unknown source", func(c *Config) { c.Gateway.WorkerSource = "magic" }, "worker_source"},
+		{"empty source", func(c *Config) { c.Gateway.WorkerSource = "" }, "worker_source"},
+		{"least-work is not implemented", func(c *Config) { c.Scheduler.Strategy = "least-work" }, "not implemented yet"},
+		{"every implemented strategy", func(c *Config) { c.Scheduler.Strategy = "least-queue" }, ""},
+		{"bad control plane url", func(c *Config) { c.Gateway.ControlPlaneURL = "nonsense" }, "control_plane_url"},
+		{"credentials in the url", func(c *Config) { c.Gateway.ControlPlaneURL = "http://u:topsecret@127.0.0.1:9090" }, "control_plane_url"},
+		{"zero refresh", func(c *Config) { c.Gateway.RegistryRefresh = 0 }, "registry_refresh"},
+		{"refresh below the floor", func(c *Config) {
+			c.Gateway.RegistryRefresh, c.Gateway.RegistryMaxStaleness = 9*time.Millisecond, time.Second
+		}, "hammer"},
+		{"refresh at the floor", func(c *Config) {
+			c.Gateway.RegistryRefresh, c.Gateway.RegistryMaxStaleness = 10*time.Millisecond, time.Second
+		}, ""},
+		{"staleness above the ceiling", func(c *Config) { c.Gateway.RegistryMaxStaleness = 5*time.Minute + time.Nanosecond }, "at most"},
+		{"staleness at the ceiling", func(c *Config) { c.Gateway.RegistryMaxStaleness = 5 * time.Minute }, ""},
+		{"staleness below twice the refresh", func(c *Config) { c.Gateway.RegistryMaxStaleness = 1999 * time.Millisecond }, "at least twice"},
+		{"staleness exactly twice the refresh", func(c *Config) { c.Gateway.RegistryMaxStaleness = 2 * time.Second }, ""},
+		{"token over cleartext to another host", func(c *Config) {
+			c.ControlPlane.Token, c.Gateway.ControlPlaneURL = token, "http://10.0.0.5:9090"
+		}, "cleartext"},
+		{"token over https to another host", func(c *Config) {
+			c.ControlPlane.Token, c.Gateway.ControlPlaneURL = token, "https://cp.internal:9090"
+		}, ""},
+		{"token over cleartext to loopback", func(c *Config) { c.ControlPlane.Token = token }, ""},
+		{"short token", func(c *Config) { c.ControlPlane.Token = "short" }, "at least 16"},
+		{"token one short", func(c *Config) { c.ControlPlane.Token = "0123456789abcde" }, "at least 16"},
+		{"token exactly long enough", func(c *Config) { c.ControlPlane.Token = "0123456789abcdef" }, ""},
+		{"suspect timeout too tight for the refresh", func(c *Config) {
+			c.Gateway.RegistryRefresh, c.Gateway.RegistryMaxStaleness = 3*time.Second, 10*time.Second
+			c.Worker.SuspectTimeout = c.Gateway.RegistryRefresh + c.Worker.HeartbeatInterval - time.Nanosecond
+		}, "registry_refresh plus"},
+		{"suspect timeout just enough", func(c *Config) {
+			c.Gateway.RegistryRefresh, c.Gateway.RegistryMaxStaleness = 3*time.Second, 10*time.Second
+			c.Worker.SuspectTimeout = c.Gateway.RegistryRefresh + c.Worker.HeartbeatInterval
+		}, ""},
+		{"good cidrs", func(c *Config) { c.Gateway.WorkerNetworks = []string{"10.0.0.0/8", "fd00::/8"} }, ""},
+		{"bad cidr", func(c *Config) { c.Gateway.WorkerNetworks = []string{"10.0.0.0"} }, "not a CIDR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := registryConfig()
+			tt.mutate(&cfg)
+			err := cfg.Validate()
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("want valid, got %v", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Fatalf("want an error mentioning %q, got %v", tt.want, err)
+			}
+			if err != nil && (strings.Contains(err.Error(), "topsecret") || strings.Contains(err.Error(), token)) {
+				t.Fatalf("the error leaks a secret: %v", err)
+			}
+		})
+	}
+}
+
+func TestStaticSourceIgnoresRegistrySettingsAndAllowsLeastWork(t *testing.T) {
+	cfg := Default()
+	cfg.Scheduler.Strategy = "least-work" // valid in config; only the registry source needs an implementation
+	cfg.Gateway.RegistryRefresh = 0
+	cfg.Gateway.ControlPlaneURL = "nonsense"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("static mode must not validate registry settings: %v", err)
+	}
+}
+
+func TestLoadGatewayRegistrySettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte(`
+gateway:
+  worker_source: registry
+  control_plane_url: http://127.0.0.1:9191
+  registry_refresh: 500ms
+  registry_max_staleness: 4s
+  worker_networks: ["10.0.0.0/8"]
+scheduler:
+  strategy: least-queue
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Gateway
+	if g.WorkerSource != "registry" || g.ControlPlaneURL != "http://127.0.0.1:9191" || g.RegistryRefresh != 500*time.Millisecond ||
+		g.RegistryMaxStaleness != 4*time.Second || len(g.WorkerNetworks) != 1 || g.WorkerNetworks[0] != "10.0.0.0/8" {
+		t.Fatalf("got %+v", g)
+	}
+}
+
+func TestLoadGatewayRegistryEnvOverrides(t *testing.T) {
+	t.Setenv("SERVERFLOW_GATEWAY_WORKER_SOURCE", "registry")
+	t.Setenv("SERVERFLOW_GATEWAY_CONTROL_PLANE_URL", "http://127.0.0.1:9292")
+	t.Setenv("SERVERFLOW_GATEWAY_REGISTRY_REFRESH", "250ms")
+	t.Setenv("SERVERFLOW_GATEWAY_REGISTRY_MAX_STALENESS", "3s")
+	t.Setenv("SERVERFLOW_GATEWAY_WORKER_NETWORKS", "10.0.0.0/8, 192.168.0.0/16,")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Gateway
+	if g.WorkerSource != "registry" || g.ControlPlaneURL != "http://127.0.0.1:9292" || g.RegistryRefresh != 250*time.Millisecond ||
+		g.RegistryMaxStaleness != 3*time.Second || len(g.WorkerNetworks) != 2 || g.WorkerNetworks[1] != "192.168.0.0/16" {
+		t.Fatalf("got %+v", g)
+	}
+}
+
+func TestTruncateForErrorBoundsWhatIsEchoed(t *testing.T) {
+	if got := truncateForError(strings.Repeat("a", 64)); len(got) != 64 {
+		t.Fatalf("64 characters are kept whole: %d", len(got))
+	}
+	if got := truncateForError(strings.Repeat("a", 65)); len(got) != 67 || !strings.HasSuffix(got, "...") {
+		t.Fatalf("longer text is cut: %q", got)
+	}
+}

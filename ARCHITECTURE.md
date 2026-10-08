@@ -19,13 +19,15 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 4, the foundation (configuration, structured logging, CI), the
-gateway MVP, a configurable mock worker, and the worker registry exist. The
-gateway proxies OpenAI-compatible requests, including streaming, to a single
-statically configured upstream; the mock worker is a GPU-free stand-in for that
-upstream; worker agents register workers with a control plane that tracks their
-state and health. The gateway does not read the registry yet. There is no
-scheduler, API-key authentication, or rate limiting yet.
+As of Phase 5, the foundation (configuration, structured logging, CI), the
+gateway MVP, a configurable mock worker, the worker registry, and a scheduler
+framework exist. The gateway proxies OpenAI-compatible requests, including
+streaming, either to a single statically configured upstream (the default) or,
+in registry mode, to the worker a configured scheduler picks from the control
+plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
+GPU-free stand-in; worker agents register workers with a control plane that
+tracks their state and health. There is no retry, API-key authentication, or
+rate limiting yet.
 
 ## Major Components
 
@@ -37,8 +39,9 @@ client-facing contracts.
  Status: MVP implemented (Phase 2): `/healthz`, `/readyz`, `/metrics`,
 `/v1/models`, `/v1/chat/completions` (stream and non-stream), request IDs,
 structured logs, Prometheus metrics, graceful shutdown. Proxies to one
-configured upstream behind the `gateway.Upstream` interface, which the worker
-registry and scheduler replace in Phases 4-5. Overhead measurements are in
+configured upstream behind the `gateway.Upstream` interface; with
+`gateway.worker_source: registry` (Phase 5) a router picks a worker per request
+from a cached registry snapshot and sends it through a dial-guarded transport. Overhead measurements are in
 `docs/benchmarks/phase-2-gateway-overhead.md`. Wire types and the error model
 live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
 `pkg/protocol` (ADR-003).
@@ -54,7 +57,11 @@ implemented (Phase 3).
 ### Inference Router / Scheduler
 Purpose: choose the best worker for each request via pluggable strategies.
 Location: `internal/scheduler`. Owns: worker selection, scheduling
-invariants. Status: planned (Phase 5).
+invariants. Status: implemented (Phase 5): the section 13 interface with random,
+round-robin, least-active, and least-queue strategies; the gateway's router
+(`internal/gateway/router.go`) adds the in-flight overlay and snapshot cache.
+See ADR-011 and `docs/architecture/scheduling.md`. Weighted and latency-aware
+strategies are Phase 14.
 
 
 

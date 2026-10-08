@@ -37,13 +37,15 @@ mock-workers:
 	wait
 
 # A local cluster: a control plane on :9090 and three mock workers (:9001-9003 at
-# 100, 60, 20 tokens/s), each with its own worker agent. Ctrl-C stops everything.
+# 100, 60, 20 tokens/s), each with its own worker agent, and a gateway on :8080 in
+# registry mode (STRATEGY=least-active make dev-cluster to change it). Ctrl-C stops everything.
 # Look at it with: curl -s localhost:9090/v1/workers
 dev-cluster:
 	go build -o bin/control-plane ./cmd/control-plane
 	go build -o bin/worker-agent ./cmd/worker-agent
 	go build -o bin/mock-worker ./cmd/mock-worker
-	@echo "dev cluster: control plane :9090, workers :9001 (100 tok/s), :9002 (60), :9003 (20); Ctrl-C to stop"
+	go build -o bin/gateway ./cmd/gateway
+	@echo "dev cluster: control plane :9090, workers :9001 (100 tok/s), :9002 (60), :9003 (20), gateway :8080 (registry mode, round-robin); Ctrl-C to stop"
 	@trap 'kill 0' INT TERM; \
 	bin/control-plane & \
 	sleep 1; \
@@ -55,4 +57,5 @@ dev-cluster:
 		SERVERFLOW_WORKER_BACKEND_URL=http://127.0.0.1:900$$n SERVERFLOW_WORKER_ADVERTISE_URL=http://127.0.0.1:900$$n \
 		bin/worker-agent & \
 	done; \
+	SERVERFLOW_GATEWAY_WORKER_SOURCE=registry SERVERFLOW_SCHEDULER_STRATEGY=$${STRATEGY:-round-robin} bin/gateway & \
 	wait

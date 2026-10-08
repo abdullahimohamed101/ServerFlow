@@ -52,8 +52,9 @@ arrives (worker clocks are never used) and computed on read. Defaults:
 | over 10s | unhealthy | UNHEALTHY | never |
 | over 30s | lost | LOST | never; removed after the retention period |
 
-A worker is **eligible** only when READY and healthy. The scheduler (Phase 5) reads
-eligible workers per model and must never route to anything else.
+A worker is **eligible** only when READY and healthy. The gateway's scheduler (Phase 5,
+`docs/architecture/scheduling.md`) reads eligible workers per model from a cached snapshot and
+never routes to anything else.
 
 ## Walkthrough: a worker dies
 
