@@ -35,6 +35,9 @@ type controlPlane struct {
 	reg atomic.Pointer[registry.Registry]
 	h   atomic.Pointer[http.Handler]
 	cp  *client.Client
+	url string
+	// outage, when set, makes the API answer 503, as an unreachable control plane would.
+	outage atomic.Bool
 }
 
 func newRegistry(t *testing.T) (*registry.Registry, http.Handler) {
@@ -53,9 +56,15 @@ func startControlPlane(t *testing.T) *controlPlane {
 	reg, h := newRegistry(t)
 	c.reg.Store(reg)
 	c.h.Store(&h)
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*c.h.Load()).ServeHTTP(w, r) }))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if c.outage.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		(*c.h.Load()).ServeHTTP(w, r)
+	}))
 	t.Cleanup(ts.Close)
-	c.cp = client.New(ts.URL, testToken, nil)
+	c.cp, c.url = client.New(ts.URL, testToken, nil), ts.URL
 	return c
 }
 
