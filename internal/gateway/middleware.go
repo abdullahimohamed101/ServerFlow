@@ -26,6 +26,9 @@ type reqInfo struct {
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
+	// attempts is the ordered history of tries (registry mode). It is only appended to,
+	// never rewritten: a retry is a new attempt with its own ID (spec section 7).
+	attempts []attemptRecord
 }
 
 type ctxKey struct{}
@@ -125,6 +128,9 @@ func (s *Server) logRequest(r *http.Request, info *reqInfo, status int, d time.D
 		attrs = append(attrs, "attempt_id", info.attemptID, "model", info.model, "stream", info.stream)
 		if info.ttft > 0 {
 			attrs = append(attrs, "ttft_ms", info.ttft.Milliseconds())
+		}
+		if n := len(info.attempts); n > 0 {
+			attrs = append(attrs, "attempts", n, "worker_id", info.attempts[n-1].Worker)
 		}
 	}
 	if info.errCode != "" {

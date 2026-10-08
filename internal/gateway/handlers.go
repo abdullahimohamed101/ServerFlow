@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -93,45 +92,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	info.stream = ireq.Stream
 	ireq.RequestID = info.id
 
+	if s.router != nil {
+		s.forwardRegistry(w, r, rc, ireq, body, info, start)
+		return
+	}
+
 	// upCtx lets the idle timer abort a stalled upstream without touching the
 	// client's own context, which is how the two failures are told apart.
 	upCtx, cancelUp := context.WithCancel(r.Context())
 	defer cancelUp()
-	up := s.upstream
-	var workerID string
-	if s.router != nil {
-		target, apiErr := s.router.Route(r.Context(), ireq)
-		// info.model becomes a metrics label, so only a model the registry
-		// confirmed exists may be recorded; arbitrary client text must not.
-		if apiErr == nil || apiErr.Code == api.CodeNoCapacity {
-			info.model = ireq.Model
-		}
-		if apiErr != nil {
-			if r.Context().Err() != nil {
-				info.clientClosed = true // the client left while we were choosing
-				return
-			}
-			// Unknown models are client typos or probes, which a client could use to
-			// fill the log, so they stay at debug.
-			level := slog.LevelInfo
-			if apiErr.Code == api.CodeModelNotFound {
-				level = slog.LevelDebug
-			}
-			s.log.Log(r.Context(), level, "no worker selected", "request_id", info.id, "attempt_id", info.attemptID,
-				"strategy", s.router.strategy, "error_code", apiErr.Code)
-			s.fail(w, info, apiErr)
-			return
-		}
-		defer target.release()
-		up, workerID = target.up, target.worker.WorkerID
-		s.log.Debug("worker selected", "request_id", info.id, "attempt_id", info.attemptID, "strategy", s.router.strategy,
-			"worker_id", target.worker.WorkerID, "model", ireq.Model)
-	}
-	resp, err := up.Do(upCtx, chatCompletionsPath, body, info.id)
+	resp, err := s.upstream.Do(upCtx, chatCompletionsPath, body, info.id)
 	if err != nil {
-		if s.router != nil && r.Context().Err() == nil {
-			s.log.Warn("worker request failed", "request_id", info.id, "attempt_id", info.attemptID, "worker_id", workerID, "error", errText(err))
-		}
 		if r.Context().Err() != nil {
 			info.clientClosed = true
 			return
@@ -139,12 +110,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, info, mapUpstreamError(err))
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
 	// The idle timer starts stopped; idleReader arms it only while waiting on
 	// the upstream.
 	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancelUp)
 	idle.Stop()
 	defer idle.Stop()
+	s.relay(w, r, rc, resp, resp.Body, idle, info, start)
+}
+
+// relay sends a worker's response to the client: status and headers first, then the body, streamed
+// when it is SSE. body is resp.Body, possibly with bytes already read from it put back in front.
+// Nothing here retries: by the time the first byte is written the response is final (spec section 25).
+func (s *Server) relay(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, resp *http.Response, body io.Reader, idle *time.Timer, info *reqInfo, start time.Time) {
+	defer func() { _ = resp.Body.Close() }()
 
 	// Redirects are never followed; a 3xx means the upstream is misconfigured.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -159,6 +137,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.router != nil {
 		// The Content-Type now comes from a registered worker, not from the operator.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		noteAttempts(w.Header(), info)
 	}
 	isSSE := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isSSE {
@@ -170,7 +149,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// reuses this connection.
 	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
 
-	src := &idleReader{r: resp.Body, timer: idle, d: s.cfg.UpstreamIdleTimeout}
+	src := &idleReader{r: body, timer: idle, d: s.cfg.UpstreamIdleTimeout}
 	if isSSE {
 		s.relayStream(r.Context(), rc, w, src, info, start)
 		return
@@ -281,6 +260,7 @@ func (i *idleReader) Read(p []byte) (int, error) {
 
 func (s *Server) fail(w http.ResponseWriter, info *reqInfo, e *api.Error) {
 	info.errCode = e.Code
+	noteAttempts(w.Header(), info)
 	api.WriteError(w, e)
 }
 

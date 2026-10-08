@@ -20,6 +20,8 @@ type metrics struct {
 	active   prometheus.Gauge
 	duration *prometheus.HistogramVec
 	ttft     *prometheus.HistogramVec
+	attempts *prometheus.CounterVec
+	retries  *prometheus.CounterVec
 }
 
 func newMetrics() *metrics {
@@ -43,11 +45,19 @@ func newMetrics() *metrics {
 			Help:    "Time from request accepted to the first streamed chunk of a streaming response.",
 			Buckets: []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 		}, []string{"model"}),
+		attempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "inference_attempts_total",
+			Help: "Attempts to serve a request on a worker (registry mode), by model and outcome.",
+		}, []string{"model", "outcome"}),
+		retries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "inference_retries_total",
+			Help: "Attempts that were abandoned for a retry on another worker, by model and failure class.",
+		}, []string{"model", "reason"}),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		m.requests, m.active, m.duration, m.ttft,
+		m.requests, m.active, m.duration, m.ttft, m.attempts, m.retries,
 	)
 	return m
 }
@@ -67,4 +77,20 @@ func (m *metrics) observe(info *reqInfo, status int, d time.Duration) {
 	if info.ttft > 0 {
 		m.ttft.WithLabelValues(model).Observe(info.ttft.Seconds())
 	}
+}
+
+// observeAttempt counts a finished attempt. outcome is one of the fixed attempt outcomes.
+func (m *metrics) observeAttempt(model, outcome string) {
+	if model == "" {
+		model = "unknown"
+	}
+	m.attempts.WithLabelValues(model, outcome).Inc()
+}
+
+// observeRetry counts an attempt abandoned for a retry. reason is an attempt error class.
+func (m *metrics) observeRetry(model, reason string) {
+	if model == "" {
+		model = "unknown"
+	}
+	m.retries.WithLabelValues(model, reason).Inc()
 }

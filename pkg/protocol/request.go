@@ -6,6 +6,10 @@ package protocol
 // request ID.
 const HeaderRequestID = "X-Request-ID"
 
+// HeaderAttemptID names the request header that carries the gateway's attempt ID to a worker, so
+// the worker's own logs can be tied to one attempt of a request (spec section 7).
+const HeaderAttemptID = "X-Attempt-ID"
+
 // Message is one chat turn in a normalized request.
 type Message struct {
 	Role    string
