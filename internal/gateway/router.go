@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 
 	"serverflow/internal/api"
@@ -46,12 +47,26 @@ type routed struct {
 	release func()
 }
 
-// Route chooses a worker for req, or returns the API error to send.
-func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest) (*routed, *api.Error) {
+// Route chooses a worker for req, or returns the API error to send. Workers named in exclude (the
+// ones already tried for this request) are never chosen; if that leaves nothing, the answer is
+// NO_CAPACITY, never a "model not found" for a model that is served.
+func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, exclude ...string) (*routed, *api.Error) {
 	workers, ok := r.cache.View(req.Model)
 	if !ok {
 		// No snapshot, or one too old to trust: fail closed.
 		return nil, api.ErrWorkerUnavailable()
+	}
+	if len(exclude) > 0 {
+		before := len(workers)
+		kept := workers[:0] // View returned a private copy
+		for _, w := range workers {
+			if !slices.Contains(exclude, w.WorkerID) {
+				kept = append(kept, w)
+			}
+		}
+		if workers = kept; len(workers) == 0 && before > 0 {
+			return nil, api.ErrNoCapacity(req.Model, 0)
+		}
 	}
 
 	chosen, apiErr := r.reserve(ctx, req, workers)

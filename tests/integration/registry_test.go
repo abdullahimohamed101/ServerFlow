@@ -38,11 +38,13 @@ type controlPlane struct {
 	url string
 	// outage, when set, makes the API answer 503, as an unreachable control plane would.
 	outage atomic.Bool
+	// suspect, unhealthy and lost are the registry's thresholds for this control plane.
+	suspect, unhealthy, lost time.Duration
 }
 
-func newRegistry(t *testing.T) (*registry.Registry, http.Handler) {
+func newRegistryWith(t *testing.T, suspect, unhealthy, lost time.Duration) (*registry.Registry, http.Handler) {
 	t.Helper()
-	reg, err := registry.New(registry.Config{Suspect: suspectAfter, Unhealthy: unhealthyAfter, Lost: lostAfter,
+	reg, err := registry.New(registry.Config{Suspect: suspect, Unhealthy: unhealthy, Lost: lost,
 		Retention: time.Minute, MaxWorkers: 50, HeartbeatInterval: hbInterval}, quiet())
 	if err != nil {
 		t.Fatal(err)
@@ -51,9 +53,20 @@ func newRegistry(t *testing.T) (*registry.Registry, http.Handler) {
 }
 
 func startControlPlane(t *testing.T) *controlPlane {
+	return startControlPlaneWith(t, suspectAfter, unhealthyAfter, lostAfter)
+}
+
+// startRelaxedControlPlane has thresholds long enough that a loaded machine cannot make a healthy worker
+// look suspect. A worker that dies is still noticed at once, because its agent reports FAILED itself; use this
+// for tests about load and distribution, not about how fast silence is judged.
+func startRelaxedControlPlane(t *testing.T) *controlPlane {
+	return startControlPlaneWith(t, 2*time.Second, 4*time.Second, 10*time.Second)
+}
+
+func startControlPlaneWith(t *testing.T, suspect, unhealthy, lost time.Duration) *controlPlane {
 	t.Helper()
-	c := &controlPlane{}
-	reg, h := newRegistry(t)
+	c := &controlPlane{suspect: suspect, unhealthy: unhealthy, lost: lost}
+	reg, h := newRegistryWith(t, suspect, unhealthy, lost)
 	c.reg.Store(reg)
 	c.h.Store(&h)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +85,7 @@ func startControlPlane(t *testing.T) *controlPlane {
 // what a control plane restart looks like to its workers.
 func (c *controlPlane) restart(t *testing.T) {
 	t.Helper()
-	reg, h := newRegistry(t)
+	reg, h := newRegistryWith(t, c.suspect, c.unhealthy, c.lost)
 	c.reg.Store(reg)
 	c.h.Store(&h)
 }

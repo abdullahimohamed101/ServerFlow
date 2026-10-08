@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"serverflow/internal/api"
 	"serverflow/internal/config"
 	"serverflow/pkg/protocol"
 )
@@ -87,7 +88,7 @@ func newRegEnv(t *testing.T, strategy string, ws []protocol.WorkerSnapshot, muta
 	srv := httptest.NewServer(gw.Handler())
 	tr := &http.Transport{}
 	t.Cleanup(func() { tr.CloseIdleConnections(); srv.Close() })
-	e := &regEnv{gw: gw, url: srv.URL, lister: lister, clock: clock, logs: logs, client: &http.Client{Transport: tr}}
+	e := &regEnv{gw: gw, url: srv.URL, lister: lister, clock: clock, logs: logs, client: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
 	if len(ws) > 0 {
 		e.refresh(t)
 	}
@@ -867,5 +868,57 @@ func TestUnknownModelRejectionsAreDebugLevelAndOthersInfo(t *testing.T) {
 	}
 	if levels["MODEL_NOT_FOUND"] != "DEBUG" || levels["NO_CAPACITY"] != "INFO" {
 		t.Fatalf("a client can pick the model name, so typos must not be loud: %v", levels)
+	}
+}
+
+// --- Phase 6: exclusion --------------------------------------------------------------------------
+
+func TestRouteNeverChoosesAnExcludedWorker(t *testing.T) {
+	a, b, c := newFakeWorker(t, "a", nil), newFakeWorker(t, "b", nil), newFakeWorker(t, "c", nil)
+	for _, strategy := range []string{"random", "round-robin", "least-active", "least-queue"} {
+		e := newRegEnv(t, strategy, []protocol.WorkerSnapshot{a.snapshot("qwen-7b", 4), b.snapshot("qwen-7b", 4), c.snapshot("qwen-7b", 4)})
+		for i := 0; i < 60; i++ {
+			rt, apiErr := e.gw.router.Route(context.Background(), &protocol.InferenceRequest{Model: "qwen-7b"}, "a", "c")
+			if apiErr != nil || rt.worker.WorkerID != "b" {
+				t.Fatalf("%s: got %v %v, only b is allowed", strategy, rt, apiErr)
+			}
+			rt.release()
+		}
+	}
+}
+
+func TestExcludingEverythingIsNoCapacityNotModelNotFound(t *testing.T) {
+	a := newFakeWorker(t, "a", nil)
+	e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{a.snapshot("qwen-7b", 4)})
+	rt, apiErr := e.gw.router.Route(context.Background(), &protocol.InferenceRequest{Model: "qwen-7b"}, "a")
+	if rt != nil || apiErr == nil || apiErr.Code != api.CodeNoCapacity {
+		t.Fatalf("got %v %v", rt, apiErr)
+	}
+	if e.gw.router.InFlight("a") != 0 {
+		t.Fatal("no slot may be taken")
+	}
+	// An unknown model is still unknown, with or without exclusions.
+	if _, apiErr := e.gw.router.Route(context.Background(), &protocol.InferenceRequest{Model: "nope"}, "a"); apiErr == nil || apiErr.Code != api.CodeModelNotFound {
+		t.Fatalf("got %v", apiErr)
+	}
+	// Excluding a worker that is not there changes nothing.
+	rt, apiErr = e.gw.router.Route(context.Background(), &protocol.InferenceRequest{Model: "qwen-7b"}, "ghost")
+	if apiErr != nil || rt.worker.WorkerID != "a" {
+		t.Fatalf("got %v %v", rt, apiErr)
+	}
+	rt.release()
+}
+
+func TestExclusionDoesNotCorruptTheSnapshot(t *testing.T) {
+	a, b := newFakeWorker(t, "a", nil), newFakeWorker(t, "b", nil)
+	e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{a.snapshot("qwen-7b", 4), b.snapshot("qwen-7b", 4)})
+	if rt, apiErr := e.gw.router.Route(context.Background(), &protocol.InferenceRequest{Model: "qwen-7b"}, "a"); apiErr != nil {
+		t.Fatal(apiErr)
+	} else {
+		rt.release()
+	}
+	ws, _ := e.gw.router.cache.View("qwen-7b")
+	if len(ws) != 2 || ws[0].WorkerID != "a" || ws[1].WorkerID != "b" {
+		t.Fatalf("an exclusion for one request must not change what later requests see: %v", ws)
 	}
 }

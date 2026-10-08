@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"serverflow/pkg/protocol"
 )
 
 // Upstream is the inference backend the gateway forwards to. Phase 2 has a
@@ -58,6 +60,9 @@ func (u *httpUpstream) Do(ctx context.Context, path string, body []byte, request
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", "serverflow-gateway")
 	req.Header.Set("X-Request-ID", requestID)
+	if id := attemptIDFrom(ctx); id != "" {
+		req.Header.Set(protocol.HeaderAttemptID, id)
+	}
 	return u.client.Do(req)
 }
 

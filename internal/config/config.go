@@ -72,6 +72,11 @@ type GatewayConfig struct {
 	// these CIDRs. Empty allows any address that is not forbidden outright
 	// (unspecified, link-local, multicast, broadcast).
 	WorkerNetworks []string `yaml:"worker_networks"`
+	// MaxAttempts is how many workers one request may try, counting the first (spec section 25).
+	// 1 disables retries. RetryStatuses are the worker response statuses that may be retried on
+	// another worker, before any output has reached the client. Both apply to the registry source.
+	MaxAttempts   int   `yaml:"max_attempts"`
+	RetryStatuses []int `yaml:"retry_statuses"`
 }
 
 // Worker sources.
@@ -161,6 +166,8 @@ func Default() Config {
 			ControlPlaneURL:       "http://127.0.0.1:9090",
 			RegistryRefresh:       time.Second,
 			RegistryMaxStaleness:  10 * time.Second,
+			MaxAttempts:           2,
+			RetryStatuses:         []int{502, 503},
 		},
 		Scheduler: SchedulerConfig{
 			Strategy: "round-robin",
@@ -290,6 +297,9 @@ const minTokenLen = 16
 
 // Bounds on how often the gateway polls the registry and how long it trusts the answer.
 const (
+	maxMaxAttempts   = 5
+	maxRetryStatuses = 10
+
 	minRegistryRefresh   = 10 * time.Millisecond
 	maxRegistryStaleness = 5 * time.Minute
 )
@@ -412,6 +422,22 @@ func (c *Config) validateWorkerSource() error {
 	}
 	if c.ControlPlane.Token != "" && len(c.ControlPlane.Token) < minTokenLen {
 		return fmt.Errorf("control_plane.token must be at least %d characters", minTokenLen)
+	}
+	if g.MaxAttempts < 1 || g.MaxAttempts > maxMaxAttempts {
+		return fmt.Errorf("gateway.max_attempts must be 1-%d (1 disables retries), got %d", maxMaxAttempts, g.MaxAttempts)
+	}
+	if len(g.RetryStatuses) > maxRetryStatuses {
+		return fmt.Errorf("gateway.retry_statuses lists %d statuses; at most %d", len(g.RetryStatuses), maxRetryStatuses)
+	}
+	seenStatus := map[int]bool{}
+	for _, st := range g.RetryStatuses {
+		if st < 500 || st > 599 {
+			return fmt.Errorf("gateway.retry_statuses: %d is not a 5xx status", st)
+		}
+		if seenStatus[st] {
+			return fmt.Errorf("gateway.retry_statuses lists %d twice", st)
+		}
+		seenStatus[st] = true
 	}
 	for _, n := range g.WorkerNetworks {
 		if _, err := netip.ParsePrefix(n); err != nil {

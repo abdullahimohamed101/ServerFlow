@@ -251,7 +251,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer s.inflight.Add(-1)
 
 	start := time.Now()
-	rl := &chatLog{outcome: "rejected", requestID: r.Header.Get("X-Request-ID")}
+	rl := &chatLog{outcome: "rejected", requestID: r.Header.Get("X-Request-ID"), attemptID: r.Header.Get("X-Attempt-ID")}
 	defer func() { s.logChat(rl, start) }()
 
 	if st := s.currentState(); st != stateReady {
@@ -466,6 +466,7 @@ func sleepUntil(ctx context.Context, t time.Time) error {
 
 type chatLog struct {
 	requestID    string
+	attemptID    string
 	outcome      string
 	injected     string
 	model        string
@@ -490,6 +491,9 @@ func (s *Server) logChat(rl *chatLog, start time.Time) {
 	}
 	if rl.requestID != "" {
 		attrs = append(attrs, "request_id", rl.requestID) // the gateway's ID, for correlation
+		if rl.attemptID != "" {
+			attrs = append(attrs, "attempt_id", rl.attemptID)
+		}
 	}
 	s.log.Info("chat", attrs...)
 }

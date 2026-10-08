@@ -26,9 +26,18 @@ type countedNode struct {
 }
 
 func (c *controlPlane) startCountedNode(t *testing.T, id string) *countedNode {
+	return c.startModelNode(t, id, model, nil)
+}
+
+// startModelNode starts a mock worker for a model behind a real agent. mutate may adjust the mock.
+func (c *controlPlane) startModelNode(t *testing.T, id, modelName string, mutate func(*mockworker.Config)) *countedNode {
 	t.Helper()
 	mcfg := mockworker.DefaultConfig()
-	mcfg.Model, mcfg.TTFT, mcfg.TokensPerSecond, mcfg.OutputTokens, mcfg.Seed = model, 5*time.Millisecond, 500, 4, 1
+	mcfg.Model, mcfg.TTFT, mcfg.TokensPerSecond, mcfg.OutputTokens, mcfg.Seed = modelName, 2*time.Millisecond, 2000, 4, 1
+	mcfg.MaxConcurrency, mcfg.QueueSize = 64, 64
+	if mutate != nil {
+		mutate(&mcfg)
+	}
 	inner := mockworker.New(mcfg, quiet()).Handler()
 	n := &countedNode{id: id}
 	n.mock = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +47,7 @@ func (c *controlPlane) startCountedNode(t *testing.T, id string) *countedNode {
 		inner.ServeHTTP(w, r)
 	}))
 	t.Cleanup(n.mock.Close)
-	agent := worker.New(worker.Config{WorkerID: id, Model: model, AdvertiseURL: n.mock.URL, Interval: hbInterval},
+	agent := worker.New(worker.Config{WorkerID: id, Model: modelName, AdvertiseURL: n.mock.URL, Interval: hbInterval},
 		worker.NewMockBackend(n.mock.URL), c.cp, quiet())
 	ctx, cancel := context.WithCancel(context.Background())
 	n.stop = cancel

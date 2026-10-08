@@ -34,6 +34,8 @@ type Server struct {
 	upstream Upstream
 	// router is set in registry mode; it replaces upstream for chat requests.
 	router *router
+	// retry decides which failed attempts may move to another worker (registry mode).
+	retry retryPolicy
 	// background, when set, runs for the life of Serve (the snapshot refresher).
 	background func(ctx context.Context)
 	ready      *readiness
@@ -152,6 +154,7 @@ func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter tim
 	rt := newRouter(cache, policy, sched, strategy, httpClient, log)
 	s := newWithUpstream(g, log, newHTTPUpstream(g.UpstreamURL, g.ReadinessPath, g.UpstreamHeaderTimeout))
 	s.router = rt
+	s.retry = newRetryPolicy(g.MaxAttempts, g.RetryStatuses)
 	s.ready = &readiness{upstream: rt}
 	s.background = cache.Run
 	return s, nil

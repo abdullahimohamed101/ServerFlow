@@ -51,13 +51,35 @@ A worker that dies can still be picked until the first of: its backend reports F
 refresh sees it (about one heartbeat plus `registry_refresh`), or its cached heartbeat age
 reaches the suspect threshold (default 5s, measured from its last real heartbeat). With the
 defaults a silent worker is therefore trusted for at most about 5 seconds. A request sent to a
-worker that is already dead fails (503 `WORKER_UNAVAILABLE`); retrying elsewhere is Phase 6.
+worker that is already dead is retried on another worker (see Retries and attempts below).
 
 During a control plane outage the gateway serves from its last snapshot until workers age past
 the suspect threshold (they cannot heartbeat either), then answers `WORKER_UNAVAILABLE` (the
 registry refresh is failing, so the cause is not capacity), as it also does once the snapshot is
 older than `registry_max_staleness`. When the control
 plane returns, traffic resumes on the next successful refresh.
+
+## Retries and attempts (Phase 6)
+
+The full policy and its reasons are in `docs/decisions/ADR-012-retries-and-attempts.md`. In short, in
+registry mode a request may try up to `gateway.max_attempts` workers (default 2), always a different one,
+and only while nothing has been sent to the client:
+
+- retried: connection failures (including the dial guard refusing an address), a connection reset or closed
+  before headers, worker statuses 502 and 503 (`gateway.retry_statuses`), and a 200 whose body fails or ends
+  before its first byte;
+- not retried: any 2xx/3xx/4xx, a 500 or 504 (unless listed), a timeout before headers, a stalled stream, an
+  any status outside 200-599 (a gateway 502), a 3xx (also a gateway 502), and anything after the first byte (the stream ends with an error event);
+- if no second worker is selectable, or the budget is spent, the last worker's own response is relayed.
+
+Response headers are held until the first body byte arrives (streams and plain responses alike). Each attempt gets its own `attempt_id`
+(sent to the worker as `X-Attempt-ID`, with the shared `X-Request-ID`), one `attempt finished` log line
+(debug when it succeeded, info otherwise), and counts in `inference_attempts_total` and
+`inference_retries_total`. A client sees `X-ServerFlow-Attempts: N` only when N is greater than 1.
+
+Two behaviours to know about when reading distribution numbers: a retry takes a turn in the rotation, and a
+worker that fails instantly can look idle to `least-active` and `least-queue` (see ADR-012 and
+`docs/benchmarks/phase-6-distribution.md`).
 
 ## What the gateway will and will not connect to
 
@@ -98,6 +120,8 @@ API response.
 | `gateway.registry_refresh` | `1s` | poll interval |
 | `gateway.registry_max_staleness` | `10s` | oldest snapshot still trusted; at least twice the refresh |
 | `gateway.worker_networks` | empty | optional CIDR allow-list for worker addresses |
+| `gateway.max_attempts` | `2` | tries per request, 1 to 5 (1 disables retries; each extra attempt multiplies load during an outage, so keep it low) |
+| `gateway.retry_statuses` | `[502, 503]` | worker statuses that may be retried on another worker (5xx only, at most 10) |
 | `scheduler.strategy` | `round-robin` | random, round-robin, least-active, least-queue |
 | `worker.suspect_timeout` | `5s` | the gateway shares this with the control plane |
 
