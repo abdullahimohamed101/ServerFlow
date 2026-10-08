@@ -865,3 +865,47 @@ func TestReleaseIsIdempotentAndOnlyReleasesItsOwnSlot(t *testing.T) {
 		t.Fatalf("%d", got)
 	}
 }
+
+func TestAStatus599IsRelayedAndAnEmpty2xxIsNotHeld(t *testing.T) {
+	for _, code := range []int{599, 201, 204} {
+		bad := newScriptWorker(t, "a-first", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code) })
+		good := newScriptWorker(t, "b-good", okJSON("b-good"))
+		e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{bad.snapshot("qwen-7b"), good.snapshot("qwen-7b")})
+		resp, _ := e.post(t, false)
+		if resp.StatusCode != code || good.hits.Load() != 0 {
+			t.Fatalf("%d is a final answer, relayed as is: got %d (good hits %d)", code, resp.StatusCode, good.hits.Load())
+		}
+	}
+}
+
+func TestARelayedClientErrorCountsAsAnOKAttempt(t *testing.T) {
+	w := newScriptWorker(t, "only", status(429, `{"error":{"message":"slow down"}}`))
+	e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{w.snapshot("qwen-7b")})
+	if resp, _ := e.post(t, false); resp.StatusCode != 429 {
+		t.Fatal(resp.StatusCode)
+	}
+	_, metrics := e.get(t, "/metrics")
+	if !strings.Contains(metrics, `inference_attempts_total{model="qwen-7b",outcome="ok"} 1`) {
+		t.Fatalf("attempt outcomes describe the gateway's work (ADR-012):\n%s", metrics)
+	}
+	if strings.Contains(metrics, `outcome="failed"`) {
+		t.Fatal("a relayed 4xx is not a failed attempt")
+	}
+}
+
+func TestEarlyFailureLogsNameTheAttemptTheyBelongTo(t *testing.T) {
+	e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{refusing(t, "gone")})
+	e.post(t, false)
+	var failed, finished string
+	for _, l := range e.logs.logLines(t) {
+		switch l["msg"] {
+		case "worker request failed":
+			failed, _ = l["attempt_id"].(string)
+		case "attempt finished":
+			finished, _ = l["attempt_id"].(string)
+		}
+	}
+	if !strings.HasPrefix(failed, "att_") || failed != finished {
+		t.Fatalf("the failure log must carry the attempt's own ID: %q vs %q", failed, finished)
+	}
+}
