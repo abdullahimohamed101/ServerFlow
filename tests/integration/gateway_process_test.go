@@ -213,3 +213,97 @@ func TestProcessGatewayStopsUsingAWorkerWhoseAgentIsKilled(t *testing.T) {
 		}
 	}
 }
+
+func gatewayPost(t *testing.T, gwAddr string) (*http.Response, string) {
+	t.Helper()
+	resp, err := http.Post("http://"+gwAddr+"/v1/chat/completions", "application/json", strings.NewReader(chat(false, "hello")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+// With two attempts, a request only has a guarantee while at most one worker is bad, so each scenario
+// below has exactly one.
+
+func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
+	cpAddr := freePort(t)
+	startControlPlaneProc(t, cpAddr, clusterToken)
+	flakyAddr, good1, good2 := freePort(t), freePort(t), freePort(t)
+	startMockProc(t, flakyAddr, "--failure-rate=1", "--failure-mode=unavailable")
+	startMockProc(t, good1)
+	startMockProc(t, good2)
+	startAgentProc(t, cpAddr, clusterToken, "w1", flakyAddr)
+	startAgentProc(t, cpAddr, clusterToken, "w2", good1)
+	startAgentProc(t, cpAddr, clusterToken, "w3", good2)
+	gwAddr := freePort(t)
+	gw := startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
+	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
+		return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
+	})
+	waitFor(t, 10*time.Second, "the gateway sees all three", func() bool {
+		a, b := completed(t, good1), completed(t, good2)
+		for i := 0; i < 6; i++ {
+			gatewayChat(gwAddr)
+		}
+		return completed(t, good1) > a && completed(t, good2) > b
+	})
+
+	var retried int
+	for i := 0; i < 90; i++ {
+		resp, body := gatewayPost(t, gwAddr)
+		if resp.StatusCode != 200 {
+			t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
+		}
+		if resp.Header.Get("X-ServerFlow-Attempts") == "2" {
+			retried++
+		}
+	}
+	// A retry also takes a turn in the rotation, so the worker after the flaky one is picked twice as often and
+	// the flaky one is first choice for up to half of the requests (docs/decisions/ADR-012).
+	if retried < 25 || retried > 55 {
+		t.Fatalf("expected roughly a third to a half of the 90 requests to hit the flaky worker first: %d were retried", retried)
+	}
+	if !strings.Contains(gw.stderr.String(), `"outcome":"retried"`) || !strings.Contains(gw.stderr.String(), `"class":"status_503"`) {
+		t.Fatal("the retried attempts must be on record in the gateway log")
+	}
+	if strings.Contains(gw.stderr.String(), clusterToken) {
+		t.Fatal("the token leaked into the log")
+	}
+}
+
+func TestProcessGatewayRetriesAroundABackendKilledMidRun(t *testing.T) {
+	cpAddr := freePort(t)
+	startControlPlaneProc(t, cpAddr, clusterToken)
+	a1, a2, a3 := freePort(t), freePort(t), freePort(t)
+	startMockProc(t, a1)
+	victim := startMockProc(t, a2)
+	startMockProc(t, a3)
+	startAgentProc(t, cpAddr, clusterToken, "w1", a1)
+	startAgentProc(t, cpAddr, clusterToken, "w2", a2)
+	startAgentProc(t, cpAddr, clusterToken, "w3", a3)
+	gwAddr := freePort(t)
+	gw := startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
+	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
+		return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
+	})
+	waitFor(t, 10*time.Second, "all three receive traffic", func() bool {
+		c1, c2, c3 := completed(t, a1), completed(t, a2), completed(t, a3)
+		for i := 0; i < 6; i++ {
+			gatewayChat(gwAddr)
+		}
+		return completed(t, a1) > c1 && completed(t, a2) > c2 && completed(t, a3) > c3
+	})
+
+	victim.kill9()
+	for i := 0; i < 90; i++ {
+		if resp, body := gatewayPost(t, gwAddr); resp.StatusCode != 200 {
+			t.Fatalf("request %d after the kill: %d %s", i, resp.StatusCode, body)
+		}
+	}
+	if !strings.Contains(gw.stderr.String(), `"class":"connect"`) {
+		t.Fatal("the connection failures that were retried must be on record")
+	}
+}

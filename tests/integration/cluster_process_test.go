@@ -156,8 +156,9 @@ func startControlPlaneProc(t *testing.T, cpAddr, token string) *proc {
 	return startProc(t, "control-plane", "control-plane starting", clusterEnv(cpAddr, token))
 }
 
-func startMockProc(t *testing.T, addr string) *proc {
-	return startProc(t, "mock-worker", "mock-worker starting", nil, "--addr="+addr, "--model="+model, "--ttft=10ms", "--tokens-per-second=1000", "--output-tokens=8", "--seed=1")
+func startMockProc(t *testing.T, addr string, extra ...string) *proc {
+	args := append([]string{"--addr=" + addr, "--model=" + model, "--ttft=10ms", "--tokens-per-second=1000", "--output-tokens=8", "--seed=1"}, extra...)
+	return startProc(t, "mock-worker", "mock-worker starting", nil, args...)
 }
 
 func startAgentProc(t *testing.T, cpAddr, token, id, mockAddr string) *proc {
