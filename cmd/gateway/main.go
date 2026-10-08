@@ -43,10 +43,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
-		"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models)
+	var srv *gateway.Server
+	if cfg.Gateway.WorkerSource == config.WorkerSourceRegistry {
+		if srv, err = gateway.NewRegistry(cfg, logger); err != nil {
+			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+			os.Exit(1)
+		}
+		// The token itself is never logged.
+		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
+			"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
+			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(), "auth", cfg.ControlPlane.Token != "")
+	} else {
+		srv = gateway.New(cfg.Gateway, logger)
+		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
+			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models)
+	}
 
-	if err := gateway.New(cfg.Gateway, logger).Serve(ctx, ln); err != nil {
+	if err := srv.Serve(ctx, ln); err != nil {
 		logger.Error("gateway stopped with error", "component", "gateway", "error", err)
 		os.Exit(1)
 	}

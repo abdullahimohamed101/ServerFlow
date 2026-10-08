@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -35,9 +36,18 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, `{"status":"ready"}`)
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	models := s.cfg.Models
+	if s.router != nil {
+		var ok bool
+		if models, ok = s.router.cache.Models(); !ok {
+			infoFrom(r.Context()).errCode = api.CodeWorkerUnavailable
+			api.WriteError(w, api.ErrWorkerUnavailable())
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(api.ModelsBody(s.cfg.Models))
+	_, _ = w.Write(api.ModelsBody(models))
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +78,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ireq, err := api.ParseChatRequest(body, api.Limits{Models: s.cfg.Models, MaxTokensLimit: s.cfg.MaxTokensLimit})
+	ireq, err := api.ParseChatRequest(body, api.Limits{Models: s.cfg.Models, MaxTokensLimit: s.cfg.MaxTokensLimit, AnyModel: s.router != nil})
 	if err != nil {
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) {
@@ -77,7 +87,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, info, apiErr)
 		return
 	}
-	info.model = ireq.Model
+	if s.router == nil {
+		info.model = ireq.Model // already checked against the configured list
+	}
 	info.stream = ireq.Stream
 	ireq.RequestID = info.id
 
@@ -85,8 +97,41 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// client's own context, which is how the two failures are told apart.
 	upCtx, cancelUp := context.WithCancel(r.Context())
 	defer cancelUp()
-	resp, err := s.upstream.Do(upCtx, chatCompletionsPath, body, info.id)
+	up := s.upstream
+	var workerID string
+	if s.router != nil {
+		target, apiErr := s.router.Route(r.Context(), ireq)
+		// info.model becomes a metrics label, so only a model the registry
+		// confirmed exists may be recorded; arbitrary client text must not.
+		if apiErr == nil || apiErr.Code == api.CodeNoCapacity {
+			info.model = ireq.Model
+		}
+		if apiErr != nil {
+			if r.Context().Err() != nil {
+				info.clientClosed = true // the client left while we were choosing
+				return
+			}
+			// Unknown models are client typos or probes, which a client could use to
+			// fill the log, so they stay at debug.
+			level := slog.LevelInfo
+			if apiErr.Code == api.CodeModelNotFound {
+				level = slog.LevelDebug
+			}
+			s.log.Log(r.Context(), level, "no worker selected", "request_id", info.id, "attempt_id", info.attemptID,
+				"strategy", s.router.strategy, "error_code", apiErr.Code)
+			s.fail(w, info, apiErr)
+			return
+		}
+		defer target.release()
+		up, workerID = target.up, target.worker.WorkerID
+		s.log.Debug("worker selected", "request_id", info.id, "attempt_id", info.attemptID, "strategy", s.router.strategy,
+			"worker_id", target.worker.WorkerID, "model", ireq.Model)
+	}
+	resp, err := up.Do(upCtx, chatCompletionsPath, body, info.id)
 	if err != nil {
+		if s.router != nil && r.Context().Err() == nil {
+			s.log.Warn("worker request failed", "request_id", info.id, "attempt_id", info.attemptID, "worker_id", workerID, "error", errText(err))
+		}
 		if r.Context().Err() != nil {
 			info.clientClosed = true
 			return
@@ -111,6 +156,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Upstream error responses received before streaming starts are passed
 	// through (they are already OpenAI-shaped); see ADR-003.
 	copyResponseHeaders(w.Header(), resp.Header)
+	if s.router != nil {
+		// The Content-Type now comes from a registered worker, not from the operator.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
 	isSSE := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isSSE {
 		w.Header().Set("Cache-Control", "no-cache")

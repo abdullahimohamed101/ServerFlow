@@ -10,9 +10,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"serverflow/internal/config"
+	"serverflow/internal/registry/client"
+	"serverflow/internal/scheduler"
 )
 
 // defaultBodyReadTimeout bounds reading a request body (slow-client defense).
@@ -29,9 +32,13 @@ type Server struct {
 	cfg      config.GatewayConfig
 	log      *slog.Logger
 	upstream Upstream
-	ready    *readiness
-	metrics  *metrics
-	handler  http.Handler
+	// router is set in registry mode; it replaces upstream for chat requests.
+	router *router
+	// background, when set, runs for the life of Serve (the snapshot refresher).
+	background func(ctx context.Context)
+	ready      *readiness
+	metrics    *metrics
+	handler    http.Handler
 	// bodyReadTimeout bounds how long a client may take to send its request body.
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
@@ -79,6 +86,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
+	if s.router != nil {
+		s.router.policy.SetSelf(ln.Addr()) // a worker must not be able to loop requests back through us
+	}
+	if s.background != nil {
+		bctx, stopBackground := context.WithCancel(ctx)
+		defer stopBackground()
+		go s.background(bctx)
+	}
 
 	select {
 	case err := <-errc:
@@ -97,4 +112,47 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+// NewRegistry builds a Server in registry mode: requests go to the worker the
+// configured scheduler picks from the control plane's registry, which the
+// server polls in the background while it serves. It fails when the scheduler
+// strategy or worker networks are unusable.
+func NewRegistry(cfg config.Config, log *slog.Logger) (*Server, error) {
+	if len(cfg.Gateway.WorkerNetworks) == 0 {
+		// Registration is the trust boundary: any worker that may register can name an
+		// internal address (loopback and private ranges are allowed by default).
+		level := slog.LevelInfo
+		if u, err := url.Parse(cfg.Gateway.ControlPlaneURL); err == nil && !config.IsLoopbackHost(u.Hostname()) {
+			level = slog.LevelWarn
+		}
+		log.Log(context.Background(), level, "gateway.worker_networks is empty: workers may name any loopback or private address; set it to the networks your workers live on",
+			"component", "gateway")
+	}
+	cp := client.New(cfg.Gateway.ControlPlaneURL, cfg.ControlPlane.Token, nil)
+	return newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+}
+
+func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter time.Duration, src workerLister, log *slog.Logger) (*Server, error) {
+	sched, err := scheduler.New(strategy)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := NewAddressPolicy(g.WorkerNetworks)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{
+		Transport: newWorkerTransport(policy, g.UpstreamHeaderTimeout),
+		// No Client.Timeout (it would cut streams), and redirects are never
+		// followed: they would replay the prompt to a host nobody chose.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	cache := newSnapshotCache(src, g.RegistryRefresh, g.RegistryMaxStaleness, suspectAfter, log.With("component", "gateway"))
+	rt := newRouter(cache, policy, sched, strategy, httpClient, log)
+	s := newWithUpstream(g, log, newHTTPUpstream(g.UpstreamURL, g.ReadinessPath, g.UpstreamHeaderTimeout))
+	s.router = rt
+	s.ready = &readiness{upstream: rt}
+	s.background = cache.Run
+	return s, nil
 }
