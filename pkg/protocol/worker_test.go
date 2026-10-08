@@ -3,6 +3,7 @@ package protocol
 import (
 	"fmt"
 	"math"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -361,6 +362,48 @@ func TestAddressPolicyCannotBeBypassedByAlternativeSpellings(t *testing.T) {
 	} {
 		if err := ValidateAddress(good); err != nil {
 			t.Errorf("%s must be accepted: %q: %v", name, good, err)
+		}
+	}
+}
+
+func TestForbiddenAddrCoversMetadataEndpointsAndWrappedForms(t *testing.T) {
+	for _, bad := range []string{
+		"169.254.169.254", "168.63.129.16", "100.100.100.200", "fd00:ec2::254",
+		"64:ff9b::a9fe:a9fe",   // NAT64 wrapping 169.254.169.254
+		"64:ff9b::0.0.0.0",     // NAT64 wrapping the unspecified address
+		"2002:a9fe:a9fe::1",    // 6to4 wrapping 169.254.169.254
+		"2002:0000:0000::1",    // 6to4 wrapping 0.0.0.0
+		"::ffff:168.63.129.16", // IPv4-mapped
+		"64:ff9b::ffff:ffff",   // NAT64 wrapping broadcast
+	} {
+		if !ForbiddenAddr(netip.MustParseAddr(bad)) {
+			t.Errorf("%s must be forbidden", bad)
+		}
+	}
+	for _, ok := range []string{
+		"10.0.0.5", "127.0.0.1", "192.0.2.10", "100.100.100.201", "168.63.129.17", "fd00:ec2::255",
+		"64:ff9b::c000:204", // NAT64 wrapping 192.0.2.4
+		"2002:c000:0204::1", // 6to4 wrapping 192.0.2.4
+		"2001:db8::1",
+	} {
+		if ForbiddenAddr(netip.MustParseAddr(ok)) {
+			t.Errorf("%s must be allowed", ok)
+		}
+	}
+}
+
+func TestForbiddenAddrZonesAndMoreIPv6Spellings(t *testing.T) {
+	for _, bad := range []string{
+		"fd00:ec2::254%lo0", "fe80::1%eth0", "::169.254.169.254", "::0.0.0.0", "::ffff:0:169.254.169.254",
+		"::ffff:0:0.0.0.0", "64:ff9b:1::1", "64:ff9b:1:ffff::1", "168.63.129.16",
+	} {
+		if !ForbiddenAddr(netip.MustParseAddr(bad)) {
+			t.Errorf("%s must be forbidden", bad)
+		}
+	}
+	for _, ok := range []string{"::1", "::10.0.0.5", "::ffff:0:10.0.0.5", "2001:db8::1", "fd00:ec2::253"} {
+		if ForbiddenAddr(netip.MustParseAddr(ok)) {
+			t.Errorf("%s must be allowed", ok)
 		}
 	}
 }

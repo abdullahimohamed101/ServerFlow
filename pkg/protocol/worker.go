@@ -238,11 +238,60 @@ func validateHost(host string) error {
 }
 
 func checkRoutable(a netip.Addr) error {
-	if a.IsUnspecified() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsMulticast() ||
-		a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) || (a.Is4() && a.As4()[0] == 0) {
+	if ForbiddenAddr(a) {
 		return fmt.Errorf("address host must be a routable address, not unspecified, link-local, multicast, or broadcast")
 	}
 	return nil
+}
+
+// metadataAddrs are cloud instance-metadata endpoints outside the link-local
+// block: Azure's wire server, Alibaba's metadata service, and AWS's IPv6 one.
+var metadataAddrs = map[netip.Addr]bool{
+	netip.AddrFrom4([4]byte{168, 63, 129, 16}):   true,
+	netip.AddrFrom4([4]byte{100, 100, 100, 200}): true,
+	netip.MustParseAddr("fd00:ec2::254"):         true,
+}
+
+// ForbiddenAddr reports whether a is never a valid place to send inference
+// traffic: unspecified, link-local (which includes the cloud metadata address
+// 169.254.169.254), multicast, broadcast, the IPv4 "this network" block, or a
+// well-known cloud metadata endpoint. An IPv4-mapped IPv6 address, and an
+// address that embeds an IPv4 one through NAT64 (64:ff9b::/96) or 6to4
+// (2002::/16), is judged as the IPv4 address it wraps.
+func ForbiddenAddr(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	if a.IsUnspecified() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsInterfaceLocalMulticast() ||
+		a.IsMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) || (a.Is4() && a.As4()[0] == 0) ||
+		metadataAddrs[a] {
+		return true
+	}
+	if a.Is6() {
+		b := a.As16()
+		switch {
+		case b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && allZero(b[4:12]):
+			return ForbiddenAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		case b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && b[4] == 0x00 && b[5] == 0x01:
+			return true // 64:ff9b:1::/48, local-use NAT64: the embedded address sits at a variable offset
+		case b[0] == 0x20 && b[1] == 0x02:
+			return ForbiddenAddr(netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}))
+		case allZero(b[:12]) && !a.IsLoopback():
+			// ::a.b.c.d, the deprecated IPv4-compatible form
+			return ForbiddenAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		case allZero(b[:8]) && b[8] == 0xff && b[9] == 0xff && allZero(b[10:12]):
+			// ::ffff:0:a.b.c.d, SIIT
+			return ForbiddenAddr(netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		}
+	}
+	return false
+}
+
+func allZero(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Metrics is a worker's load as reported in a heartbeat (spec section 10).
