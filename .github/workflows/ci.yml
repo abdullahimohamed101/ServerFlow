@@ -11,6 +11,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A real PostgreSQL for the database tests. The tests create and drop their own databases.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +47,18 @@ jobs:
 
       - name: Race
         run: go test -race ./...
+
+      # The database tests skip when no server is configured. In CI that would be a silent
+      # green, so run them verbosely and fail if any of them skipped or none ran.
+      - name: PostgreSQL tests must run, not skip
+        run: |
+          go test -count=1 -v ./internal/postgres/... ./internal/auth/... ./cmd/admin/... ./tests/integration/... > postgres-tests.log 2>&1 || { tail -50 postgres-tests.log; exit 1; }
+          if grep -q "SERVERFLOW_TEST_POSTGRES_DSN is not set" postgres-tests.log; then
+            echo "PostgreSQL tests were skipped"; exit 1
+          fi
+          for t in TestMigrateUpCreatesSchemaAndIsIdempotent TestFullWorkflowAndKeyShownOnce TestProcessAuthEndToEnd TestGatewayWithRealPostgresHotPathAndFloods; do
+            grep -q -- "--- PASS: $t " postgres-tests.log || { echo "expected $t to run and pass"; exit 1; }
+          done
 
       - name: Build
         run: go build ./...
