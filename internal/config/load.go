@@ -90,6 +90,27 @@ func applyEnv(cfg *Config) {
 			cfg.Gateway.ShutdownTimeout = d
 		}
 	}
+	for key, dst := range map[string]*string{
+		"GATEWAY_WORKER_SOURCE":     &cfg.Gateway.WorkerSource,
+		"GATEWAY_CONTROL_PLANE_URL": &cfg.Gateway.ControlPlaneURL,
+	} {
+		if v, ok := env(key); ok {
+			*dst = v
+		}
+	}
+	for key, dst := range map[string]*time.Duration{
+		"GATEWAY_REGISTRY_REFRESH":       &cfg.Gateway.RegistryRefresh,
+		"GATEWAY_REGISTRY_MAX_STALENESS": &cfg.Gateway.RegistryMaxStaleness,
+	} {
+		if v, ok := env(key); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
+		}
+	}
+	if v, ok := env("GATEWAY_WORKER_NETWORKS"); ok {
+		cfg.Gateway.WorkerNetworks = splitList(v)
+	}
 	if v, ok := env("SCHEDULER_STRATEGY"); ok {
 		cfg.Scheduler.Strategy = v
 	}

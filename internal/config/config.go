@@ -8,10 +8,13 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
+	"serverflow/internal/scheduler"
 	"serverflow/pkg/protocol"
 )
 
@@ -53,7 +56,29 @@ type GatewayConfig struct {
 	UpstreamHeaderTimeout time.Duration `yaml:"upstream_header_timeout"`
 	UpstreamIdleTimeout   time.Duration `yaml:"upstream_idle_timeout"`
 	ShutdownTimeout       time.Duration `yaml:"shutdown_timeout"`
+
+	// WorkerSource chooses where requests go: "static" forwards everything to
+	// UpstreamURL (Phases 2-3); "registry" asks the scheduler to pick a worker
+	// from the control plane's registry (Phase 5).
+	WorkerSource string `yaml:"worker_source"`
+	// ControlPlaneURL, RegistryRefresh and RegistryMaxStaleness apply to the
+	// registry source. The gateway polls the control plane every RegistryRefresh
+	// and trusts its last answer for at most RegistryMaxStaleness, then fails
+	// closed. The control plane token is control_plane.token.
+	ControlPlaneURL      string        `yaml:"control_plane_url"`
+	RegistryRefresh      time.Duration `yaml:"registry_refresh"`
+	RegistryMaxStaleness time.Duration `yaml:"registry_max_staleness"`
+	// WorkerNetworks optionally restricts the addresses the gateway will dial to
+	// these CIDRs. Empty allows any address that is not forbidden outright
+	// (unspecified, link-local, multicast, broadcast).
+	WorkerNetworks []string `yaml:"worker_networks"`
 }
+
+// Worker sources.
+const (
+	WorkerSourceStatic   = "static"
+	WorkerSourceRegistry = "registry"
+)
 
 // SchedulerConfig configures the request scheduling strategy. Strategy
 // names the scheduling algorithm to use.
@@ -132,9 +157,13 @@ func Default() Config {
 			UpstreamHeaderTimeout: 60 * time.Second,
 			UpstreamIdleTimeout:   120 * time.Second,
 			ShutdownTimeout:       30 * time.Second,
+			WorkerSource:          WorkerSourceStatic,
+			ControlPlaneURL:       "http://127.0.0.1:9090",
+			RegistryRefresh:       time.Second,
+			RegistryMaxStaleness:  10 * time.Second,
 		},
 		Scheduler: SchedulerConfig{
-			Strategy: "least-work",
+			Strategy: "round-robin",
 		},
 		Worker: WorkerConfig{
 			HeartbeatInterval: 2 * time.Second,
@@ -177,6 +206,9 @@ func (c *Config) Validate() error {
 	case "random", "round-robin", "least-active", "least-queue", "least-work":
 	default:
 		return fmt.Errorf("scheduler.strategy %q is not supported", c.Scheduler.Strategy)
+	}
+	if err := c.validateWorkerSource(); err != nil {
+		return err
 	}
 	if err := c.Worker.validate(); err != nil {
 		return err
@@ -256,6 +288,12 @@ const minHeartbeatInterval = 10 * time.Millisecond
 
 const minTokenLen = 16
 
+// Bounds on how often the gateway polls the registry and how long it trusts the answer.
+const (
+	minRegistryRefresh   = 10 * time.Millisecond
+	maxRegistryStaleness = 5 * time.Minute
+)
+
 func (c *ControlPlaneConfig) validate() error {
 	if _, _, err := net.SplitHostPort(c.Addr); err != nil {
 		return fmt.Errorf("control_plane.addr must be host:port")
@@ -283,6 +321,9 @@ func (c *ControlPlaneConfig) ValidateServe() error {
 	}
 	return nil
 }
+
+// IsLoopbackHost reports whether host names this machine (localhost or a loopback IP).
+func IsLoopbackHost(host string) bool { return isLoopbackHost(host) }
 
 func isLoopbackHost(host string) bool {
 	if host == "localhost" {
@@ -333,6 +374,58 @@ func (g *GatewayConfig) validate() error {
 		return fmt.Errorf("gateway.shutdown_timeout must be > 0")
 	}
 	return nil
+}
+
+// validateWorkerSource checks gateway.worker_source and, for the registry
+// source, everything it needs. Error messages never echo URLs, which could
+// carry credentials.
+func (c *Config) validateWorkerSource() error {
+	g := &c.Gateway
+	switch g.WorkerSource {
+	case WorkerSourceStatic:
+		return nil
+	case WorkerSourceRegistry:
+	default:
+		return fmt.Errorf("gateway.worker_source must be %q or %q, got %q", WorkerSourceStatic, WorkerSourceRegistry, g.WorkerSource)
+	}
+	if !slices.Contains(scheduler.Strategies(), c.Scheduler.Strategy) {
+		return fmt.Errorf("scheduler.strategy %q is not implemented yet; use one of %s", c.Scheduler.Strategy, strings.Join(scheduler.Strategies(), ", "))
+	}
+	if err := protocol.ValidateAddress(g.ControlPlaneURL); err != nil {
+		return fmt.Errorf("gateway.control_plane_url: %v", err)
+	}
+	if u, err := url.Parse(g.ControlPlaneURL); err == nil && c.ControlPlane.Token != "" && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("gateway.control_plane_url must use https (or a loopback address) when control_plane.token is set, or the token would cross the network in cleartext")
+	}
+	if g.RegistryRefresh < minRegistryRefresh {
+		return fmt.Errorf("gateway.registry_refresh must be at least %v, or the gateway would hammer the control plane", minRegistryRefresh)
+	}
+	if g.RegistryMaxStaleness > maxRegistryStaleness {
+		return fmt.Errorf("gateway.registry_max_staleness must be at most %v: a view that old is not worth trusting", maxRegistryStaleness)
+	}
+	if g.RegistryMaxStaleness < 2*g.RegistryRefresh {
+		return fmt.Errorf("gateway.registry_max_staleness must be at least twice gateway.registry_refresh, or one slow refresh would fail every request")
+	}
+	if c.Worker.SuspectTimeout < g.RegistryRefresh+c.Worker.HeartbeatInterval {
+		return fmt.Errorf("worker.suspect_timeout (%v) must be at least gateway.registry_refresh plus worker.heartbeat_interval (%v), or the gateway would see every worker as suspect between refreshes",
+			c.Worker.SuspectTimeout, g.RegistryRefresh+c.Worker.HeartbeatInterval)
+	}
+	if c.ControlPlane.Token != "" && len(c.ControlPlane.Token) < minTokenLen {
+		return fmt.Errorf("control_plane.token must be at least %d characters", minTokenLen)
+	}
+	for _, n := range g.WorkerNetworks {
+		if _, err := netip.ParsePrefix(n); err != nil {
+			return fmt.Errorf("gateway.worker_networks: %q is not a CIDR such as 10.0.0.0/8", truncateForError(n))
+		}
+	}
+	return nil
+}
+
+func truncateForError(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "..."
+	}
+	return s
 }
 
 // ConfigFilePath returns the path supplied via -config, or "" if none.
