@@ -245,3 +245,24 @@ the harness gets a Postgres-backed `benchmark_runs` writer in a follow-up after 
    `prepare-pr`, and stop for approval.
 
 Steps 1 and 2 can proceed independently; 3–6 build on them.
+
+## Implementation Notes (deviations and additions)
+
+- **pgx v5.8.0, not the newest.** v5.9 to v5.11 require Go 1.25; v5.8.0 is the last release that builds
+  under the repository's `go 1.24.0` (and `go.work`). Raising the floor is a separate decision.
+- **Config validation of the TLS rule is not part of `Validate()`.** The placeholder default DSN
+  (`sslmode=disable` to host `postgres`) would otherwise fail every binary. `ValidatePostgresTransport()`
+  runs where the database is used: `cmd/admin` and `cmd/gateway` in `required` mode.
+- **Additions beyond the plan:** `Connection: close` on authentication rejections (found by a test:
+  net/http drains an unread body before replying, so a stalled upload held the 401); a one-second
+  backoff after a failed key lookup; separate bounded positive and negative caches; the
+  `auth_rejections_total{status}` counter; `PostgresConfig` redacts its DSN under every formatting path;
+  `postgrestest` (a throwaway database per test, refusing non-loopback servers).
+- **Small touch to attempt logging:** `internal/gateway/attempt.go` log lines gained `tenant_id` and
+  `api_key_id` attributes (log attributes only; retry logic untouched).
+- **`InferenceRequest.Priority`** is set from the tenant's priority alongside `TenantID`; nothing reads it yet.
+- **Not done:** the plan's "differential check against master" is covered by the unchanged Phase 2-6
+  test suites passing with auth off, not by a side-by-side run. `last_used_at` writes are best effort.
+- **Known limits:** a flood of distinct well-formed random keys costs one indexed lookup each (bounded
+  by the pool and lookup timeout); rate limiting that is Phase 8. `sslmode=allow|prefer` are not
+  rejected by the transport rule.
