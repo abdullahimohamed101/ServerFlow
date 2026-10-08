@@ -108,6 +108,26 @@ func applyEnv(cfg *Config) {
 			}
 		}
 	}
+	if v, ok := env("GATEWAY_MAX_ATTEMPTS"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Gateway.MaxAttempts = n
+		}
+	}
+	if v, ok := env("GATEWAY_RETRY_STATUSES"); ok {
+		var list []int
+		valid := true
+		for _, part := range splitList(v) {
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				valid = false
+				break
+			}
+			list = append(list, n)
+		}
+		if valid {
+			cfg.Gateway.RetryStatuses = list
+		}
+	}
 	if v, ok := env("GATEWAY_WORKER_NETWORKS"); ok {
 		cfg.Gateway.WorkerNetworks = splitList(v)
 	}

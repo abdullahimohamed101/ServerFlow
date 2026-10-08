@@ -547,6 +547,23 @@ func TestValidateRegistrySource(t *testing.T) {
 			c.Gateway.RegistryRefresh, c.Gateway.RegistryMaxStaleness = 3*time.Second, 10*time.Second
 			c.Worker.SuspectTimeout = c.Gateway.RegistryRefresh + c.Worker.HeartbeatInterval
 		}, ""},
+		{"zero attempts", func(c *Config) { c.Gateway.MaxAttempts = 0 }, "max_attempts"},
+		{"one attempt disables retries", func(c *Config) { c.Gateway.MaxAttempts = 1 }, ""},
+		{"five attempts", func(c *Config) { c.Gateway.MaxAttempts = 5 }, ""},
+		{"six attempts", func(c *Config) { c.Gateway.MaxAttempts = 6 }, "max_attempts"},
+		{"empty retry list", func(c *Config) { c.Gateway.RetryStatuses = nil }, ""},
+		{"a 500 may be listed", func(c *Config) { c.Gateway.RetryStatuses = []int{500, 503} }, ""},
+		{"a 4xx cannot be listed", func(c *Config) { c.Gateway.RetryStatuses = []int{429} }, "5xx"},
+		{"a 599 may be listed", func(c *Config) { c.Gateway.RetryStatuses = []int{599} }, ""},
+		{"a 600 cannot be listed", func(c *Config) { c.Gateway.RetryStatuses = []int{600} }, "5xx"},
+		{"a 499 cannot be listed", func(c *Config) { c.Gateway.RetryStatuses = []int{499} }, "5xx"},
+		{"duplicate status", func(c *Config) { c.Gateway.RetryStatuses = []int{503, 503} }, "twice"},
+		{"too many statuses", func(c *Config) {
+			c.Gateway.RetryStatuses = []int{500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510}
+		}, "at most 10"},
+		{"ten statuses", func(c *Config) {
+			c.Gateway.RetryStatuses = []int{500, 501, 502, 503, 504, 505, 506, 507, 508, 509}
+		}, ""},
 		{"good cidrs", func(c *Config) { c.Gateway.WorkerNetworks = []string{"10.0.0.0/8", "fd00::/8"} }, ""},
 		{"bad cidr", func(c *Config) { c.Gateway.WorkerNetworks = []string{"10.0.0.0"} }, "not a CIDR"},
 	}
@@ -626,5 +643,52 @@ func TestTruncateForErrorBoundsWhatIsEchoed(t *testing.T) {
 	}
 	if got := truncateForError(strings.Repeat("a", 65)); len(got) != 67 || !strings.HasSuffix(got, "...") {
 		t.Fatalf("longer text is cut: %q", got)
+	}
+}
+
+func TestRetryDefaultsFollowTheSpec(t *testing.T) {
+	g := Default().Gateway
+	if g.MaxAttempts != 2 || len(g.RetryStatuses) != 2 || g.RetryStatuses[0] != 502 || g.RetryStatuses[1] != 503 {
+		t.Fatalf("spec section 25 says two attempts; the default statuses are 502 and 503 (a worker-reported 504 means its backend already timed out; ADR-012): %+v", g)
+	}
+}
+
+func TestStaticSourceIgnoresRetrySettings(t *testing.T) {
+	cfg := Default()
+	cfg.Gateway.MaxAttempts, cfg.Gateway.RetryStatuses = 99, []int{200}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("static mode must not validate retry settings: %v", err)
+	}
+}
+
+func TestLoadRetrySettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(path, []byte("gateway:\n  worker_source: registry\n  max_attempts: 3\n  retry_statuses: [503, 504]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.MaxAttempts != 3 || len(cfg.Gateway.RetryStatuses) != 2 || cfg.Gateway.RetryStatuses[0] != 503 {
+		t.Fatalf("got %+v", cfg.Gateway)
+	}
+	t.Setenv("SERVERFLOW_GATEWAY_MAX_ATTEMPTS", "4")
+	t.Setenv("SERVERFLOW_GATEWAY_RETRY_STATUSES", "503, 504")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.MaxAttempts != 4 || len(cfg.Gateway.RetryStatuses) != 2 || cfg.Gateway.RetryStatuses[0] != 503 || cfg.Gateway.RetryStatuses[1] != 504 {
+		t.Fatalf("env overrides: %+v", cfg.Gateway)
+	}
+	t.Setenv("SERVERFLOW_GATEWAY_MAX_ATTEMPTS", "many")
+	t.Setenv("SERVERFLOW_GATEWAY_RETRY_STATUSES", "502,abc")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.MaxAttempts != 2 || len(cfg.Gateway.RetryStatuses) != 2 {
+		t.Fatalf("invalid values are ignored (documented): %+v", cfg.Gateway)
 	}
 }
