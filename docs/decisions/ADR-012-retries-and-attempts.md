@@ -62,6 +62,11 @@ mode (one upstream) keeps its single try.
   IDs and addresses are never exposed to clients.
 - **Metrics.** `inference_attempts_total{model,outcome}` and `inference_retries_total{model,reason}`, with
   fixed value sets and a registry-confirmed model label only.
+- **A slot is held while waiting for the first byte.** An attempt reserves its worker slot before sending, so
+  requests stalled before their first byte occupy slots until the idle timeout cuts them (120 s by default).
+  Enough slow requests can saturate a worker, exactly as with any slow stream; they are not retried (see
+  timeouts above). Worst case, one attempt can take the header timeout plus the idle timeout, and the budget is
+  attempts, not time.
 - **Slots per attempt.** Each attempt reserves and releases its own slot through the router, so the
   in-flight overlay stays exact. A failure is remembered for that request only, never gateway-wide.
 - **A client that leaves stops everything:** no further attempt starts and the request is client-closed.
@@ -88,8 +93,8 @@ mode (one upstream) keeps its single try.
     worker after the failing one gets its own turn and the retry, and the failing worker is first choice
     for more than its share (a third to a half of requests with one flaky worker of three or four).
   - *A fast-failing worker looks idle.* It reports no active requests, so `least-active` and
-    `least-queue` can prefer it: in the acceptance run one always-503 worker received 613 of 1000 first
-    attempts under `least-active`, against about 220 under the other strategies. Retries kept every
+    `least-queue` can prefer it: in the acceptance runs one always-503 worker received 613 and 732 of the 750
+    `qwen-7b` first attempts under `least-active`, against about 220 to 250 under the other strategies. Retries kept every
     request successful, but each paid an extra attempt. This is the case Phase 15's circuit breaker
     exists for. No strategy is claimed better than another from this.
   - *A prompt that kills workers is replayed.* A request that crashes a backend produces a reset or an

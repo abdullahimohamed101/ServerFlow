@@ -15,6 +15,9 @@ workers). Mock workers answer in a few milliseconds. Each worker counts the chat
 
 - Run: `go test -count=1 -v -run 'TestThousand|TestAFlaky|TestAWorkerKilled' ./tests/integration`
 - Hardware: Apple M5 Pro, macOS 26.6; Go 1.27.1 darwin/arm64; 2026-10-07; no race detector.
+- The control plane uses relaxed thresholds (suspect 2 s, unhealthy 4 s, lost 10 s) so a loaded machine cannot
+  make a healthy worker look suspect; a dead backend is still noticed at once because its agent reports FAILED
+  itself, which is why the killed-worker timings below do not depend on those thresholds.
 - Each scenario asserts what is stated below, so a regression fails the test; the tables are one run.
 
 ## 1. Healthy cluster: distribution by strategy

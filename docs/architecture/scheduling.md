@@ -69,7 +69,7 @@ and only while nothing has been sent to the client:
   before headers, worker statuses 502 and 503 (`gateway.retry_statuses`), and a 200 whose body fails or ends
   before its first byte;
 - not retried: any 2xx/3xx/4xx, a 500 or 504 (unless listed), a timeout before headers, a stalled stream, an
-  informational status, and anything after the first byte (the stream ends with an error event);
+  any status outside 200-599 (a gateway 502), a 3xx (also a gateway 502), and anything after the first byte (the stream ends with an error event);
 - if no second worker is selectable, or the budget is spent, the last worker's own response is relayed.
 
 Response headers are held until the first body byte arrives (streams and plain responses alike). Each attempt gets its own `attempt_id`

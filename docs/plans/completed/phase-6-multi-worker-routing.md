@@ -139,7 +139,7 @@ the overlay and the scheduler; the "no selectable worker" errors are unchanged. 
 **Classification** (`internal/gateway/retry.go`, new): `classify(resp, err) (retryable bool, class string)`
 with the D2 table, unit-tested exhaustively. Configurable list `retry_statuses` (default 502, 503).
 
-**Config**: `gateway.max_attempts` (2), `gateway.retry_statuses` ([502,503,504]); env overrides in the existing
+**Config**: `gateway.max_attempts` (2), `gateway.retry_statuses` ([502,503]; 504 was dropped in review); env overrides in the existing
 style; validated only for registry mode (static ignores them).
 
 **Docs**: ADR-012 (retry policy and attempt records, documents §25 explicitly as the spec asks), a retries

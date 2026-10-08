@@ -26,8 +26,8 @@ streaming, either to a single statically configured upstream (the default) or,
 in registry mode, to the worker a configured scheduler picks from the control
 plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
-tracks their state and health. A request that fails before any output is retried once on a different
-worker (ADR-012). There is no circuit breaker, API-key authentication, or
+tracks their state and health. A request that fails before any output is retried on a different
+worker, up to `gateway.max_attempts` (default 2; ADR-012). There is no circuit breaker, API-key authentication, or
 rate limiting yet.
 
 ## Major Components
