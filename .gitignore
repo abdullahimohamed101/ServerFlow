@@ -35,3 +35,5 @@ docker-compose.override.yml
 # Benchmark artifacts
 benchmark/reports/*.json
 benchmark/reports/*.html
+# Local throwaway data (dev Postgres cluster)
+.data/

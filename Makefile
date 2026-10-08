@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres
 
 fmt:
 	gofmt -w .
@@ -59,3 +59,13 @@ dev-cluster:
 	done; \
 	SERVERFLOW_GATEWAY_WORKER_SOURCE=registry SERVERFLOW_SCHEDULER_STRATEGY=$${STRATEGY:-round-robin} bin/gateway & \
 	wait
+
+# A throwaway PostgreSQL 16 on 127.0.0.1:55432 (no Docker; data in .data/, gitignored).
+# Stop it with scripts/dev-postgres.sh stop, wipe it with scripts/dev-postgres.sh reset.
+dev-postgres:
+	scripts/dev-postgres.sh start
+
+# The database-backed tests, against the throwaway instance (started if needed).
+test-postgres:
+	scripts/dev-postgres.sh start >/dev/null
+	SERVERFLOW_TEST_POSTGRES_DSN="$$(scripts/dev-postgres.sh dsn)" go test -race -count=1 ./internal/auth/... ./internal/postgres/... ./internal/gateway/... ./cmd/admin/... ./tests/integration/...
