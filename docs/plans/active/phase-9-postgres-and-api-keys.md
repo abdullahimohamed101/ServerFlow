@@ -266,3 +266,4 @@ Steps 1 and 2 can proceed independently; 3–6 build on them.
 - **Known limits:** a flood of distinct well-formed random keys costs one indexed lookup each (bounded
   by the pool and lookup timeout); rate limiting that is Phase 8. `sslmode=allow|prefer` are not
   rejected by the transport rule.
+- **Mutation check (manual, 25 mutants in a scratch copy):** expiry comparison and removal, key and tenant status checks, hash comparison, constant-time helper, state revealed before the secret matched, cache TTL (never expires, off by one), negative cache and TTL, LRU bound, stale grace, fail-open on outage, singleflight, 401/403 mapping, distinct error bodies, allowed-model check, models-list filtering, tenant propagation, allow-list nil semantics, auth bypass, revoke no-op, model-forbidden text. All 25 were caught by the tests; none survived. Some kills may be compile failures rather than assertions; this was not separated.
