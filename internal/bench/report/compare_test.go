@@ -288,3 +288,22 @@ func TestOneBadSiblingCannotBlockALoadGroup(t *testing.T) {
 		}
 	}
 }
+
+func TestMedianOfAnEvenGroupAveragesTheMiddleTwo(t *testing.T) {
+	ga, gb := group(10, 40, 20, 30), group(1, 2, 3, 4)
+	d := find(t, CompareGroups(ga[0], gb[0], ga, gb), "throughput")
+	if *d.A != 25 || *d.B != 2.5 || *d.AMin != 10 || *d.AMax != 40 {
+		t.Fatalf("%+v", d)
+	}
+}
+
+func TestRangesThatTouchOverlap(t *testing.T) {
+	ga, gb := group(10, 11, 12), group(12, 13, 14) // 12 is in both
+	if d := find(t, CompareGroups(ga[0], gb[0], ga, gb), "throughput"); d.Spread != "ranges overlap" {
+		t.Fatalf("touching ranges share a value: %q", d.Spread)
+	}
+	gc := group(12.5, 13, 14)
+	if d := find(t, CompareGroups(ga[0], gc[0], ga, gc), "throughput"); d.Spread != "ranges do not overlap" {
+		t.Fatalf("%q", d.Spread)
+	}
+}

@@ -234,3 +234,39 @@ Steps 1 and 2 can proceed independently; 3–5 build on them.
 - Two foreground sample runs once stalled for 3 to 6 minutes at about 1% CPU while the machine was busy; they did not
   recur in about ten later runs and every wait in the harness is bounded (drain 60 s, stats 5 s, cluster close 15 s),
   so the cause is unproven (suspected host contention).
+
+## Implementation Notes: independent review fixes
+
+- **Invalid runs (P1.1).** `--concurrency` above the embedded slots (workers x `--mock-concurrency`) is refused unless
+  `--allow-overload`; the default client count is capped at the slots; closed-loop clients back off after 429/503
+  (Retry-After capped at 500 ms, else 50-150 ms); a run with an error rate above `--max-error-rate` (5%) or with nothing
+  measured is `valid: false` with reasons in `result.json`, a banner in `report.md`, a warning in the headline, and exits
+  non-zero unless `--allow-errors`; `compare` warns above its table. Examples in README, Makefile, usage and this plan
+  now use a client count below the slots.
+- **Throughput (P1.2).** Headline requests, input tokens and output tokens per second = successes that completed
+  inside the window / window length; the drain-inclusive figure is separate ("including tail"). Warm-up requests that
+  finish inside the window count; window requests finishing in the drain do not. ADR-013 and the harness note updated.
+- **Spread (P1.3).** A verdict needs 3 runs per side; groups compare medians with min-max ranges; wording is "ranges
+  overlap / do not overlap"; equal or zero values are n/a; the 10% false-positive rate of 3 v 3 is stated.
+- **Cap and empty window (P1.4).** Warm-up requests do not count against `--max-requests` (they have a cap of their own
+  after which clients idle until the window opens); `--duration` must be at least 100 ms; `Sent == 0` fails the run.
+- **P2.** `stats_missing` persisted and the balance marked partial; non-READY remote workers recorded as missing; the
+  start snapshot is abandoned if the run ends before warm-up (no delta from a start that follows an end); the number
+  of warm-up requests counted in the per-worker totals is stated (the worker of a request is not known, so it cannot be
+  subtracted). `LoadGroup` filters `run_NNN` directories first, skips unreadable siblings with a warning, caps file size
+  and looks in the run's own directory; group names include a timestamp. `Git` prefers the binary's VCS stamp and
+  every exec has a `WaitDelay` (sysctl also a timeout). Load-flaky tests rewritten to structural checks (stall tests derive
+  their expectations from when the stall really ended, the interrupt test waits for the "driving" line, the Jain
+  thresholds are gone); verified with `go test -race -count=3` of the benchmark tests and the benchmark integration tests
+  under 20 busy loops. The sample in `docs/benchmarks/phase-7-sample/` now holds all six runs.
+- **P3.** One clock reading decides the window end and the intended time; the second Ctrl-C force-quits; `/stats` read in
+  parallel under one deadline; sampler bounded by entries; idle connections closed; open-loop reports note that evenly
+  spaced arrivals understate burstiness; embedded runs reject unknown schedulers, `--target` schedulers are recorded
+  "declared (unverified)"; preflight errors drop the URL; a plaintext control plane token to a remote host warns;
+  `--verbose`; 5 s progress lines; phase timings and wall versus monotonic clock in `result.json` (the report notes when
+  they disagree by more than 2 s); embedded gateway header timeout 30 s.
+- **Deliberately not done:** Poisson arrivals (future); streaming usage via `stream_options` (streamed tokens remain
+  estimated and the report says so); consolidating the embedded cluster with the integration helpers (follow-up); the
+  boot wait is time-based (5 refresh intervals), a gateway-side readiness signal is future work; the unexplained 3 to 6
+  minute stalls of two early foreground runs are still unexplained (macOS sleep or App Nap is a candidate; the new
+  timings would show it).
