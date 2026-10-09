@@ -1,6 +1,6 @@
 # Phase 9 — PostgreSQL: Tenants, API Keys, Model Configs, Benchmark Metadata
 
-Status: Implemented; independent review and verification done, all findings fixed (see Implementation Notes). Awaiting the coordinator's move to completed.
+Status: Completed (implemented; security-reviewed once and independently verified twice, with fixes; merged with its PR)
 Owner: coding agent
 Depends on: Phase 6 (PR #7). Runs in parallel with Phase 7 (benchmark harness); the two share no code, see "Parallel work".
 Spec: `docs/architecture/serverflow-spec.md` §8, §19, §44–46, §48 (`internal/auth`, `internal/postgres`, `migrations`), §51, §52, §58 Phase 9, §63

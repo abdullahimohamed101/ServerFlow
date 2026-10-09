@@ -86,7 +86,7 @@ On Windows (no `make`), use the existing quality gate:
 | 6 | Multi-worker routing | Complete |
 | 7 | Baseline benchmark harness | Not started |
 | 8 | Redis integration | Not started |
-| 9 | PostgreSQL | Complete (pending review) |
+| 9 | PostgreSQL | Complete |
 | 10 | Prometheus + Grafana | Not started |
 | 11 | OpenTelemetry | Not started |
 | 12 | Kafka | Not started |
