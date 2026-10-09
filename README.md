@@ -9,16 +9,17 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3, 4, 5, 6 and 9 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4, 5, 6, 7 and 9 are complete. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
 > and death (`docs/architecture/worker-lifecycle.md`). With
 > `gateway.worker_source: registry` the gateway chooses a worker per request with
 > a configurable scheduler (`docs/architecture/scheduling.md`) and retries a
-> request that fails before any output on a different worker (ADR-012). Phase 1 is deferred
-> until a GPU is available. With `auth.mode: required` the gateway needs an API key kept in PostgreSQL
-> (`docs/operations/postgres-and-auth.md`, ADR-014). See `docs/plans/completed/` for finished plans and
+> request that fails before any output on a different worker (ADR-012). A benchmark harness (`cmd/benchmark`, Phase 7) runs reproducible load tests and compares
+> runs (ADR-013). With `auth.mode: required` the gateway needs an API key kept in PostgreSQL
+> (`docs/operations/postgres-and-auth.md`, ADR-014). Phase 1 is deferred
+> until a GPU is available. See `docs/plans/completed/` for finished plans and
 > `docs/plans/active/` for the current one.
 
 ## Repository Layout
@@ -67,6 +68,20 @@ curl -s localhost:9090/v1/workers     # who is registered, their state and healt
 curl -s 'localhost:9090/v1/workers?model=mock-model&eligible=true'
 ```
 
+Run a load test and compare two schedulers (an embedded simulated cluster; results in `benchmark/runs/`):
+
+```bash
+make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"
+make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"
+make bench-compare A=run_001 B=run_004      # a run from each --repeat 3 group (run_001-003 and run_004-006)
+```
+
+Use well fewer clients than the cluster has slots (workers x `--mock-concurrency`, 8 each by default). The harness refuses
+more than 100% of them (unless `--allow-overload`) and warns above 60%, because round-robin ignores load and fills a slow
+worker's slots first, after which the gateway answers 503 and the run is invalid; 12 to 16 clients on 32 slots is a safe
+range. Use `--repeat 3` or more so `compare` can show run-to-run spread. A run in which more than
+5% of requests fail is marked invalid and exits non-zero. See `docs/benchmarks/phase-7-harness.md` for how to read the output.
+
 On Windows (no `make`), use the existing quality gate:
 
 ```powershell
@@ -84,7 +99,7 @@ On Windows (no `make`), use the existing quality gate:
 | 4 | Worker registry | Complete |
 | 5 | Scheduler framework | Complete |
 | 6 | Multi-worker routing | Complete |
-| 7 | Baseline benchmark harness | Not started |
+| 7 | Baseline benchmark harness | Complete |
 | 8 | Redis integration | Not started |
 | 9 | PostgreSQL | Complete |
 | 10 | Prometheus + Grafana | Not started |
