@@ -19,7 +19,7 @@ import (
 )
 
 // echo returns {1, ARGV[1]} so a test can tell the script ran.
-var echo = redis.NewScript(`return {1, tonumber(ARGV[1])}`)
+var echo = redis.NewScript(`return {1, tonumber(ARGV[1])}`, 2)
 
 type fakeClock struct {
 	mu sync.Mutex

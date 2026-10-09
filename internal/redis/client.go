@@ -96,10 +96,16 @@ func (c *Client) PoolStats() (total, idle uint32) {
 }
 
 // Script is a Lua script, loaded once per server and invoked by digest.
-type Script struct{ s *goredis.Script }
+type Script struct {
+	s   *goredis.Script
+	len int
+}
 
-// NewScript prepares a script. Nothing is sent until it runs.
-func NewScript(src string) *Script { return &Script{s: goredis.NewScript(src)} }
+// NewScript prepares a script whose reply is an array of replyLen integers; any other reply counts as a
+// failure of Redis. Nothing is sent until it runs.
+func NewScript(src string, replyLen int) *Script {
+	return &Script{s: goredis.NewScript(src), len: replyLen}
+}
 
 // Run runs a script whose reply is an array of integers. The call is bounded by the client's timeout and
 // is detached from ctx's cancellation (a client that hangs up must not abandon a script that already took
@@ -115,7 +121,7 @@ func (c *Client) Run(ctx context.Context, s *Script, keys []string, args ...any)
 	res, err := s.s.Run(cctx, c.rdb, keys, args...).Result()
 	if err == nil {
 		var out []int64
-		if out, err = ints(res); err == nil {
+		if out, err = ints(res, s.len); err == nil {
 			c.done(probe, nil)
 			return out, nil
 		}
@@ -125,10 +131,13 @@ func (c *Client) Run(ctx context.Context, s *Script, keys []string, args ...any)
 	return nil, err
 }
 
-func ints(res any) ([]int64, error) {
+func ints(res any, want int) ([]int64, error) {
 	arr, ok := res.([]any)
 	if !ok {
 		return nil, fmt.Errorf("redis: script returned %T, want an array", res)
+	}
+	if len(arr) != want {
+		return nil, fmt.Errorf("redis: script returned %d values, want %d", len(arr), want)
 	}
 	out := make([]int64, len(arr))
 	for i, v := range arr {
