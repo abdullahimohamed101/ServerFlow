@@ -1,17 +1,19 @@
-Comparing run_001 (A) with run_004 (B). Deltas are B relative to A; positive means B is higher, not better.
+Comparing run_001 (A) with run_004 (B): medians of 3 and 3 repeats, with the min-max range of each in brackets. Throughput is requests that completed inside the measurement window per second of window. Deltas are B relative to A; positive means B is higher, not better.
 
-METRIC                 A          B         DELTA           CHANGE    SPREAD
-throughput             17.59      19.28     +1.683 req/s    +9.57%    outside spread
-input tokens/s         1.283e+04  1.55e+04  +2667 tok/s     +20.79%   outside spread
-output tokens/s        4228       4838      +609.4 tok/s    +14.41%   outside spread
-latency p50            246.5      250.9     +4.418 ms       +1.79%    within spread
-latency p95            2211       1390      -820.9 ms       -37.13%   outside spread
-latency p99            6397       3371      -3026 ms        -47.30%   within spread
-TTFT p95               60.73      60.91     +0.1752 ms      +0.29%    within spread
-queue depth avg        0          0         +0 requests     n/a       within spread
-queue depth p95        0          0         +0 requests     n/a       within spread
-worker balance (Jain)  0.9164     0.8682    -0.04821 index  -5.26%    outside spread
-error rate             0          0         +0 %            +0.00 pp  within spread
+METRIC                 A                                B                            DELTA          CHANGE    SPREAD
+throughput             21.75 [21.75-22]                 25.25 [25.1-25.3]            +3.5 req/s     +16.09%   ranges do not overlap
+input tokens/s         1.668e+04 [1.657e+04-1.679e+04]  2e+04 [1.974e+04-2.054e+04]  +3321 tok/s    +19.91%   ranges do not overlap
+output tokens/s        5291 [5266-5329]                 6210 [6119-6297]             +918.2 tok/s   +17.35%   ranges do not overlap
+latency p50            267.2 [260.4-280.4]              235.3 [222-248.7]            -31.82 ms      -11.91%   ranges do not overlap
+latency p95            2141 [1971-2246]                 1520 [1508-1698]             -620.4 ms      -28.98%   ranges do not overlap
+latency p99            3466 [2842-3856]                 3281 [2524-3850]             -184.6 ms      -5.33%    ranges overlap
+TTFT p95               60.41 [60.38-60.52]              60.39 [60.38-60.42]          -0.01767 ms    -0.03%    ranges overlap
+queue depth avg        0 [0-0]                          0 [0-0]                      +0 requests    n/a       n/a
+queue depth p95        0 [0-0]                          0 [0-0]                      +0 requests    n/a       n/a
+worker balance (Jain)  0.9545 [0.9536-0.976]            0.847 [0.8213-0.8558]        -0.1075 index  -11.26%   ranges do not overlap
+error rate             0 [0-0]                          0 [0-0]                      +0 %           +0.00 pp  n/a
+
+SPREAD compares the min-max ranges of the two groups. It is not a significance test: with 3 runs per side and no real difference the ranges are disjoint about 10% of the time, per metric.
 
 Metadata that differs (expected for this comparison):
   scheduler: round-robin -> least-active

@@ -1,6 +1,6 @@
-# Benchmark run_001
+# Benchmark run_005
 
-2026-10-09T04:56:32Z, workload `mixed`, scheduler `round-robin`, closed-loop with 12 clients. Seed 1, repeat 1 of 3.
+2026-10-09T04:58:24Z, workload `mixed`, scheduler `least-active`, closed-loop with 12 clients. Seed 1, repeat 2 of 3.
 
 ## Setup
 
@@ -26,19 +26,19 @@ Prompt distribution (input tokens are synthetic text, about four characters each
 
 ## Requests
 
-Sent 440, succeeded 440, failed 0 (error rate 0.00%). 70 warm-up requests were not counted; 0 needed a second attempt.
+Sent 505, succeeded 505, failed 0 (error rate 0.00%). 81 warm-up requests were not counted; 0 needed a second attempt.
 
 ## Throughput
 
-Headline throughput counts the 440 requests that completed successfully inside the 20s measurement window (whenever they were sent) and divides by the window, so one slow tail request cannot move it.
+Headline throughput counts the 505 requests that completed successfully inside the 20s measurement window (whenever they were sent) and divides by the window, so one slow tail request cannot move it.
 
 | Requests/s | Input tokens/s | Output tokens/s |
 | --- | --- | --- |
-| 22.00 | 16790.3 | 5328.9 |
+| 25.25 | 20535.0 | 6297.2 |
 
-Throughput including tail: the 440 requests sent inside the window divided by the 22.61s until the last of them finished (the drain counts against it, so it follows the slowest request): 19.46 requests/s, 14857.9 input and 4757.8 output tokens/s.
+Throughput including tail: the 505 requests sent inside the window divided by the 22.35s until the last of them finished (the drain counts against it, so it follows the slowest request): 22.59 requests/s, 17313.3 input and 5523.2 output tokens/s.
 
-Tokens: 229 requests reported usage, 211 were estimated (request size for input, stream chunks for streamed output).
+Tokens: 263 requests reported usage, 242 were estimated (request size for input, stream chunks for streamed output).
 
 ## Latency and time to first token (ms)
 
@@ -46,8 +46,8 @@ Over successful requests, measured from the intended send time (in closed-loop m
 
 | | n | p50 | p95 | p99 | max |
 | --- | --- | --- | --- | --- | --- |
-| Latency | 440 | 260.4 | 1970.5 | 2841.9 | 7500.5 |
-| TTFT (streaming) | 211 | 30.3 | 60.4 | 60.5 | 60.8 |
+| Latency | 505 | 235.3 | 1697.6 | 2524.4 | 7531.1 |
+| TTFT (streaming) | 242 | 30.2 | 60.4 | 61.0 | 61.2 |
 
 ## Queues and worker balance
 
@@ -55,11 +55,11 @@ Over successful requests, measured from the intended send time (in closed-loop m
 
 | Worker | Model | Completed | Share | Mean queue | Mean active |
 | --- | --- | --- | --- | --- | --- |
-| worker-01 | qwen-7b | 179 | 39.60% | 0.00 | 2.42 |
-| worker-02 | qwen-7b | 169 | 37.39% | 0.00 | 3.55 |
-| worker-03 | qwen-7b | 104 | 23.01% | 0.00 | 6.03 |
+| worker-01 | qwen-7b | 256 | 49.52% | 0.00 | 3.35 |
+| worker-02 | qwen-7b | 178 | 34.43% | 0.00 | 4.17 |
+| worker-03 | qwen-7b | 83 | 16.05% | 0.00 | 4.47 |
 
-Request balance (Jain index, 1 is perfectly even): 0.9536.
+Request balance (Jain index, 1 is perfectly even): 0.8558.
 Queue balance (Jain index of mean queue depth): not measured (every worker's queue stayed empty, so the index is undefined).
 GPU utilization: not measured (workers did not report GPU utilization (mock workers have no GPU)).
 
@@ -70,7 +70,7 @@ GPU utilization: not measured (workers did not report GPU utilization (mock work
 
 ## Timings
 
-Boot 0.6s, warm-up 3.0s, window 20.0s, drain 2.6s, worker stats 0.0s, close 0.0s; 26.2s wall clock, 26.2s monotonic.
+Boot 0.6s, warm-up 3.0s, window 20.0s, drain 2.4s, worker stats 0.0s, close 2.0s; 28.0s wall clock, 28.0s monotonic.
 
 ## How to read this
 

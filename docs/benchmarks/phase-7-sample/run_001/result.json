@@ -2,15 +2,16 @@
   "schema_version": 1,
   "run_id": "run_001",
   "metadata": {
-    "date": "2026-10-09T03:26:56Z",
+    "date": "2026-10-09T04:56:32Z",
     "harness_version": "1",
     "go_version": "go1.27.1",
     "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
-    "git_commit": "bb94c8c625ad7f3c5ce4eed284d26285aabfecb1",
+    "git_commit": "4ee077414512863d76a7ce4934d34965e66d7fee",
     "git_tree": "clean",
     "target": "embedded",
     "target_host": "loopback",
     "scheduler": "round-robin",
+    "scheduler_source": "embedded",
     "models": [
       "qwen-7b"
     ],
@@ -55,7 +56,7 @@
     "repeat": {
       "index": 1,
       "of": 3,
-      "group": "run_001"
+      "group": "run_001-1791521791"
     },
     "cluster": {
       "worker_profile": "heterogeneous",
@@ -90,42 +91,46 @@
     }
   },
   "summary": {
-    "sent": 433,
-    "succeeded": 433,
+    "sent": 440,
+    "succeeded": 440,
     "failed": 0,
-    "warmup_excluded": 71,
+    "warmup_excluded": 70,
     "retried": 0,
     "status_classes": {
-      "2xx": 433
+      "2xx": 440
     },
     "error_classes": {},
     "latency_ms": {
-      "count": 433,
-      "min": 69.278209,
-      "mean": 550.3614519722862,
-      "p50": 246.501417,
-      "p95": 2210.738625,
-      "p99": 6396.806166,
-      "max": 7500.627542
+      "count": 440,
+      "min": 69.345792,
+      "mean": 538.9532864590909,
+      "p50": 260.432458,
+      "p95": 1970.519292,
+      "p99": 2841.948333,
+      "max": 7500.522334
     },
     "ttft_ms": {
-      "count": 206,
-      "min": 20.263875,
-      "mean": 31.783969699029118,
-      "p50": 30.359334,
-      "p95": 60.73075,
-      "p99": 61.228584,
-      "max": 62.457208
+      "count": 211,
+      "min": 20.219917,
+      "mean": 31.073593995260655,
+      "p50": 30.275292,
+      "p95": 60.375083,
+      "p99": 60.510375,
+      "max": 60.817584
     },
-    "input_tokens": 315704,
-    "output_tokens": 104061,
-    "usage_requests": 227,
-    "estimated_requests": 206,
+    "input_tokens": 335993,
+    "output_tokens": 107592,
+    "usage_requests": 229,
+    "estimated_requests": 211,
     "window_seconds": 20,
-    "span_seconds": 24.609980167,
-    "requests_per_second": 17.594487970397395,
-    "input_tokens_per_second": 12828.291524725957,
-    "output_tokens_per_second": 4228.406495814142,
+    "span_seconds": 22.613702292,
+    "completed_in_window": 440,
+    "requests_per_second": 22,
+    "input_tokens_per_second": 16790.3,
+    "output_tokens_per_second": 5328.9,
+    "requests_per_second_with_tail": 19.457229706064446,
+    "input_tokens_per_second_with_tail": 14857.938592340251,
+    "output_tokens_per_second_with_tail": 4757.823314852013,
     "error_rate": 0
   },
   "queue": {
@@ -139,21 +144,21 @@
         "id": "worker-01",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 2.375,
+        "mean_active_requests": 2.425,
         "samples": 80
       },
       {
         "id": "worker-02",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 3.15,
+        "mean_active_requests": 3.55,
         "samples": 80
       },
       {
         "id": "worker-03",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 6.475,
+        "mean_active_requests": 6.025,
         "samples": 80
       }
     ]
@@ -164,31 +169,45 @@
       "model": "qwen-7b",
       "completed": 179,
       "mean_queue_depth": 0,
-      "mean_active_requests": 2.375
+      "mean_active_requests": 2.425
     },
     {
       "id": "worker-02",
       "model": "qwen-7b",
-      "completed": 181,
+      "completed": 169,
       "mean_queue_depth": 0,
-      "mean_active_requests": 3.15
+      "mean_active_requests": 3.55
     },
     {
       "id": "worker-03",
       "model": "qwen-7b",
-      "completed": 85,
+      "completed": 104,
       "mean_queue_depth": 0,
-      "mean_active_requests": 6.475
+      "mean_active_requests": 6.025
     }
   ],
   "imbalance": {
-    "request_jain": 0.9164387428788279,
+    "request_jain": 0.9535597935161071,
+    "request_jain_partial": false,
     "request_jain_by_model": {
-      "qwen-7b": 0.9164387428788279
+      "qwen-7b": 0.9535597935161071
     },
     "queue_jain": null
   },
   "gpu_utilization": null,
+  "valid": true,
+  "invalid_reasons": [],
+  "stats_missing": {},
+  "timings": {
+    "boot_seconds": 0.60728125,
+    "warmup_seconds": 3,
+    "window_seconds": 20,
+    "drain_seconds": 2.613787833,
+    "stats_seconds": 0.000128458,
+    "close_seconds": 0.000287917,
+    "wall_clock_seconds": 26.228281,
+    "monotonic_seconds": 26.227955625
+  },
   "not_measured": {
     "gpu_utilization": "workers did not report GPU utilization (mock workers have no GPU)",
     "queue_imbalance": "every worker's queue stayed empty, so the index is undefined"
@@ -196,7 +215,8 @@
   "sample_polls_failed": 0,
   "samples_dropped": 0,
   "notes": [
-    "Per-worker completed counts start at the end of warm-up, so requests sent in warm-up that finish later are counted in them.",
-    "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does."
+    "Per-worker completed counts start when warm-up ends, so the 12 warm-up requests that finished after that are included in them.",
+    "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does.",
+    "Streamed token counts are estimated from chunks (the gateway does not request usage for streams); non-streamed counts come from the response usage."
   ]
 }

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "run_id": "run_004",
+  "run_id": "run_005",
   "metadata": {
-    "date": "2026-10-09T04:57:58Z",
+    "date": "2026-10-09T04:58:24Z",
     "harness_version": "1",
     "go_version": "go1.27.1",
     "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
@@ -54,7 +54,7 @@
       }
     ],
     "repeat": {
-      "index": 1,
+      "index": 2,
       "of": 3,
       "group": "run_004-1791521877"
     },
@@ -91,46 +91,46 @@
     }
   },
   "summary": {
-    "sent": 502,
-    "succeeded": 502,
+    "sent": 505,
+    "succeeded": 505,
     "failed": 0,
-    "warmup_excluded": 83,
+    "warmup_excluded": 81,
     "retried": 0,
     "status_classes": {
-      "2xx": 502
+      "2xx": 505
     },
     "error_classes": {},
     "latency_ms": {
-      "count": 502,
-      "min": 69.50225,
-      "mean": 474.6842695099602,
-      "p50": 248.724708,
-      "p95": 1508.489541,
-      "p99": 3281.190709,
-      "max": 7530.648459
+      "count": 505,
+      "min": 69.287209,
+      "mean": 472.99265584752453,
+      "p50": 235.333042,
+      "p95": 1697.634708,
+      "p99": 2524.400666,
+      "max": 7531.10625
     },
     "ttft_ms": {
-      "count": 241,
-      "min": 20.209708,
-      "mean": 28.653687414937767,
-      "p50": 20.791541,
-      "p95": 60.375667,
-      "p99": 60.629042,
-      "max": 61.084917
+      "count": 242,
+      "min": 20.189459,
+      "mean": 29.837687371900827,
+      "p50": 30.223625,
+      "p95": 60.415084,
+      "p99": 60.977041,
+      "max": 61.18025
     },
-    "input_tokens": 386512,
-    "output_tokens": 123123,
-    "usage_requests": 261,
-    "estimated_requests": 241,
+    "input_tokens": 386985,
+    "output_tokens": 123454,
+    "usage_requests": 263,
+    "estimated_requests": 242,
     "window_seconds": 20,
-    "span_seconds": 23.042011541,
-    "completed_in_window": 502,
-    "requests_per_second": 25.1,
-    "input_tokens_per_second": 20003.7,
-    "output_tokens_per_second": 6118.55,
-    "requests_per_second_with_tail": 21.78629236022914,
-    "input_tokens_per_second_with_tail": 16774.229945691008,
-    "output_tokens_per_second_with_tail": 5343.413693761937,
+    "span_seconds": 22.351837041,
+    "completed_in_window": 505,
+    "requests_per_second": 25.25,
+    "input_tokens_per_second": 20535,
+    "output_tokens_per_second": 6297.25,
+    "requests_per_second_with_tail": 22.593221267391936,
+    "input_tokens_per_second_with_tail": 17313.34204388449,
+    "output_tokens_per_second_with_tail": 5523.214927415057,
     "error_rate": 0
   },
   "queue": {
@@ -144,21 +144,21 @@
         "id": "worker-01",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 3.15,
+        "mean_active_requests": 3.35,
         "samples": 80
       },
       {
         "id": "worker-02",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 4.275,
+        "mean_active_requests": 4.175,
         "samples": 80
       },
       {
         "id": "worker-03",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 4.575,
+        "mean_active_requests": 4.475,
         "samples": 80
       }
     ]
@@ -167,30 +167,30 @@
     {
       "id": "worker-01",
       "model": "qwen-7b",
-      "completed": 251,
+      "completed": 256,
       "mean_queue_depth": 0,
-      "mean_active_requests": 3.15
+      "mean_active_requests": 3.35
     },
     {
       "id": "worker-02",
       "model": "qwen-7b",
-      "completed": 188,
+      "completed": 178,
       "mean_queue_depth": 0,
-      "mean_active_requests": 4.275
+      "mean_active_requests": 4.175
     },
     {
       "id": "worker-03",
       "model": "qwen-7b",
-      "completed": 75,
+      "completed": 83,
       "mean_queue_depth": 0,
-      "mean_active_requests": 4.575
+      "mean_active_requests": 4.475
     }
   ],
   "imbalance": {
-    "request_jain": 0.8470263858164214,
+    "request_jain": 0.855798570088401,
     "request_jain_partial": false,
     "request_jain_by_model": {
-      "qwen-7b": 0.8470263858164214
+      "qwen-7b": 0.855798570088401
     },
     "queue_jain": null
   },
@@ -199,14 +199,14 @@
   "invalid_reasons": [],
   "stats_missing": {},
   "timings": {
-    "boot_seconds": 0.609178333,
+    "boot_seconds": 0.608943875,
     "warmup_seconds": 3,
     "window_seconds": 20,
-    "drain_seconds": 3.042272125,
-    "stats_seconds": 0.000291541,
-    "close_seconds": 0.000241375,
-    "wall_clock_seconds": 26.652752,
-    "monotonic_seconds": 26.661790666999998
+    "drain_seconds": 2.351915833,
+    "stats_seconds": 0.000273,
+    "close_seconds": 2.000845792,
+    "wall_clock_seconds": 27.968677,
+    "monotonic_seconds": 27.970127917
   },
   "not_measured": {
     "gpu_utilization": "workers did not report GPU utilization (mock workers have no GPU)",

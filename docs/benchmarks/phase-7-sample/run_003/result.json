@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "run_id": "run_004",
+  "run_id": "run_003",
   "metadata": {
-    "date": "2026-10-09T04:57:58Z",
+    "date": "2026-10-09T04:57:28Z",
     "harness_version": "1",
     "go_version": "go1.27.1",
     "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
@@ -10,7 +10,7 @@
     "git_tree": "clean",
     "target": "embedded",
     "target_host": "loopback",
-    "scheduler": "least-active",
+    "scheduler": "round-robin",
     "scheduler_source": "embedded",
     "models": [
       "qwen-7b"
@@ -54,9 +54,9 @@
       }
     ],
     "repeat": {
-      "index": 1,
+      "index": 3,
       "of": 3,
-      "group": "run_004-1791521877"
+      "group": "run_001-1791521791"
     },
     "cluster": {
       "worker_profile": "heterogeneous",
@@ -91,46 +91,46 @@
     }
   },
   "summary": {
-    "sent": 502,
-    "succeeded": 502,
+    "sent": 435,
+    "succeeded": 435,
     "failed": 0,
-    "warmup_excluded": 83,
+    "warmup_excluded": 72,
     "retried": 0,
     "status_classes": {
-      "2xx": 502
+      "2xx": 435
     },
     "error_classes": {},
     "latency_ms": {
-      "count": 502,
-      "min": 69.50225,
-      "mean": 474.6842695099602,
-      "p50": 248.724708,
-      "p95": 1508.489541,
-      "p99": 3281.190709,
-      "max": 7530.648459
+      "count": 435,
+      "min": 69.423917,
+      "mean": 563.8900430850574,
+      "p50": 267.152042,
+      "p95": 2245.882166,
+      "p99": 3855.683167,
+      "max": 7530.95
     },
     "ttft_ms": {
-      "count": 241,
-      "min": 20.209708,
-      "mean": 28.653687414937767,
-      "p50": 20.791541,
-      "p95": 60.375667,
-      "p99": 60.629042,
-      "max": 61.084917
+      "count": 207,
+      "min": 20.199791,
+      "mean": 34.20433193719807,
+      "p50": 30.308125,
+      "p95": 60.525,
+      "p99": 60.861167,
+      "max": 61.313584
     },
-    "input_tokens": 386512,
-    "output_tokens": 123123,
-    "usage_requests": 261,
-    "estimated_requests": 241,
+    "input_tokens": 325926,
+    "output_tokens": 106519,
+    "usage_requests": 228,
+    "estimated_requests": 207,
     "window_seconds": 20,
-    "span_seconds": 23.042011541,
-    "completed_in_window": 502,
-    "requests_per_second": 25.1,
-    "input_tokens_per_second": 20003.7,
-    "output_tokens_per_second": 6118.55,
-    "requests_per_second_with_tail": 21.78629236022914,
-    "input_tokens_per_second_with_tail": 16774.229945691008,
-    "output_tokens_per_second_with_tail": 5343.413693761937,
+    "span_seconds": 26.221474542,
+    "completed_in_window": 435,
+    "requests_per_second": 21.75,
+    "input_tokens_per_second": 16682.8,
+    "output_tokens_per_second": 5291.25,
+    "requests_per_second_with_tail": 16.589456069804267,
+    "input_tokens_per_second_with_tail": 12429.735767832244,
+    "output_tokens_per_second_with_tail": 4062.2810829873124,
     "error_rate": 0
   },
   "queue": {
@@ -144,21 +144,21 @@
         "id": "worker-01",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 3.15,
+        "mean_active_requests": 2.05,
         "samples": 80
       },
       {
         "id": "worker-02",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 4.275,
+        "mean_active_requests": 3.675,
         "samples": 80
       },
       {
         "id": "worker-03",
         "model": "qwen-7b",
         "mean_queue_depth": 0,
-        "mean_active_requests": 4.575,
+        "mean_active_requests": 6.275,
         "samples": 80
       }
     ]
@@ -167,30 +167,30 @@
     {
       "id": "worker-01",
       "model": "qwen-7b",
-      "completed": 251,
+      "completed": 173,
       "mean_queue_depth": 0,
-      "mean_active_requests": 3.15
+      "mean_active_requests": 2.05
     },
     {
       "id": "worker-02",
       "model": "qwen-7b",
-      "completed": 188,
+      "completed": 171,
       "mean_queue_depth": 0,
-      "mean_active_requests": 4.275
+      "mean_active_requests": 3.675
     },
     {
       "id": "worker-03",
       "model": "qwen-7b",
-      "completed": 75,
+      "completed": 103,
       "mean_queue_depth": 0,
-      "mean_active_requests": 4.575
+      "mean_active_requests": 6.275
     }
   ],
   "imbalance": {
-    "request_jain": 0.8470263858164214,
+    "request_jain": 0.9544848736725949,
     "request_jain_partial": false,
     "request_jain_by_model": {
-      "qwen-7b": 0.8470263858164214
+      "qwen-7b": 0.9544848736725949
     },
     "queue_jain": null
   },
@@ -199,14 +199,14 @@
   "invalid_reasons": [],
   "stats_missing": {},
   "timings": {
-    "boot_seconds": 0.609178333,
+    "boot_seconds": 0.609227708,
     "warmup_seconds": 3,
     "window_seconds": 20,
-    "drain_seconds": 3.042272125,
-    "stats_seconds": 0.000291541,
-    "close_seconds": 0.000241375,
-    "wall_clock_seconds": 26.652752,
-    "monotonic_seconds": 26.661790666999998
+    "drain_seconds": 6.2217115,
+    "stats_seconds": 0.000277417,
+    "close_seconds": 0.000247917,
+    "wall_clock_seconds": 29.830489,
+    "monotonic_seconds": 29.834165167
   },
   "not_measured": {
     "gpu_utilization": "workers did not report GPU utilization (mock workers have no GPU)",
