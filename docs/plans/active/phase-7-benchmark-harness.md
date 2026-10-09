@@ -270,3 +270,36 @@ Steps 1 and 2 can proceed independently; 3–5 build on them.
   boot wait is time-based (5 refresh intervals), a gateway-side readiness signal is future work; the unexplained 3 to 6
   minute stalls of two early foreground runs are still unexplained (macOS sleep or App Nap is a candidate; the new
   timings would show it).
+
+## Implementation Notes: independent verification fixes
+
+- **Documented commands (V1).** The README/Makefile/usage example (`--workers 4 --worker-profile heterogeneous --concurrency
+  24 --duration 60s --repeat 3`) failed its own validity gate: round-robin ignores load and fills the slow worker's slots
+  well below 100% of the slots. Examples now use 12 clients on 32 slots, the docs explain the 50 to 60% rule, and an
+  embedded closed-loop run prints a warning above 60% of the slots (output and result notes; refusal above 100% is
+  unchanged). `internal/bench/runner/docs_test.go` parses every `benchmark run` / `BENCH_ARGS` command in the README,
+  Makefile, usage text, harness note and this plan through the real option parser and fails if one is refused, exceeds the
+  warning threshold, or if a documented `compare` pairs two runs of one repeat group. The README examples were also run at
+  their documented length (60 s, `--repeat 3`, both schedulers): see the run results in the final report.
+- **Same-group compare (V2).** `compare` warns when A and B are the same run or members of one repeat group; README
+  uses `A=run_001 B=run_004`.
+- **Pre-run network calls (V3).** Listing the workers and the first `/stats` read now happen before the clock starts
+  (`prerun_seconds` in the timings), the later start snapshot runs concurrently with the load, a first request sent more
+  than max(1 s, 5% of the run) late makes the run invalid with an accurate reason, and the empty-window message says "none
+  was due inside the measurement window".
+- **Cut windows (V4).** A window cut by `--max-requests` is a `warnings` entry in `result.json` and a banner in the report
+  (not an invalidity), says how many of the counted completions were sent during warm-up and why they are included
+  (steady-state flow), and window lengths print in milliseconds below 10 s.
+- **Hostile result files (V5).** All result strings printed by `list`, `compare` and the report go through `report.Clean`
+  (control characters, escape sequences, bidi overrides, invalid UTF-8, length bound). `Load` refuses symlinks (file or
+  directory) and non-regular files with `Lstat`, and its errors name positions and fields, never content. (`Lstat` then
+  open is not atomic; `O_NOFOLLOW` is not portable to the Windows dev machine.)
+- **Mutation gaps (V6).** Tests added for the input-token numerator, p99 vs p95, `--max-error-rate 0` meaning zero tolerance,
+  the start-snapshot logic, the explicit `Sent == 0` failure under `--allow-errors`, the open-loop warm-up cap path, the
+  settle pause (`Cluster.Settled`), and the 3-run minimum per metric. All the listed mutants are killed.
+- **Clock note (V7)** tested at 100 v 10, 10 v 100, 10 v 11.9, 10 v 12.1.
+- **Docs (V8).** Plan status set to "In review", the ARCHITECTURE sentence reworded, the rate-cap message names the burst
+  factor only for `burst`, and the compare hint no longer says "Two single runs" for 1 v 5.
+- **Left as is:** Poisson arrivals, `stream_options` usage, consolidating the embedded helpers with the integration tests,
+  the time-based boot settle, the unexplained early stalls (bounded and now instrumented), and the rule that an interrupted
+  run writes no result.
