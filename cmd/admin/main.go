@@ -398,6 +398,13 @@ func (a *app) key(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
+		if prefix, _, perr := auth.ParseKey(ref); perr == nil {
+			// A whole key was pasted. Only its public prefix identifies the key; the secret half must
+			// not travel any further, and it is now in this shell's history.
+			_, _ = fmt.Fprintln(a.err, "warning: you passed a complete API key. Only its prefix is needed and is being used.")
+			_, _ = fmt.Fprintln(a.err, "         The secret is now in your shell history and process list: remove it from history, and rotate this key if it is still in use anywhere.")
+			ref = prefix
+		}
 		k, was, err := a.st.RevokeKey(ctx, ref)
 		if err != nil {
 			return err

@@ -244,7 +244,9 @@ func TestProcessAuthEndToEnd(t *testing.T) {
 	if r, _ := authChat(t, gwAddr, good); r.StatusCode != 200 {
 		t.Fatalf("cached key during an outage: %d", r.StatusCode)
 	}
-	time.Sleep(1300 * time.Millisecond) // past cache_ttl, inside stale_grace
+	// This one is a real wall-clock wait: the gateway is a separate binary with its own clock, so
+	// there is nothing to inject. cache_ttl is 1s and stale_grace 3s, so 1.3s is past the TTL and inside the grace.
+	time.Sleep(1300 * time.Millisecond)
 	if r, _ := authChat(t, gwAddr, good); r.StatusCode != 200 {
 		t.Fatalf("stale cached key inside the grace period: %d", r.StatusCode)
 	}
@@ -314,10 +316,13 @@ func TestProcessAuthOffNeverTouchesTheDatabase(t *testing.T) {
 	gwAddr := freePort(t)
 	_, port, _ := strings.Cut(gwAddr, ":")
 	// The DSN points nowhere; with auth off it must not matter.
-	startProc(t, "gateway", "gateway starting", []string{"SERVERFLOW_GATEWAY_PORT=" + port, "SERVERFLOW_GATEWAY_MODELS=" + model,
+	gwp := startProc(t, "gateway", "gateway starting", []string{"SERVERFLOW_GATEWAY_PORT=" + port, "SERVERFLOW_GATEWAY_MODELS=" + model,
 		"SERVERFLOW_GATEWAY_UPSTREAM_URL=http://" + mockAddr, "SERVERFLOW_POSTGRES_DSN=postgres://u:p@127.0.0.1:1/x?sslmode=disable"})
 	waitFor(t, 10*time.Second, "keyless request served", func() bool {
 		r, _ := authChat(t, gwAddr, "")
 		return r.StatusCode == 200
 	})
+	if !strings.Contains(gwp.stderr.String(), "authentication is OFF") {
+		t.Fatalf("a gateway with authentication off must say so at startup:\n%s", gwp.stderr.String())
+	}
 }

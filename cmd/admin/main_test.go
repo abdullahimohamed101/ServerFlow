@@ -269,3 +269,24 @@ func TestDSNPasswordNeverEchoed(t *testing.T) {
 		t.Errorf("help mentions a DSN or password: %s", r.err)
 	}
 }
+
+func TestRevokeWithAPastedFullKeyUsesOnlyThePrefixAndWarns(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "acme")
+	key := strings.TrimSpace(mustOK(t, "key", "create", "--tenant", "acme").out)
+	r := mustOK(t, "key", "revoke", key)
+	if !strings.Contains(r.out, "revoked key") {
+		t.Fatalf("the pasted key was not revoked by its prefix: %+v", r)
+	}
+	if !strings.Contains(r.err, "complete API key") || !strings.Contains(r.err, "shell history") {
+		t.Fatalf("no warning: %q", r.err)
+	}
+	if strings.Contains(r.out+r.err, key) || strings.Contains(r.out+r.err, key[len("sf_")+9:]) {
+		t.Fatal("the revoke command echoed the secret")
+	}
+	// An ordinary prefix gets no warning.
+	k2 := strings.TrimSpace(mustOK(t, "key", "create", "--tenant", "acme").out)
+	if r := mustOK(t, "key", "revoke", k2[3:11]); strings.Contains(r.err, "warning") {
+		t.Fatalf("spurious warning: %q", r.err)
+	}
+}
