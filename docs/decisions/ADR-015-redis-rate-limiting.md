@@ -56,6 +56,9 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   asynchronous and never blocks the handler (bounded queue, four workers); when the queue is full, or Redis is backing off, a release is
   dropped and the lease expires by itself. The local lease map is bounded by `rate_limit.max_local_leases`; over the bound a request is
   refused as unavailable in both failure modes (the bound protects the gateway's memory, not quotas).
+- **Registry mode and unknown models.** The limiter runs before routing, so in registry mode a request for a model the registry does not know (404) has
+  already consumed the tenant's quota; a model forbidden by `allowed_models` is refused earlier and not charged. Moving the limiter after routing would
+  mean undoing a reserved worker slot on every refusal, so this is a documented limitation rather than a change to the scheduling path.
 - **Where in the request.** authenticate, read and parse the body, allowed models, **limiter**, route. The slot is released by a `defer` in
   the chat handler, so success, errors, client disconnects and panics all give it back.
 - **Rejections.** `429 RATE_LIMITED` with `Retry-After` in whole seconds (at least 1), computed from the bucket that failed (when several
@@ -97,7 +100,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
 
 ## Consequences
 
-- Redis is on the request path for tenants with quotas: one round trip per request (about 0.4 ms added at p50 locally; see
+- Redis is on the request path for tenants with quotas: one round trip per request (about 0.5 ms added at p50, 0.49 ms measured locally; see
   `docs/benchmarks/phase-8-rate-limits.md`), bounded by a timeout and a backoff.
 - Estimates are not usage: a tenant is charged `input + max_tokens`, so a large `max_tokens` spends quota faster than the model generates.
   A refund after the response is the natural follow-up.

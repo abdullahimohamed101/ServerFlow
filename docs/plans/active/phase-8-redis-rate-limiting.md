@@ -31,7 +31,7 @@ harness: an aggressive tenant and several normal tenants spread over three gatew
 - No refund of unused estimated tokens after a response (charged on the estimate; documented as conservative).
 - No limiter for unauthenticated traffic: tenant limits need identity, so `required` limiting needs `auth.mode=required`.
   A front proxy or per-IP limiter remains the answer for anonymous floods (Phase 9 documentation).
-- No local fallback limiter and no Redis Cluster/Sentinel operation (the key layout is cluster-safe; running one is not tested).
+- No local fallback limiter and no Redis Cluster/Sentinel operation (Redis Cluster is not supported: the single acquire script touches a tenant's keys and a model key in one call; see D12).
 - No change to the scheduler, registry, retry logic, or the benchmark harness code.
 - Rate limiting is **off by default**; Phases 2–9 behave exactly as before.
 
@@ -74,6 +74,7 @@ harness: an aggressive tenant and several normal tenants spread over three gatew
 - **D6 Order of checks.** authenticate → read and parse body → allowed models → **rate limit** → route. The limiter runs
   after the body is parsed (the token cost needs it) and before any worker is touched. The concurrency lease is released
   when the handler finishes, whatever the outcome (success, error, client disconnect, panic).
+- **D7 (amended: registry mode)** In registry mode the registry, not a static list, decides which models exist, so the limiter runs before the router and an unknown model (404) still consumes the tenant's quota; only configured model-cap names ever become keys. Documented, not changed.
 - **D7 The per-model limit (spec §18 `rate:model:{model}`).** An optional global requests-per-minute cap per model,
   configured (`rate_limit.model_requests_per_minute: {model: n}`), checked in the same script. It applies even with auth off.
   A model not listed has no model cap. Only registry-confirmed or statically configured models reach the limiter, so

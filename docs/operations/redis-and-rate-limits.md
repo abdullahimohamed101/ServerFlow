@@ -63,6 +63,12 @@ Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_r
   control.
 - **Dense text is under-counted.** Input is estimated at three ASCII characters per token; digits, base64, hex, minified JSON and code can take
   1.5 to 3. The 1 MiB request body cap bounds the input.
+- **Registry mode charges unknown models.** In `gateway.worker_source: registry` the registry decides which models exist, and the limiter runs
+  before the router picks a worker, so a request for a model that turns out not to exist (404) has already consumed the tenant's request and
+  token quota. Tenants with an `allowed_models` list are not affected (a forbidden model is refused before the limiter, and not charged).
+  This was left as is on purpose: moving the limiter after routing would mean checking quotas after a worker slot has been reserved and
+  then undoing the reservation on every refusal, a much bigger change to the scheduling path than this phase should make. Requests for
+  non-existent models are client errors the tenant pays for; the per-tenant quota bounds the cost.
 - **Unauthenticated traffic is not rate limited.** Tenant quotas need an identity (ADR-014's front-proxy or per-IP limiter advice stands).
 
 ## When Redis fails
@@ -102,10 +108,23 @@ At startup in `required` mode an unreachable Redis, a wrong password, or an unsa
 ## Security notes
 
 - Keep Redis private: no public Redis (spec section 44). A remote Redis needs TLS and a password, or `allow_insecure_transport`.
-- The password is only in config or `SERVERFLOW_REDIS_PASSWORD`, never a flag. Prefer an ACL user limited to the commands used
-  (`EVALSHA`, `EVAL`, `SET`, `GET`, `PTTL`, `HELLO`, `PING`, `AUTH`, `SELECT`, `CLIENT`).
+- The password is only in config or `SERVERFLOW_REDIS_PASSWORD`, never a flag. Prefer an ACL user limited to the keys and commands used. The
+  scripts run as the connecting user, so every command *inside* them needs permission, not just `EVAL`. Verified against a real ACL user:
+
+  ```text
+  ACL SETUSER serverflow on >PASSWORD ~rl:* ~request:* -@all +evalsha +eval +time +hmget +hset +pexpire +zremrangebyscore +zcard +zadd +zscore +zrem +set +hello +ping
+  ```
+
+  (`rl:*` are the limiter's keys, `request:*` the optional metadata, which needs `+set`; add `+select` if `redis.db` is not 0.) A missing command
+  does not fail loudly: the script errors, which the gateway treats as Redis being unavailable (503 in closed mode).
 - Tenant and model names are escaped in keys; only models named in `model_requests_per_minute` become keys.
 - This limits authenticated tenants. Floods of unauthenticated requests still need a front proxy or per-IP limiter.
+- **Memory.** Keys are small and expire on their own (twice the burst window), so memory follows active tenants. Do not run this Redis with
+  `maxmemory-policy noeviction` at its limit: a write that cannot be stored makes the script fail with OOM, and every limited tenant gets
+  503 in closed mode (open mode: all limits lapse). Do not use `allkeys-lru`/`allkeys-random` either: evicting limiter keys resets those
+  buckets and leases to full, so quotas silently reset. Give Redis headroom (set `maxmemory` well above the working set) and, if you must cap
+  it, use a `volatile-*` policy: every limiter key has a TTL, and keys without one (other applications sharing the instance) are never evicted.
+  Prefer a dedicated instance. Alert on `evicted_keys` and on `rate_limit_rejections_total{limit="unavailable"}`.
 - Redis Cluster is not supported (the script touches a tenant's keys and a model key together). Redis 7 is tested; Valkey is wire-compatible.
 
 ## Metrics
