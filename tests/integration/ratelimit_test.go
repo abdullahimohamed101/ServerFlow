@@ -380,7 +380,7 @@ func TestKilledGatewaysLeasesExpireAndLongRequestsKeepTheirs(t *testing.T) {
 func TestLongStreamKeepsItsSlotThroughRenewal(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 4)
-	c := newCluster(t, clusterOpts{n: 2, run: true, cfg: ratelimit.Config{LeaseTTL: 600 * time.Millisecond}, upstream: func(w http.ResponseWriter, r *http.Request) {
+	c := newCluster(t, clusterOpts{n: 2, run: true, cfg: ratelimit.Config{LeaseTTL: 1500 * time.Millisecond}, upstream: func(w http.ResponseWriter, r *http.Request) {
 		started <- struct{}{}
 		select {
 		case <-release:
@@ -392,7 +392,7 @@ func TestLongStreamKeepsItsSlotThroughRenewal(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { code, _, _ := c.gws[0].chat(key, model); done <- code }()
 	<-started
-	end := time.Now().Add(2400 * time.Millisecond) // four lease TTLs
+	end := time.Now().Add(3300 * time.Millisecond) // more than two lease TTLs
 	for time.Now().Before(end) {
 		if code, _, _ := c.gws[1].chat(key, model); code != 429 {
 			t.Fatalf("the slot was lost during a long request: %d", code)

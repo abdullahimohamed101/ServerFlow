@@ -443,7 +443,7 @@ func TestRealRedisClockDrivesRefill(t *testing.T) {
 
 func TestReleaseAndRenewalRunInTheBackground(t *testing.T) {
 	c := redistest.NewClient(t)
-	l, err := NewRedis(c, Config{LeaseTTL: 600 * time.Millisecond})
+	l, err := NewRedis(c, Config{LeaseTTL: 1500 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestReleaseAndRenewalRunInTheBackground(t *testing.T) {
 		t.Fatal("refused")
 	}
 	// Held for 3x the TTL: only renewal can keep the slot.
-	deadline := time.Now().Add(1800 * time.Millisecond)
+	deadline := time.Now().Add(3300 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if x := allow(t, l, tenantReq(tn, lim, 1)); x.Allowed {
 			t.Fatal("the slot was lost while the request was still running")

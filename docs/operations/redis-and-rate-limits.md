@@ -1,0 +1,86 @@
+# Operating Redis and rate limits
+
+Rate limiting is **off by default**. This page covers turning it on, what each setting does, what happens when Redis fails, and
+how to run the tests. The design and its trade-offs are in ADR-015.
+
+## Quick start (local)
+
+```bash
+make dev-redis                                  # throwaway Redis 7 on 127.0.0.1:56379 WITH a password, like CI's (DEV_REDIS_PORT to change)
+export SERVERFLOW_REDIS_ADDRESS="$(scripts/dev-redis.sh addr)"
+export SERVERFLOW_REDIS_PASSWORD="$(scripts/dev-redis.sh password)"
+export SERVERFLOW_RATE_LIMIT_MODE=required SERVERFLOW_AUTH_MODE=required   # tenant quotas need identities (see postgres-and-auth.md)
+go run ./cmd/admin tenant create acme --rpm 600 --tpm 100000 --max-concurrent 8
+go run ./cmd/gateway
+scripts/dev-redis.sh stop
+```
+
+Without authentication only per-model caps can be enforced:
+`SERVERFLOW_RATE_LIMIT_MODE=required SERVERFLOW_RATE_LIMIT_MODEL_REQUESTS_PER_MINUTE=qwen-7b=300`.
+
+`make test-redis` runs the Redis-backed tests against that instance. Without `SERVERFLOW_TEST_REDIS_ADDR` and
+`SERVERFLOW_TEST_REDIS_PASSWORD` those tests skip; CI sets them and fails if any skip. The test Redis requires a password on purpose:
+a test client that forgets it fails locally the way it would in CI. On Docker Desktop for Mac the Redis container's clock can step
+while the Mac sleeps, which makes exact-count tests and the benchmark unreliable; keep the Mac awake (`caffeinate -dimsu go test ...`).
+
+## Configuration
+
+| Setting (env `SERVERFLOW_...`) | Default | Meaning |
+| --- | --- | --- |
+| `rate_limit.mode` (`RATE_LIMIT_MODE`) | `off` | `off` or `required`. `required` needs Redis at startup, and `auth.mode: required` for tenant quotas (or model caps). |
+| `rate_limit.burst_seconds` | 60 | Seconds of quota a bucket holds (1-3600). 60 means a tenant may burst one minute's quota. |
+| `rate_limit.lease_ttl` | 60s | How long a concurrency slot lives without renewal (10s-1h, at least 3x `redis.timeout`). A running request renews every third of it. |
+| `rate_limit.max_local_leases` | 100000 | Slots one gateway tracks; over it requests get 503. |
+| `rate_limit.model_requests_per_minute` (`RATE_LIMIT_MODEL_REQUESTS_PER_MINUTE=model=n,model=n`) | none | Global per-model request cap across all tenants and gateways. Works with auth off. |
+| `redis.address` (`REDIS_ADDRESS`) | `redis:6379` | `host:port`, or a `redis://`, `rediss://` or `unix://` URL (a URL may carry a password and database). |
+| `redis.password` (`REDIS_PASSWORD`) | none | A secret: never logged, echoed or printed; config prints it as `<redacted>`. |
+| `redis.db`, `redis.tls` | 0, false | Database number; TLS 1.2+ with verification. |
+| `redis.timeout` | 50ms | Bounds every Redis call. A slower Redis is treated as failed. |
+| `redis.backoff` | 1s | After a failure Redis is left alone this long (one probe, then back to normal). |
+| `redis.on_failure` | `closed` | `closed` or `open`; see below. |
+| `redis.request_metadata`, `redis.request_metadata_ttl` | false, 1h | Best-effort `request:{id}` records (tenant, model, worker, attempt). Nothing reads them yet. |
+| `redis.allow_insecure_transport` | false | Allow a Redis that is not this machine without TLS or without a password. |
+
+Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_requests`, `0` = unlimited) are tenant settings
+(`serverflow-admin tenant set-quota`). A change takes effect within `auth.cache_ttl` (30s). A tenant with all three at 0 costs no Redis round trip.
+
+## What a client sees
+
+- `429 RATE_LIMITED`, `Retry-After: N` (whole seconds, at least 1). The message names the limit (requests, tokens, concurrent requests,
+  model) and nothing else. For requests and tokens the wait is exact: a client that waits it gets in (unless other traffic took the tokens).
+  For concurrency it is a 1 s hint: a slot frees when some request finishes.
+- `503 RATE_LIMIT_UNAVAILABLE`, `Retry-After`: Redis could not answer and the gateway fails closed (or this gateway holds too many leases).
+- Cost is `input_tokens + max_tokens` (`gateway.max_tokens_limit` when absent), a deliberate over-estimate, not refunded. A request larger
+  than the whole token bucket needs a full bucket.
+
+## When Redis fails
+
+| | `closed` (default) | `open` |
+| --- | --- | --- |
+| Requests that need a check | `503 RATE_LIMIT_UNAVAILABLE` | admitted unchecked; `rate_limit_bypassed_total` counts them |
+| Requests with nothing to enforce | unaffected | unaffected |
+| Quotas | protected | lapse during the outage |
+| Cost of a dead Redis | one timeout (`redis.timeout`) per `redis.backoff`, then instant answers | the same |
+| Logs | one line when the outage starts, one when it ends (also in open mode) | same, plus `rate_limit_bypassed` on each request line |
+
+Recovery is automatic. Concurrency slots taken before an outage lapse after `lease_ttl`; a request still running when its lease lapsed
+(an outage longer than `lease_ttl`) is not counted again, so a tenant can briefly exceed `max_concurrent_requests` by those requests.
+A gateway that dies holding slots frees them within `lease_ttl`.
+
+Choose `closed` when quotas protect money or shared capacity, `open` when availability matters more; both are tested.
+At startup in `required` mode an unreachable Redis, a wrong password, or an unsafe transport stops the gateway with a clear message.
+
+## Security notes
+
+- Keep Redis private: no public Redis (spec section 44). A remote Redis needs TLS and a password, or `allow_insecure_transport`.
+- The password is only in config or `SERVERFLOW_REDIS_PASSWORD`, never a flag. Prefer an ACL user limited to the commands used
+  (`EVALSHA`, `EVAL`, `SET`, `GET`, `PTTL`, `HELLO`, `PING`, `AUTH`, `SELECT`, `CLIENT`).
+- Tenant and model names are escaped in keys; only models named in `model_requests_per_minute` become keys.
+- This limits authenticated tenants. Floods of unauthenticated requests still need a front proxy or per-IP limiter.
+- Redis Cluster is not supported (the script touches a tenant's keys and a model key together). Redis 7 is tested; Valkey is wire-compatible.
+
+## Metrics
+
+`rate_limit_rejections_total{limit}` (`requests`, `tokens`, `concurrency`, `model`, `unavailable`), `rate_limit_bypassed_total`,
+`rate_limit_decision_seconds`. No tenant labels (cardinality is Phase 10's decision); the request log line has `tenant_id`, `rate_limit`
+(the limit hit) and `est_cost`.

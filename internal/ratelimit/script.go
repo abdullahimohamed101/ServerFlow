@@ -41,13 +41,18 @@ local function ceil_div(a, b)
 end
 
 -- Reads a bucket (refilled to now, clamped to the current capacity) and returns its level, what the
--- request needs, and how many ms until it could be admitted (0 = now).
+-- request needs, how many ms until it could be admitted (0 = now), and the time to store with it. That
+-- time never goes backwards: if the clock stepped back (a failover, or a VM clock correction) the bucket
+-- keeps its later stamp, so when the clock comes forward again the refill is only the real elapsed time
+-- instead of the size of the step.
 local function check(key, quota, tokens)
   local cap = quota * window
   local level = cap
+  local stamp = now
   local h = redis.call('HMGET', key, 'l', 't')
   local l, ts = tonumber(h[1]), tonumber(h[2])
   if l and ts then
+    if ts > now then stamp = ts end
     local elapsed = now - ts
     if elapsed < 0 then elapsed = 0 end
     if elapsed > window then elapsed = window end
@@ -58,7 +63,7 @@ local function check(key, quota, tokens)
   if need > cap then need = cap end
   local wait = 0
   if level < need then wait = ceil_div(need - level, quota) end
-  return level, need, wait
+  return level, need, wait, stamp
 end
 
 local best_code, best_wait = 0, 0
@@ -66,13 +71,13 @@ local function consider(code, wait)
   if wait > best_wait then best_code, best_wait = code, wait end
 end
 
-local req_level, req_need, tok_level, tok_need, mod_level, mod_need, w
+local req_level, req_need, req_at, tok_level, tok_need, tok_at, mod_level, mod_need, mod_at, w
 if rq > 0 then
-  req_level, req_need, w = check(KEYS[1], rq, 1)
+  req_level, req_need, w, req_at = check(KEYS[1], rq, 1)
   if w > 0 then consider(1, w) end
 end
 if tq > 0 then
-  tok_level, tok_need, w = check(KEYS[2], tq, cost)
+  tok_level, tok_need, w, tok_at = check(KEYS[2], tq, cost)
   if w > 0 then consider(2, w) end
 end
 if mc > 0 then
@@ -80,20 +85,20 @@ if mc > 0 then
   if redis.call('ZCARD', KEYS[3]) >= mc then consider(3, 1000) end
 end
 if mq > 0 then
-  mod_level, mod_need, w = check(KEYS[4], mq, 1)
+  mod_level, mod_need, w, mod_at = check(KEYS[4], mq, 1)
   if w > 0 then consider(4, w) end
 end
 if best_code > 0 then
   return {0, best_code, best_wait}
 end
 
-local function store(key, level, need)
-  redis.call('HSET', key, 'l', string.format('%.0f', level - need), 't', string.format('%.0f', now))
+local function store(key, level, need, at)
+  redis.call('HSET', key, 'l', string.format('%.0f', level - need), 't', string.format('%.0f', at))
   redis.call('PEXPIRE', key, window * 2)
 end
-if rq > 0 then store(KEYS[1], req_level, req_need) end
-if tq > 0 then store(KEYS[2], tok_level, tok_need) end
-if mq > 0 then store(KEYS[4], mod_level, mod_need) end
+if rq > 0 then store(KEYS[1], req_level, req_need, req_at) end
+if tq > 0 then store(KEYS[2], tok_level, tok_need, tok_at) end
+if mq > 0 then store(KEYS[4], mod_level, mod_need, mod_at) end
 if mc > 0 then
   redis.call('ZADD', KEYS[3], string.format('%.0f', now + lease_ttl), lease_id)
   redis.call('PEXPIRE', KEYS[3], lease_ttl * 2)

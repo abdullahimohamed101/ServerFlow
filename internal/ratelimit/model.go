@@ -75,7 +75,7 @@ func (m *Model) peek(key string, now, quota int64) (level, capacity int64) {
 		return capacity, capacity
 	}
 	elapsed := now - b.at
-	if elapsed < 0 { // the clock went backwards (a Redis failover): never remove tokens for it
+	if elapsed < 0 { // the clock went backwards (a Redis failover, a VM clock step): no refill, and the stamp is kept (see Allow)
 		elapsed = 0
 	}
 	if window := int64(m.p.BurstSeconds) * 1000; elapsed > window {
@@ -158,7 +158,13 @@ func (m *Model) Allow(nowMs int64, r ModelRequest) Outcome {
 	}
 
 	for _, c := range checks {
-		m.buckets[c.key] = &bucket{level: c.level - c.need, at: nowMs, set: true}
+		// The stamp never moves back: if the clock stepped back, the bucket keeps its later stamp, so when the
+		// clock returns the refill is the real elapsed time and not the size of the step.
+		at := nowMs
+		if b := m.buckets[c.key]; b != nil && b.set && b.at > at {
+			at = b.at
+		}
+		m.buckets[c.key] = &bucket{level: c.level - c.need, at: at, set: true}
 	}
 	if r.Limits.MaxConcurrent > 0 {
 		if m.leases[concKey] == nil {

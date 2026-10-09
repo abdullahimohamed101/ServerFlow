@@ -303,3 +303,32 @@ func TestKeysAreInjectiveAndBraceFree(t *testing.T) {
 		}
 	}
 }
+
+func TestModelClockStepBackThenForwardCreditsOnlyRealTime(t *testing.T) {
+	// A Redis clock that steps back 60 s and later returns (seen with a Docker VM) must not mint a minute of
+	// tokens: the bucket keeps its later stamp, so the refill after the return is the real elapsed time.
+	m := NewModel(testParams)
+	lim := Limits{RequestsPerMinute: 60} // 1 token per second
+	for i := 0; i < 60; i++ {
+		m.Allow(100_000, req("a", lim, 1))
+	}
+	if m.Allow(100_000, req("a", lim, 1)).Allowed {
+		t.Fatal("bucket should be empty")
+	}
+	for step := int64(0); step < 5; step++ { // the clock reads 40 s while real time passes
+		if m.Allow(40_000+step, req("a", lim, 1)).Allowed {
+			t.Fatal("tokens appeared while the clock was behind")
+		}
+	}
+	// Real time is now 1.5 s after the step; the clock is right again.
+	n := 0
+	for m.Allow(101_500, req("a", lim, 1)).Allowed {
+		n++
+		if n > 100 {
+			t.Fatal("unbounded")
+		}
+	}
+	if n != 1 {
+		t.Fatalf("admitted %d after a step back and forward, want the 1 token that really refilled", n)
+	}
+}

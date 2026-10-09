@@ -19,7 +19,7 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 9 the repository contains the foundation (configuration,
+As of Phase 9 (and Phase 8's rate limiting) the repository contains the foundation (configuration,
 structured logging, CI), the gateway MVP, a configurable mock worker, the
 worker registry, a scheduler framework, a benchmark harness, and PostgreSQL-backed
 tenants and API keys. The gateway proxies OpenAI-compatible requests, including
@@ -29,7 +29,7 @@ plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
 tracks their state and health. A request that fails before any output is retried on a different
 worker, up to `gateway.max_attempts` (default 2; ADR-012). With `auth.mode: required` /v1 needs an API key whose hash lives in
-PostgreSQL (ADR-014). There is no circuit breaker or rate limiting yet. A benchmark harness drives reproducible load against it (below).
+PostgreSQL (ADR-014). With `rate_limit.mode: required` each tenant's request, token and concurrency quotas, and optional per-model caps, are enforced across gateways with Redis (ADR-015). There is no circuit breaker yet. A benchmark harness drives reproducible load against it (below).
 
 ## Major Components
 
@@ -101,7 +101,7 @@ shared-secret bearer token. Placement and scaling are later phases. See
 Purpose: distributed ephemeral state (Redis), durable metadata (PostgreSQL),
 async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
 tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
-`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9);
+`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9) and Redis rate limiting (Phase 8);
 the rest are skeletons.
 
 ### Authentication and PostgreSQL
@@ -111,10 +111,17 @@ bounded key cache, `KeyStore` interface), `internal/postgres` (the only package
 that imports pgx: store and migration runner), `migrations/` (embedded forward-only
 SQL), `cmd/admin` (`serverflow-admin`). The gateway depends on `internal/auth`
 only. The database is never queried per request on a warm cache; revocation takes
-effect within `auth.cache_ttl`. Quotas and priority are stored and carried, not
-enforced (Phase 8/22). See ADR-014 and `docs/operations/postgres-and-auth.md`.
+effect within `auth.cache_ttl`. Quotas are enforced by the rate limiter (below); priority is stored and carried, not enforced (Phase 22). See ADR-014 and `docs/operations/postgres-and-auth.md`.
 
 
+
+### Rate Limiting and Redis
+Purpose: share each tenant's quotas across every gateway. Location: `internal/ratelimit` (pure token-bucket and lease
+model in `model.go`, the same algorithm as one atomic Lua script in `script.go`, `RedisLimiter` with lease renewal, outage backoff
+and closed/open failure modes, `EstimateCost`), `internal/redis` (the only package that imports go-redis: client, transport guard,
+password redaction, health tracking, best-effort request metadata). The gateway depends on the `ratelimit.Limiter` interface and
+asks it after the body is parsed and the model allowed, before routing; the slot is released on every exit path. Off by default.
+Redis stays ephemeral: losing it loses buckets, never data. See ADR-015 and `docs/operations/redis-and-rate-limits.md`.
 
 ## Dependency Direction
 
