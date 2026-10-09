@@ -98,10 +98,11 @@ build() {
   go mod tidy -diff || fail "go.mod/go.sum are not tidy (run go mod tidy)"
 }
 
+# v1.1.4 panics ("unexpected expr: *ast.KeyValueExpr") on Go 1.27, which CI's "stable" resolves to.
 vuln() {
   step "govulncheck"
   if ! command -v govulncheck >/dev/null 2>&1; then
-    go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+    go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
     PATH="$(go env GOPATH)/bin:$PATH"
   fi
   govulncheck ./...
