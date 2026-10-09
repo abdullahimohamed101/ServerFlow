@@ -41,7 +41,7 @@ docs/          architecture, ADRs, benchmarks, operations, development
 
 ## Quick Start
 
-Building and testing requires only Go 1.24+.
+Building and testing requires only Go 1.25+.
 
 ```bash
 go build ./...
@@ -122,4 +122,5 @@ On Windows (no `make`), use the existing quality gate:
 ## Development
 
 See `docs/development/setup.md` for tooling requirements and Windows notes.
+`make quality` runs the same checks as CI (`scripts/quality.sh`; see `docs/development/ci.md`).
 See `docs/plans/active/` for the current execution plan (empty between phases).

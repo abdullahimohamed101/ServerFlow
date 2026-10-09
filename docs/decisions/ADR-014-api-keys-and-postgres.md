@@ -151,3 +151,6 @@ priority and carries them, nothing more.
   not constrained to be after `created_at`; `Authorization: Bearer` must have exactly one space. These
   were reviewed and left as they are.
 - `scripts/dev-postgres.sh` is a throwaway loopback cluster for local use only. It uses SCRAM password authentication with a fixed, public password so local runs behave like the CI service (an earlier trust-auth version let three tests that omitted a password pass locally and fail in CI).
+
+**Update:** pgx was bumped to v5.9.2 and `golang.org/x/text` to v0.41.0 to fix GO-2026-5004, GO-2026-6629 and GO-2026-5970 (reported by govulncheck). These
+releases require Go 1.25, so the repository's Go floor, `go.work` and the documented minimum are now 1.25.
