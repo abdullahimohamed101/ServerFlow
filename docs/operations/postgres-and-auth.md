@@ -21,7 +21,7 @@ scripts/dev-postgres.sh stop
 | Setting (env) | Default | Meaning |
 | --- | --- | --- |
 | `postgres.dsn` (`SERVERFLOW_POSTGRES_DSN`) | placeholder | A secret. Never logged or echoed. |
-| `postgres.max_conns` | 10 | Pool size (1-100). |
+| `postgres.max_conns` | 10 | Pool size (1-100). In `auth.mode: required` it must be at least 4: key lookups use at most `max_conns - 2` connections. |
 | `postgres.connect_timeout` | 5s | Connection and startup check timeout. |
 | `postgres.allow_insecure_transport` | false | Permit a DSN that does not require TLS to a non-local host. By default any host other than loopback/`localhost`/a unix socket needs `sslmode=require`, `verify-ca` or `verify-full` (unset, `allow`, `prefer` and `disable` are refused). `PG*` environment variables count. |
 | `auth.mode` (`SERVERFLOW_AUTH_MODE`) | `off` | `off` or `required`. |
@@ -68,11 +68,11 @@ recovered` once at its end. `auth_rejections_total{status}` counts refusals.
 
 - Database down, key cached: served until `cache_ttl + stale_grace`, then 503. A revocation made
   during the outage is not seen until the database returns.
-- Database down, key not cached: 503 with `Retry-After`. The first request waits for its lookup to fail,
+- Database down, key not cached: 503 with `Retry-After`. "Down" includes a database that accepts connections and never answers: after the first lookup times out, the following second's requests are refused at once. A pool with every connection in use, or a server with no free connection slots (SQLSTATE 53300), is treated as busy rather than down: no backoff, cached keys served stale, unseen keys refused, log lines rate limited. The first request waits for its lookup to fail,
   which can take up to the 3 s lookup timeout if the database hangs instead of refusing; requests in
   the following second are refused immediately. The store is retried at most once a second.
 - Database hanging (packets dropped, not refused): a cached key past its TTL waits at most 250 ms
-  (`refresh_wait`) and is served stale while the lookup finishes in the background; requests that arrive
+  (the refresh wait: a fixed 250 ms, not configurable) and is served stale while the lookup finishes in the background; requests that arrive
   meanwhile do not wait. A key the gateway has not seen waits up to the 3 s lookup timeout.
 - Lookup flood (many distinct random keys): at most `pool size - 2` lookups run at once and a quarter of
   them is reserved for refreshing cached keys. Beyond the cap unknown keys get 503 without a database
@@ -85,6 +85,17 @@ recovered` once at its end. `auth_rejections_total{status}` counts refusals.
 - Expiry: exact (checked against the clock on every request).
 
 ## Migrations
+
+If `migrate up` fails on 0002 (`tenants_allowed_models_no_null_elements`), some tenant has a NULL element in
+`allowed_models`. Nothing was applied. Find and repair the rows, then run it again:
+
+```sql
+SELECT id, name FROM tenants WHERE array_position(allowed_models, NULL) IS NOT NULL;
+UPDATE tenants SET allowed_models = array_remove(allowed_models, NULL)
+ WHERE array_position(allowed_models, NULL) IS NOT NULL;
+```
+
+Review the tenants' lists afterwards (`serverflow-admin tenant show NAME`).
 
 Forward-only SQL in `migrations/`, applied by `migrate up` under an advisory lock, one transaction per
 file. The runner takes a session advisory lock (polling for up to 60 s, then failing with a clear message), so

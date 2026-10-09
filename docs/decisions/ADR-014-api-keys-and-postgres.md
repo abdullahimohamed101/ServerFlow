@@ -52,7 +52,7 @@ priority and carries them, nothing more.
   Malformed keys are refused before any cache or database access.
 - **Lookup capacity and floods.** An unauthenticated client can send unlimited distinct, well-formed
   random keys, each of which is a cache miss. Concurrent store lookups are therefore capped
-  (`MaxLookups`, set by the gateway to pool size minus two, minimum 2), so lookups can never take every
+  (`MaxLookups`, set by the gateway to `postgres.max_conns - 2`; required mode therefore needs `postgres.max_conns` of at least 4, which configuration validation enforces), so lookups can never take every
   pool connection. A quarter of the cap (at least one slot) is reserved for refreshing keys that are
   already cached; keys never seen before may use only the rest. Over the cap, unknown keys are shed
   immediately with `503 AUTH_UNAVAILABLE` and `Retry-After`, without touching the database and
@@ -75,9 +75,12 @@ priority and carries them, nothing more.
   (5 min) beyond its TTL (still checked for expiry); an uncached key gets `503 AUTH_UNAVAILABLE` with
   `Retry-After` (not 401: it may be valid). The first such request waits for its lookup to fail, which
   can take up to the lookup timeout (3 s) when the database hangs rather than refuses; later requests
-  within the backoff are refused immediately. After a failed lookup the store is left alone for one
+  within the backoff are refused immediately (this holds for a database that refuses or resets connections and
+  for one that accepts them and never answers, as long as the pool has spare capacity; a pool whose connections are
+  all in use, or a server with no free connection slots, counts as *busy* instead: no backoff, a cached key is served stale,
+  unseen keys are refused, and the log line is rate limited). After a failed lookup the store is left alone for one
   second. A request for a key that is already cached (past its TTL, inside `stale_grace`) never waits
-  longer than `refresh_wait` (250 ms): it is served from the stale copy while the lookup carries on in the
+  longer than the refresh wait (250 ms, a fixed constant of the authenticator, not an operator setting): it is served from the stale copy while the lookup carries on in the
   background, and requests that arrive while that lookup runs do not wait at all, so a hanging database (packets
   dropped, not refused) costs one request a quarter of a second per lookup attempt, not a 3 s stall. A
   key the gateway has never seen still waits for its lookup, up to the 3 s lookup timeout. The
@@ -87,7 +90,7 @@ priority and carries them, nothing more.
   unreachable or a migration is pending.
 - **Defaults are off.** `auth.mode: off` is the default; the gateway then never touches PostgreSQL and
   behaves exactly as in Phase 6.
-- **Schema and migrations.** Plain embedded SQL, forward-only, `0001_initial.sql`. The runner records
+- **Schema and migrations.** Plain embedded SQL, forward-only: `0001_initial.sql` (tenants, api_keys, models, benchmark_runs) and `0002_allowed_models_no_nulls.sql` (a CHECK forbidding NULL elements in `tenants.allowed_models`). The runner records
   `(version, name, checksum)` in `schema_migrations`, applies each file in its own transaction under
   a session advisory lock, and refuses when an applied file's checksum changed or the database is newer
   than the binary. Quotas are typed columns (0 = none configured). Revoked keys keep their rows;
@@ -121,7 +124,7 @@ priority and carries them, nothing more.
   migrator and the database is not supported. `schema_migrations` is resolved through the connection's
   `search_path`. Migration files must not contain their own `BEGIN`/`COMMIT` or statements that cannot
   run in a transaction (`CREATE INDEX CONCURRENTLY`).
-- **Metrics.** One counter, `auth_rejections_total{status}`, with three possible label values.
+- **Metrics.** One counter, `auth_rejections_total{status}`, with the label values `401`, `403`, `500` (an unreadable key record) and `503`.
   Tenant and key IDs are not labels; Phase 10 decides how to expose tenants.
 
 ## Alternatives considered

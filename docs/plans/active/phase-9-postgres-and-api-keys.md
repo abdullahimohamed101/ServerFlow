@@ -1,6 +1,6 @@
 # Phase 9 — PostgreSQL: Tenants, API Keys, Model Configs, Benchmark Metadata
 
-Status: Implemented, in review (implementation and two rounds of review fixes complete; see Implementation Notes)
+Status: Implemented; independent review and verification done, all findings fixed (see Implementation Notes). Awaiting the coordinator's move to completed.
 Owner: coding agent
 Depends on: Phase 6 (PR #7). Runs in parallel with Phase 7 (benchmark harness); the two share no code, see "Parallel work".
 Spec: `docs/architecture/serverflow-spec.md` §8, §19, §44–46, §48 (`internal/auth`, `internal/postgres`, `migrations`), §51, §52, §58 Phase 9, §63
@@ -331,3 +331,32 @@ Steps 1 and 2 can proceed independently; 3–6 build on them.
   cache when a lookup succeeds (an expired negative entry is removed before the lookup starts and a fresh one short
   circuits it), so the removal is defensive. Re-run on the current code: all 20 observable mutants plus 8 new ones
   for the new code killed; the 3 survivors are the equivalent ones above and one no-op mutant of mine.
+
+### Final small round (narrow verification findings)
+
+- **F1 black-holed database.** A connection attempt that gets no answer while the pool has spare capacity is now an
+  outage (backoff; later uncached keys refused at once; "unavailable" logged once). Busy means every pool connection is
+  in use (`pool.Stat()`), which is the only context expiry still classed busy. Test:
+  `TestBlackholedDatabaseIsAnOutageAndLaterKeysFailFast` (a listener that accepts and never answers; four back-to-back
+  unseen keys: only the first waits). Known edge: with a pool of exactly the number of connections stuck in a
+  black-holed handshake the check cannot tell saturation from a hang.
+- **F2 SQLSTATE 53300** is busy (no backoff, rate-limited log). Test: `TestTooManyConnectionsIsBusyNotAnOutage` (a role with
+  CONNECTION LIMIT 1).
+- **F3 small pools.** `postgres.max_conns >= 4` is required when `auth.mode: required` (config error otherwise), so the lookup cap
+  `max_conns - 2` is always below the pool and at least 2. Tests: `TestRequiredAuthNeedsAPoolOfAtLeastFourConnections`, `TestLookupCapLeavesTwoConnectionsFree`.
+- **Constructor gap.** `NewRegistry` and the new `NewFromConfig` honour `auth.mode`; `New` (which only sees `GatewayConfig`) takes
+  authentication only through `WithAuthenticator`. `cmd/gateway`'s wiring check and the cap are small tested functions.
+  Tests: `TestConstructorsHonourAuthMode`, `TestCheckAuthWiring`, `TestRequiredModeWithoutAnAuthenticatorIsCaughtBeforeServing`.
+- **Bug found by the new tests:** the admin CLI filtered its normal output but printed errors (which can echo a flag name from the
+  command line) through the raw writer. Both are filtered now. Test: `TestStderrIsFilteredToo`.
+- **Docs:** metrics HELP and ADR list 401/403/500/503; ADR names 0002; the 250 ms refresh wait is a fixed constant; the ops guide has the query and
+  repair for rows that block 0002 and the busy/outage distinction.
+- **Mutants killed by new tests:** shed arms backoff, refresh counter leak, refresh counted as unseen, 10x refresh timer, TLS prefix
+  hostnames (`localhost.evil.com`, `127.0.0.1.evil.com`, `0.0.0.0`), error while reading rows treated as not found, plainWriter for bidi
+  marks, U+2028/2029 and U+FFFD, the stderr writer, and the two main.go items.
+- **Equivalent mutants (no test possible):** p-key-len and au-neg-remove-on-success (see round 3); n-badrecord-arms-backoff (the next line resets
+  the backoff, so arming it first changes nothing); n-tls-trim-brackets (a bracketed IPv6 host is already unbracketed by the driver);
+  n-lookup-final-rowserr (the final `rows.Err()` after a successful scan cannot fail on a fully read single-row result);
+  n-pw-return-len (the returned count is not observable through `fmt.Fprintf`'s use); n-maperr-22003 (range checks now run first, so the
+  driver code is unreachable from the CLI); n-warn-unlimited (log rate limiting is cosmetic); n-maxlookups-min (the default for values below 2
+  is unreachable once configuration requires 4 connections).

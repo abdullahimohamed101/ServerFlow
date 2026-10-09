@@ -449,3 +449,47 @@ func TestKeyCreateRetriesAPrefixCollision(t *testing.T) {
 		t.Fatalf("calls=%d out=%q: a prefix collision must be retried with a fresh key", calls, r.out)
 	}
 }
+
+func TestPlainWriterFiltersEverythingDangerous(t *testing.T) {
+	cases := map[string]string{
+		"esc":        "a\x1bb",
+		"nul":        "a\x00b",
+		"bell":       "a\x07b",
+		"del":        "a\x7fb",
+		"c1":         "a\u009bb",
+		"bidi":       "a\u202eb",
+		"zero width": "a\u200bb",
+		"bom":        "a\ufeffb",
+		"line sep":   "a\u2028b",
+		"para sep":   "a\u2029b",
+		"bad utf8":   "a\xffb",
+	}
+	for name, in := range cases {
+		var out bytes.Buffer
+		n, err := plainWriter{&out}.Write([]byte(in))
+		if err != nil || n != len(in) {
+			t.Errorf("%s: wrote %d of %d, err %v", name, n, len(in), err)
+		}
+		if got := out.String(); got != "a?b" {
+			t.Errorf("%s: %q, want a?b", name, got)
+		}
+	}
+	var out bytes.Buffer
+	_, _ = plainWriter{&out}.Write([]byte("tab\there\nnext line, caf\u00e9 \u2713\n"))
+	if out.String() != "tab\there\nnext line, caf\u00e9 \u2713\n" {
+		t.Errorf("ordinary text was altered: %q", out.String())
+	}
+}
+
+// Error messages go through the same filter: a flag name from the command line is echoed by the
+// flag parser and must not reach the operator's terminal raw.
+func TestStderrIsFilteredToo(t *testing.T) {
+	setupDB(t)
+	r := admin(t, "tenant", "create", "x", "--\x1b[31mred\u202e")
+	if r.code != 2 || !strings.Contains(r.err, "flag provided but not defined") {
+		t.Fatalf("exit %d, stderr %q", r.code, r.err)
+	}
+	if strings.ContainsAny(r.err, "\x1b\x00\x07") || strings.Contains(r.err, "\u202e") {
+		t.Fatalf("stderr carries raw control characters: %q", r.err)
+	}
+}

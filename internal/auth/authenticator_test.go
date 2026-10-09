@@ -959,3 +959,90 @@ func TestUnknownPrefixDoesTheSameComparisonAsAWrongSecret(t *testing.T) {
 		t.Fatalf("hash comparisons: wrong secret %d, unknown prefix %d, want 1 each", perWrong, perUnknown)
 	}
 }
+
+// Shedding says nothing about the store's health: it must not start the backoff.
+func TestShedRequestDoesNotStartABackoff(t *testing.T) {
+	a, st, _, _ := setup(t, Config{MaxLookups: 2}) // one slot for unseen keys, one reserved for refreshes
+	keyA, pa := st.add(1)
+	keyB, _ := st.add(2)
+	keyC, _ := st.add(3)
+	release := make(chan struct{})
+	st.mu.Lock()
+	st.holdFor = func(p string) <-chan struct{} {
+		if p == pa {
+			return release
+		}
+		return nil
+	}
+	st.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { _, err := a.Authenticate(context.Background(), keyA); done <- err }()
+	waitUntil(t, "A to occupy the only slot for unseen keys", func() bool { return st.lookups.Load() == 1 })
+	before := st.lookups.Load()
+	if _, err := a.Authenticate(context.Background(), keyB); !errors.Is(err, ErrUnavailable) || st.lookups.Load() != before {
+		t.Fatalf("B should be shed without a lookup: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// No time has passed. If B's shedding had armed the backoff, C would be refused now.
+	if _, err := a.Authenticate(context.Background(), keyC); err != nil {
+		t.Fatalf("a shed request started a backoff: %v", err)
+	}
+}
+
+// The counters for lookups in flight must come back to zero, and refreshes must not be counted as
+// lookups of unseen keys: after many refreshes the caps still admit both kinds.
+func TestRefreshesDoNotLeakLookupCapacity(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{MaxLookups: 4, CacheTTL: 30 * time.Second, StaleGrace: time.Hour})
+	key, _ := st.add(0)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	const rounds = 25
+	for i := 0; i < rounds; i++ {
+		clk.advance(time.Minute) // past the TTL: a refresh each time, one at a time
+		before := st.lookups.Load()
+		if _, err := a.Authenticate(context.Background(), key); err != nil {
+			t.Fatal(err)
+		}
+		if st.lookups.Load() != before+1 {
+			t.Fatalf("refresh %d did not reach the store: the cap leaked (lookups %d -> %d)", i, before, st.lookups.Load())
+		}
+	}
+	a.mu.Lock()
+	r, n := a.inflightRefresh, a.inflightNew
+	a.mu.Unlock()
+	if r != 0 || n != 0 {
+		t.Fatalf("lookups in flight after everything finished: refresh %d, new %d", r, n)
+	}
+	// Unseen keys are still admitted, up to their share (3 of 4 here).
+	for i := 1; i <= 6; i++ {
+		fresh, _ := st.add(i)
+		if _, err := a.Authenticate(context.Background(), fresh); err != nil {
+			t.Fatalf("unseen key %d refused after %d refreshes: %v", i, rounds, err)
+		}
+	}
+}
+
+// The wait for a refresh is really RefreshWait: neither skipped nor stretched.
+func TestRefreshWaitIsTheConfiguredBudget(t *testing.T) {
+	const budget = 150 * time.Millisecond
+	a, st, clk, _ := setup(t, Config{RefreshWait: budget, LookupTimeout: 10 * time.Second, CacheTTL: 30 * time.Second, StaleGrace: time.Hour})
+	key, _ := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	st.gate = make(chan struct{})
+	t.Cleanup(func() { close(st.gate) })
+	clk.advance(time.Minute)
+	start := time.Now()
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	d := time.Since(start)
+	if d < budget*8/10 || d > budget*4 {
+		t.Fatalf("a stale refresh waited %v, want about %v", d, budget)
+	}
+}

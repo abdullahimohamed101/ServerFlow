@@ -59,7 +59,8 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		_, _ = io.WriteString(errw, usage)
 		return 2
 	}
-	a := &app{out: plainWriter{out}, err: plainWriter{errw}}
+	out, errw = plainWriter{out}, plainWriter{errw} // nothing printed, errors included, may carry terminal escapes
+	a := &app{out: out, err: errw}
 	if err := a.dispatch(ctx, cfgPath, args); err != nil {
 		var ue usageError
 		if errors.As(err, &ue) {
