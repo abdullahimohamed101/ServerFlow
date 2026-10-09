@@ -30,8 +30,9 @@ attempt before ending the first. The tests in `internal/gateway/observer_test.go
    observer, never awaited. The gateway does not protect requests from a slow observer.
 3. Be concurrency safe; many requests call you at once.
 4. Do not panic. If you do, the gateway recovers, logs it at most once per minute per observer, and runs the other observers.
-5. Use only the event fields. They hold plain values; there are no bodies, prompts or API keys, and none must be added.
-6. `RequestStarted` and `AttemptStarted` may return a context derived from the one given (for example carrying a span). The gateway
+5. In registry mode `Admission.Model` is client-controlled text (at most 128 characters) that routing has not yet confirmed. Bound or validate it before using it as a metric label or span attribute; `Completion.Model` is the confirmed value (empty if unconfirmed).
+6. Use only the event fields. They hold plain values; there are no bodies, prompts or API keys, and none must be added.
+7. `RequestStarted` and `AttemptStarted` may return a context derived from the one given (for example carrying a span). The gateway
    uses the first for the rest of the request and the second for that attempt, including the upstream call. Return the given context
    if you have nothing to add; never return a context that is not derived from it.
 

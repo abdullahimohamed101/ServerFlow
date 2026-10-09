@@ -62,11 +62,11 @@ validation, which three phases adding `metrics`, `tracing` and `events` sections
 - Phases 10-12 add an observer (and a config file) without editing the request path again. A change to the lifecycle itself, such as
   token counts (Phase 12) or a circuit breaker (Phase 20), adds a field or a moment here, once.
 - Cost: allocations per in-process request are unchanged (101 non-streaming, 108 streaming; about 100 bytes more per request for the
-  event copies), and the wall-clock difference is below the run-to-run spread (`docs/plans/completed/prep-lifecycle-observer-and-config-split.md`).
-- `inference_requests_active` now also counts, for the instant it is being refused, a request that fails authentication; before, it
-  started counting after authentication. It is the only observable difference.
-- A panic inside an upstream call in registry mode still skips `AttemptEnded` (the attempt's cleanup is registered after the send
-  loop; this predates the seam and also skips the worker slot release). The upstream is the standard HTTP client, which does not panic.
+  event copies), and the wall-clock difference is within about 2% of master, about the width of run-to-run spread (`docs/plans/completed/prep-lifecycle-observer-and-config-split.md`).
+- `inference_requests_active` changed meaning slightly: `RequestStarted` fires before authentication, so the gauge now includes the time spent
+  authenticating for every inference request (a key-cache miss that reads PostgreSQL counts as in flight), where before it started after authentication. No dashboard or alert
+  references the gauge yet (Phase 10 will). Every other series is pinned by the golden test.
+- A panic in registry mode between `AttemptStarted` and the attempt's deferred cleanup skips `AttemptEnded` and leaves the worker slot held. The cleanup is registered after the send loop, so the path includes the upstream call and the `RequestRecorder` callback. This is a known pre-existing gap, identical on master (observers only expose it); it is not fixed here and is planned for Phase 15.
 - The event set is deliberately small. Add a field only when a phase needs it; token counts arrive with Phase 12's proxy change.
 - Alternatives rejected: a channel or goroutine per observer (allocation and ordering cost on the hot path, and it hides back
   pressure), passing `*reqInfo` (observers could mutate request state and every `reqInfo` change would become an API change), and

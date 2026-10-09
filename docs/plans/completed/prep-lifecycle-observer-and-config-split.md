@@ -126,7 +126,7 @@ Implemented on branch `chore/lifecycle-observer-and-config-split`. Order followe
   process collectors excluded: they vary by host), driving success, streaming, unknown model, auth refusal, rate-limit refusal, bypass, unavailable, and in
   registry mode a retry on a second worker.
 - Allocations per in-process request (`BenchmarkObserverRequest`, `-benchmem`, count 5, Apple M5 Pro): non-streaming 101 allocs/op before and after
-  (27,958 B to 28,057 B), streaming 108 before and after (28,144 B to 28,243 B); ns/op 6.1-6.5 us before, 6.1-6.4 us after (inside run-to-run spread);
+  (27,958 B to 28,057 B), streaming 108 before and after (28,144 B to 28,243 B); ns/op 6.1-6.5 us before, 6.1-6.4 us after (within about 2% of master, about the width of run-to-run spread);
   two extra no-op observers: still 101 allocs/op. `TestGatewayOverhead` p95 overhead: non-stream 536 us before / 461 us after, stream TTFT 500 us before / 459 us after
   (budget 25 ms).
 - `go doc -all ./internal/config` before and after (`/tmp/config-doc-before.txt`, `-after.txt`): the same lines; the only difference is that the `AuthModeOff/AuthModeRequired`
@@ -143,14 +143,15 @@ Implemented on branch `chore/lifecycle-observer-and-config-split`. Order followe
 - Event fields beyond A3: `RequestID` on every event, `TenantID` on `Admission`/`Rejection`/`Completion`, `Admission.RateLimitChecked`/`RateLimitBypassed` (so metrics keeps
   `rate_limit_decision_seconds` and `rate_limit_bypassed_total` exactly), and `Completion.Handled` (so an authentication refusal, which `RequestCompleted` also reports, is not counted
   in `inference_requests_total` as before). Rejection kind `internal` was added for the fail-closed wiring errors (limiter or authenticator required but not wired).
-- `RequestStarted` fires before authentication (so an auth refusal is observable); consequently `inference_requests_active` counts a request that is about to fail authentication for
-  the instant it takes to refuse it. Nothing else observable changed.
+- `RequestStarted` fires before authentication (so an auth refusal is observable); consequently `inference_requests_active` changed meaning slightly: `RequestStarted` fires before authentication, so the gauge now includes the time spent
+  authenticating for every inference request (a key-cache miss that reads PostgreSQL counts as in flight), where before it started after authentication. No dashboard or alert
+  references the gauge yet (Phase 10 will). Every other series is pinned by the golden test. The golden series test found no other change.
 - `RequestAdmitted` fires after the rate limit in both modes. In registry mode the model is only confirmed by routing, so an unknown model there produces started, admitted, rejected(model);
   `Admission.Model` is then the client's unconfirmed string, and `Completion.Model` stays empty (it is the metrics label).
 - A retry's `AttemptStarted` precedes the previous attempt's `AttemptEnded` (ADR-012 finds the next worker before letting go of the failed response). The tests pin that order.
 - Static-mode `AttemptEnded` is emitted from a deferred function that re-panics a handler panic unchanged after recording the attempt as failed. The metrics observer ignores attempt events
   with an empty worker ID, keeping `inference_attempts_total` a registry-mode series.
-- Known gap (pre-existing, not changed): a panic raised inside the upstream call in registry mode skips `AttemptEnded` (and the worker slot release), because the attempt's cleanup is registered after the send loop.
+- Known gap (pre-existing, not changed): a panic in registry mode between `AttemptStarted` and the attempt's deferred cleanup skips `AttemptEnded` and leaves the worker slot held. The cleanup is registered after the send loop, so the path includes the upstream call and the `RequestRecorder` callback. This is a known pre-existing gap, identical on master (observers only expose it); it is not fixed here and is planned for Phase 15.
 - Config test split: `gateway_test.go` now holds the gateway, registry-source and retry tests; the rest of `config_test.go` stays (they exercise several features); the auth, Redis and rate-limit tests already lived in their own files. No assertion changed (34 tests before, 34 after).
 - The independent read-only verifier of the Verification Plan was not run by the implementing agent. Instead the three mutations it names were applied by hand and each made the sequence tests fail:
   removing the `FirstToken` call, firing `RequestCompleted` twice, and skipping `RequestRejected` on a rate-limit refusal (all reverted).
