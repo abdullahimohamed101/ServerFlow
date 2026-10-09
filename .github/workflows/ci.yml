@@ -14,7 +14,7 @@ jobs:
     # A real PostgreSQL for the database tests. The tests create and drop their own databases.
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16  # ECR mirror: Docker Hub rate-limits shared runners
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
