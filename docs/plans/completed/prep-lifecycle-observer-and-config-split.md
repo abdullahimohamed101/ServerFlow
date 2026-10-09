@@ -148,4 +148,5 @@ Implemented on branch `chore/lifecycle-observer-and-config-split`. Order followe
   with an empty worker ID, keeping `inference_attempts_total` a registry-mode series.
 - Known gap (pre-existing, not changed): a panic raised inside the upstream call in registry mode skips `AttemptEnded` (and the worker slot release), because the attempt's cleanup is registered after the send loop.
 - Config test split: `gateway_test.go` now holds the gateway, registry-source and retry tests; the rest of `config_test.go` stays (they exercise several features); the auth, Redis and rate-limit tests already lived in their own files. No assertion changed (34 tests before, 34 after).
-- Verification by an independent read-only verifier and mutation checks (plan "Verification Plan") were not run by the implementing agent; the sequence tests would fail if `FirstToken` were removed, `RequestCompleted` doubled, or the rate-limit rejection skipped (each is asserted in an exact sequence).
+- The independent read-only verifier of the Verification Plan was not run by the implementing agent. Instead the three mutations it names were applied by hand and each made the sequence tests fail:
+  removing the `FirstToken` call, firing `RequestCompleted` twice, and skipping `RequestRejected` on a rate-limit refusal (all reverted).
