@@ -24,6 +24,9 @@ type Config struct {
 	StaleGrace time.Duration
 	// LookupTimeout bounds one store lookup.
 	LookupTimeout time.Duration
+	// RefreshWait bounds how long a request for an already-cached key waits for the lookup that
+	// refreshes it before serving the stale copy (valid for StaleGrace) instead. Default 250ms.
+	RefreshWait time.Duration
 	// MaxLookups caps concurrent store lookups. Keep it below the connection pool size so lookups
 	// can never take every connection. A quarter (at least one) is reserved for refreshing keys
 	// that are already cached; the rest also serves keys not seen before. Default 8.
@@ -36,7 +39,7 @@ type Config struct {
 
 // DefaultConfig returns the documented defaults.
 func DefaultConfig() Config {
-	return Config{CacheTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, CacheSize: 10000, StaleGrace: 5 * time.Minute, LookupTimeout: 3 * time.Second, MaxLookups: 8}
+	return Config{CacheTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, CacheSize: 10000, StaleGrace: 5 * time.Minute, LookupTimeout: 3 * time.Second, MaxLookups: 8, RefreshWait: 250 * time.Millisecond}
 }
 
 // touchEvery is the least time between last_used_at writes for one key.
@@ -110,6 +113,9 @@ func New(store KeyStore, cfg Config) *Authenticator {
 	if cfg.LookupTimeout <= 0 {
 		cfg.LookupTimeout = d.LookupTimeout
 	}
+	if cfg.RefreshWait <= 0 {
+		cfg.RefreshWait = d.RefreshWait
+	}
 	if cfg.MaxLookups < 2 {
 		cfg.MaxLookups = d.MaxLookups // at least one slot for new keys and one reserved for refreshes
 	}
@@ -166,6 +172,9 @@ func (a *Authenticator) CacheSizes() (positive, negative int) {
 // work as a wrong secret.
 var dummyHash = make([]byte, hashLen)
 
+// equalHashes is HashesEqual; a variable only so a test can count the comparisons.
+var equalHashes = HashesEqual
+
 // Authenticate verifies a presented key (the bearer token). On success it returns the caller.
 // Failures are ErrInvalid (malformed, unknown, wrong secret), ErrRevoked, ErrExpired,
 // ErrSuspended, or ErrUnavailable (the store cannot answer and the key is not cached). The
@@ -178,13 +187,13 @@ func (a *Authenticator) Authenticate(ctx context.Context, bearer string) (*Princ
 	}
 	rec, err := a.record(ctx, prefix)
 	if errors.Is(err, ErrNotFound) {
-		HashesEqual(hash, dummyHash) // equalise the work; the result is irrelevant
+		equalHashes(hash, dummyHash) // equalise the work; the result is irrelevant
 		return nil, ErrInvalid
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !HashesEqual(hash, rec.SecretHash) {
+	if !equalHashes(hash, rec.SecretHash) {
 		return nil, ErrInvalid
 	}
 	// The caller holds the secret, so from here the precise reason may be reported.
@@ -260,6 +269,10 @@ func (a *Authenticator) cachedLocked(prefix string, now time.Time) (rec KeyRecor
 // errShed is what a request gets when lookup capacity is exhausted. The store was not asked.
 var errShed = fmt.Errorf("%w: lookup capacity exhausted", ErrUnavailable)
 
+// errSlowRefresh is what a refresh that is taking too long returns; the caller then serves the
+// stale copy it already holds.
+var errSlowRefresh = fmt.Errorf("%w: the refresh is slow", ErrUnavailable)
+
 // fetch asks the store, sharing one lookup among concurrent callers for the same prefix, and
 // updates the caches. The lookup is detached from any one caller's context so that a client
 // that gives up does not fail the others waiting on the same answer.
@@ -281,15 +294,15 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string, refresh bool) 
 	}
 	if f, ok := a.flights[prefix]; ok {
 		a.mu.Unlock()
+		if refresh {
+			// Someone is already refreshing this key; this caller has a usable stale copy and does
+			// not wait for it (only the caller that started the refresh waits, briefly).
+			return KeyRecord{}, errSlowRefresh
+		}
 		if a.onWait != nil {
 			a.onWait()
 		}
-		select {
-		case <-f.done:
-			return f.rec, f.err
-		case <-ctx.Done():
-			return KeyRecord{}, fmt.Errorf("%w: %v", ErrUnavailable, ctx.Err())
-		}
+		return a.await(ctx, f, false)
 	}
 	if a.inflightRefresh+a.inflightNew >= a.cfg.MaxLookups || (!refresh && a.inflightNew >= a.cfg.MaxLookups-a.reserve) {
 		a.mu.Unlock()
@@ -304,6 +317,35 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string, refresh bool) 
 	a.flights[prefix] = f
 	a.mu.Unlock()
 
+	// The lookup runs on its own goroutine, detached from any one caller's context, so a caller
+	// that gives up or runs out of patience does not abandon the answer the others (and the cache)
+	// are waiting for.
+	go a.lookup(ctx, prefix, f, refresh)
+	return a.await(ctx, f, refresh)
+}
+
+// await waits for a lookup. A caller that has a stale copy to fall back on (refresh) waits at most
+// RefreshWait, so a hanging database costs it a quarter of a second rather than the whole lookup
+// timeout; the lookup carries on in the background and the next request sees its result.
+func (a *Authenticator) await(ctx context.Context, f *flight, refresh bool) (KeyRecord, error) {
+	var budget <-chan time.Time
+	if refresh {
+		t := time.NewTimer(a.cfg.RefreshWait)
+		defer t.Stop()
+		budget = t.C
+	}
+	select {
+	case <-f.done:
+		return f.rec, f.err
+	case <-ctx.Done():
+		return KeyRecord{}, fmt.Errorf("%w: %v", ErrUnavailable, ctx.Err())
+	case <-budget:
+		return KeyRecord{}, errSlowRefresh
+	}
+}
+
+// lookup asks the store and records the outcome in the caches. It runs once per flight.
+func (a *Authenticator) lookup(ctx context.Context, prefix string, f *flight, refresh bool) {
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.LookupTimeout)
 	rec, err := a.store.LookupKey(lctx, prefix)
 	cancel()
@@ -353,7 +395,6 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string, refresh bool) 
 	f.rec, f.err = rec, err
 	a.mu.Unlock()
 	close(f.done)
-	return rec, err
 }
 
 // warnLimited logs at most one warning every ten seconds. Caller holds a.mu.

@@ -26,6 +26,8 @@ type fakeStore struct {
 	errFor func(prefix string) error
 	// blockUnknown, when non-nil, makes lookups of prefixes with no record wait for it to close.
 	blockUnknown chan struct{}
+	// holdFor, when set, may return a channel the lookup of that prefix waits on.
+	holdFor func(prefix string) <-chan struct{}
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{recs: map[string]KeyRecord{}} }
@@ -49,6 +51,15 @@ func (f *fakeStore) LookupKey(ctx context.Context, prefix string) (KeyRecord, er
 	if errFor != nil {
 		if err := errFor(prefix); err != nil {
 			return KeyRecord{}, err
+		}
+	}
+	if hf := f.holdFor; hf != nil {
+		if ch := hf(prefix); ch != nil {
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return KeyRecord{}, ctx.Err()
+			}
 		}
 	}
 	if !known && blockUnknown != nil {
@@ -99,7 +110,8 @@ type fakeClock struct {
 	t  time.Time
 }
 
-func (c *fakeClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *fakeClock) now() time.Time  { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *fakeClock) set(t time.Time) { c.mu.Lock(); c.t = t; c.mu.Unlock() }
 func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	c.t = c.t.Add(d)
@@ -523,7 +535,7 @@ func TestRefreshesAreCappedAtMaxLookups(t *testing.T) {
 		}()
 	}
 	// Six are shed and answered from their stale copies at once; four lookups are blocked.
-	waitUntil(t, "the excess refreshes to be shed", func() bool { return len(errs) == n-4 })
+	waitUntil(t, "the excess refreshes to be shed", func() bool { return len(errs) >= n-4 })
 	if got := st.lookups.Load() - base; got != 4 {
 		t.Fatalf("%d concurrent refreshes reached the store, cap is 4", got)
 	}
@@ -755,5 +767,195 @@ func TestTimingUnknownPrefixVersusWrongSecret(t *testing.T) {
 	// Both paths take a few microseconds; allow a 5x ratio or 20us absolute slack for scheduler noise.
 	if hi > 5*lo && hi-lo > 20*time.Microsecond {
 		t.Fatalf("unknown prefix (%v) and wrong secret (%v) differ measurably", u, w)
+	}
+}
+
+// With the database hanging (packets dropped, not refused) a request for a cached key must not
+// wait for the lookup timeout: it waits at most RefreshWait and is served from the stale copy.
+func TestHangingStoreDoesNotStallCachedKeys(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{RefreshWait: 20 * time.Millisecond, LookupTimeout: 5 * time.Second, CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
+	key, prefix := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	base := st.lookups.Load()
+	st.gate = make(chan struct{}) // every lookup now hangs
+	clk.advance(time.Minute)      // past the TTL, inside the grace
+
+	const n = 30
+	var wg sync.WaitGroup
+	lat := make(chan time.Duration, n)
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			_, err := a.Authenticate(context.Background(), key)
+			lat <- time.Since(start)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(lat)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a stale key must be served while the store hangs: %v", err)
+		}
+	}
+	for d := range lat {
+		if d > time.Second {
+			t.Fatalf("a request waited %v for a hanging database (lookup timeout is 5s)", d)
+		}
+	}
+	if got := st.lookups.Load() - base; got != 1 {
+		t.Fatalf("%d lookups for %d concurrent refreshes, want one shared flight", got, n)
+	}
+
+	// The refresh is still running; when the database answers, a revocation made meanwhile is seen.
+	st.update(prefix, func(r *KeyRecord) { r.KeyStatus = KeyRevoked })
+	close(st.gate)
+	waitUntil(t, "the background refresh to land", func() bool {
+		_, err := a.Authenticate(context.Background(), key)
+		return errors.Is(err, ErrRevoked)
+	})
+}
+
+func TestStaleGraceBoundaryIsExact(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
+	key, _ := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	st.fail.Store(true)
+	clk.advance(30*time.Second + 5*time.Minute - time.Nanosecond)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatalf("one tick inside the grace period: %v", err)
+	}
+	clk.advance(time.Nanosecond)
+	if _, err := a.Authenticate(context.Background(), key); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("at exactly ttl+grace the stale copy must no longer be served: %v", err)
+	}
+}
+
+// A key that the store no longer knows must not be served from its stale copy.
+func TestRefreshThatFindsNothingEvictsTheKey(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{CacheTTL: 30 * time.Second})
+	key, prefix := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	delete(st.recs, prefix)
+	st.mu.Unlock()
+	clk.advance(time.Minute)
+	if _, err := a.Authenticate(context.Background(), key); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a key the store has dropped was served from its stale copy: %v", err)
+	}
+	if pos, neg := a.CacheSizes(); pos != 0 || neg != 1 {
+		t.Fatalf("cache after eviction: positive %d (want 0) negative %d (want 1)", pos, neg)
+	}
+}
+
+// A success proves the store works, so it ends a backoff that a failure started.
+func TestSuccessEndsTheBackoff(t *testing.T) {
+	a, st, _, _ := setup(t, Config{})
+	keyA, pa := st.add(1)
+	_, pb := st.add(2)
+	keyB := "sf_" + pb + "_" + keyA[len("sf_")+9:]
+	keyC, _ := st.add(3)
+	release := make(chan struct{})
+	st.mu.Lock()
+	st.holdFor = func(p string) <-chan struct{} {
+		if p == pa {
+			return release
+		}
+		return nil
+	}
+	st.errFor = func(p string) error {
+		if p == pb {
+			return errors.New("connection reset")
+		}
+		return nil
+	}
+	st.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { _, err := a.Authenticate(context.Background(), keyA); done <- err }()
+	waitUntil(t, "A's lookup to start", func() bool { return st.lookups.Load() == 1 })
+	if _, err := a.Authenticate(context.Background(), keyB); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("B: %v", err)
+	}
+	// The failure armed the backoff: C is refused without a lookup.
+	before := st.lookups.Load()
+	if _, err := a.Authenticate(context.Background(), keyC); !errors.Is(err, ErrUnavailable) || st.lookups.Load() != before {
+		t.Fatalf("C during the backoff: %v (lookups %d -> %d)", err, before, st.lookups.Load())
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// A's success cleared it: C is looked up now, with no time having passed.
+	if _, err := a.Authenticate(context.Background(), keyC); err != nil {
+		t.Fatalf("after a success the backoff must be over: %v", err)
+	}
+}
+
+func TestEachOutageIsLoggedOnce(t *testing.T) {
+	a, st, clk, logs := setup(t, Config{CacheTTL: 30 * time.Second})
+	key, _ := st.add(1)
+	other, _ := st.add(2)
+	for round := 1; round <= 2; round++ {
+		st.fail.Store(true)
+		clk.advance(2 * time.Second)
+		_, _ = a.Authenticate(context.Background(), other) // fails and logs (once per outage)
+		_, _ = a.Authenticate(context.Background(), other)
+		st.fail.Store(false)
+		clk.advance(2 * time.Second)
+		if _, err := a.Authenticate(context.Background(), key); err != nil {
+			t.Fatal(err)
+		}
+		clk.advance(time.Hour) // expire the caches so the next round looks things up again
+		if got := strings.Count(logs.String(), "key store unavailable"); got != round {
+			t.Fatalf("after outage %d the log has %d outage lines", round, got)
+		}
+		if got := strings.Count(logs.String(), "recovered"); got != round {
+			t.Fatalf("after outage %d the log has %d recovery lines", round, got)
+		}
+	}
+}
+
+func TestEntryFromTheFutureIsNotTrusted(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{CacheTTL: 30 * time.Second})
+	key, _ := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	clk.set(clk.now().Add(-time.Minute)) // the clock steps backwards
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if n := st.lookups.Load(); n != 2 {
+		t.Fatalf("an entry whose age is negative must be looked up again, got %d lookups", n)
+	}
+}
+
+// Unknown prefixes and wrong secrets must cost the same comparison.
+func TestUnknownPrefixDoesTheSameComparisonAsAWrongSecret(t *testing.T) {
+	var calls atomic.Int64
+	old := equalHashes
+	equalHashes = func(x, y []byte) bool { calls.Add(1); return HashesEqual(x, y) }
+	defer func() { equalHashes = old }()
+	a, st, _, _ := setup(t, Config{})
+	_, gp := st.add(1)
+	other, _, _ := GenerateKey()
+	wrong := "sf_" + gp + "_" + other[len("sf_")+9:]
+	unknown, _, _ := GenerateKey()
+	_, _ = a.Authenticate(context.Background(), wrong)
+	perWrong := calls.Swap(0)
+	_, _ = a.Authenticate(context.Background(), unknown)
+	if perUnknown := calls.Load(); perWrong != 1 || perUnknown != 1 {
+		t.Fatalf("hash comparisons: wrong secret %d, unknown prefix %d, want 1 each", perWrong, perUnknown)
 	}
 }

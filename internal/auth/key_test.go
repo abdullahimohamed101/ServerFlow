@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"os"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,39 @@ func TestParseKeyRefusesNonCanonicalTail(t *testing.T) {
 	for i := 1; i < 4; i++ {
 		if _, _, err := ParseKey(canonical[:len(canonical)-1] + string(alphabet[i])); err == nil {
 			t.Fatalf("non-canonical tail %q accepted", alphabet[i])
+		}
+	}
+}
+
+// The constant-time property cannot be observed from a test, so check the code's structure: the
+// hash comparison goes through crypto/subtle and nothing else compares hashes.
+func TestHashComparisonIsStructurallyConstantTime(t *testing.T) {
+	src, err := os.ReadFile("key.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(string(src), "func HashesEqual")
+	if i < 0 {
+		t.Fatal("HashesEqual not found")
+	}
+	body := string(src)[i:]
+	if j := strings.Index(body[1:], "\nfunc "); j >= 0 {
+		body = body[:j+1]
+	}
+	for _, bad := range []string{"bytes.Equal", "string(a)", "string(b)", "reflect.", "||"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("HashesEqual must not use %q", bad)
+		}
+	}
+	if !strings.Contains(body, "subtle.ConstantTimeCompare(a, b) == 1") {
+		t.Error("HashesEqual must use subtle.ConstantTimeCompare")
+	}
+	for _, f := range []string{"authenticator.go", "types.go"} {
+		b, _ := os.ReadFile(f)
+		for _, bad := range []string{"bytes.Equal", "SecretHash =="} {
+			if strings.Contains(string(b), bad) {
+				t.Errorf("%s compares secrets with %q", f, bad)
+			}
 		}
 	}
 }
