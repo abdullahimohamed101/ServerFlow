@@ -36,3 +36,5 @@ docker-compose.override.yml
 benchmark/runs/
 benchmark/reports/*.json
 benchmark/reports/*.html
+# Local throwaway data (dev Postgres cluster)
+.data/

@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"net/url"
@@ -30,6 +31,7 @@ type Config struct {
 	Admission    AdmissionConfig    `yaml:"admission"`
 	Redis        RedisConfig        `yaml:"redis"`
 	Postgres     PostgresConfig     `yaml:"postgres"`
+	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
 
 	configFilePath string
@@ -137,9 +139,58 @@ type RedisConfig struct {
 	Address string `yaml:"address"`
 }
 
-// PostgresConfig configures the durable metadata store.
+// PostgresConfig configures the durable metadata store. DSN is a secret (it usually holds a
+// password): it is never logged or echoed in an error, and formatting a PostgresConfig prints
+// it redacted. MaxConns bounds the connection pool and ConnectTimeout how long a connection
+// attempt may take. AllowInsecureTransport permits a DSN that does not require TLS (see
+// postgres.CheckTransport) to a host that is not this machine; leave it off unless a trusted private
+// network carries the traffic.
 type PostgresConfig struct {
-	DSN string `yaml:"dsn"`
+	DSN                    string        `yaml:"dsn"`
+	MaxConns               int           `yaml:"max_conns"`
+	ConnectTimeout         time.Duration `yaml:"connect_timeout"`
+	AllowInsecureTransport bool          `yaml:"allow_insecure_transport"`
+}
+
+// String formats the config without the DSN. GoString and LogValue do the same, so neither
+// fmt's %v and %#v nor structured logging can print the password.
+func (p PostgresConfig) String() string {
+	return fmt.Sprintf("{dsn:%s max_conns:%d connect_timeout:%v allow_insecure_transport:%t}", redactedDSN(p.DSN), p.MaxConns, p.ConnectTimeout, p.AllowInsecureTransport)
+}
+
+// GoString implements fmt.GoStringer.
+func (p PostgresConfig) GoString() string { return "config.PostgresConfig" + p.String() }
+
+// LogValue implements slog.LogValuer.
+func (p PostgresConfig) LogValue() slog.Value { return slog.StringValue(p.String()) }
+
+func redactedDSN(dsn string) string {
+	if dsn == "" {
+		return "<unset>"
+	}
+	return "<redacted>"
+}
+
+// Authentication modes (auth.mode).
+const (
+	AuthModeOff      = "off"
+	AuthModeRequired = "required"
+)
+
+// AuthConfig configures client authentication at the gateway (Phase 9). In "off" mode (the
+// default) the gateway is open, as in Phases 2-6, and PostgreSQL is not used. In "required" mode
+// /v1/* needs a valid API key kept in PostgreSQL.
+//
+// Keys are looked up through a cache so the database is not on the request path: a key is
+// trusted for CacheTTL after a lookup (so a revoked key can work for up to that long), an unknown
+// key prefix is remembered for NegativeTTL, each cache holds at most CacheSize entries, and
+// when the database is down a cached key keeps working for StaleGrace beyond its TTL.
+type AuthConfig struct {
+	Mode        string        `yaml:"mode"`
+	CacheTTL    time.Duration `yaml:"cache_ttl"`
+	NegativeTTL time.Duration `yaml:"negative_ttl"`
+	CacheSize   int           `yaml:"cache_size"`
+	StaleGrace  time.Duration `yaml:"stale_grace"`
 }
 
 // LogConfig configures structured logging.
@@ -191,7 +242,16 @@ func Default() Config {
 			Address: "redis:6379",
 		},
 		Postgres: PostgresConfig{
-			DSN: "postgres://postgres:postgres@postgres:5432/serverflow?sslmode=disable",
+			DSN:            "postgres://postgres:postgres@postgres:5432/serverflow?sslmode=disable",
+			MaxConns:       10,
+			ConnectTimeout: 5 * time.Second,
+		},
+		Auth: AuthConfig{
+			Mode:        AuthModeOff,
+			CacheTTL:    30 * time.Second,
+			NegativeTTL: 5 * time.Second,
+			CacheSize:   10000,
+			StaleGrace:  5 * time.Minute,
 		},
 		Log: LogConfig{
 			Level: "info",
@@ -229,13 +289,69 @@ func (c *Config) Validate() error {
 	if c.Redis.Address == "" {
 		return fmt.Errorf("redis.address must not be empty")
 	}
-	if c.Postgres.DSN == "" {
-		return fmt.Errorf("postgres.dsn must not be empty")
+	if err := c.Postgres.validate(); err != nil {
+		return err
+	}
+	if err := c.Auth.validate(); err != nil {
+		return err
+	}
+	if c.Auth.Mode == AuthModeRequired && c.Postgres.MaxConns < minAuthPoolConns {
+		// Key lookups may use all but two pool connections (so they never take the whole pool, and
+		// last_used_at writes and the startup check can still run) and need two of their own: one for
+		// unseen keys and one reserved for refreshing cached keys.
+		return fmt.Errorf("postgres.max_conns must be at least %d when auth.mode is %q", minAuthPoolConns, AuthModeRequired)
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("log.level %q is not supported", c.Log.Level)
+	}
+	return nil
+}
+
+// Bounds for the pool and the key cache.
+const (
+	maxPostgresConns   = 100
+	maxConnectTimeout  = time.Minute
+	maxAuthCacheSize   = 1_000_000
+	maxAuthCacheTTL    = time.Hour
+	maxAuthStaleGrace  = 24 * time.Hour
+	minAuthNegativeTTL = time.Millisecond
+	minAuthPoolConns   = 4
+)
+
+// validate checks the settings that do not depend on whether the database is used. It never
+// echoes the DSN.
+func (p *PostgresConfig) validate() error {
+	if p.DSN == "" {
+		return fmt.Errorf("postgres.dsn must not be empty")
+	}
+	if p.MaxConns < 1 || p.MaxConns > maxPostgresConns {
+		return fmt.Errorf("postgres.max_conns must be in 1-%d, got %d", maxPostgresConns, p.MaxConns)
+	}
+	if p.ConnectTimeout <= 0 || p.ConnectTimeout > maxConnectTimeout {
+		return fmt.Errorf("postgres.connect_timeout must be > 0 and at most %v", maxConnectTimeout)
+	}
+	return nil
+}
+
+func (a *AuthConfig) validate() error {
+	switch a.Mode {
+	case AuthModeOff, AuthModeRequired:
+	default:
+		return fmt.Errorf("auth.mode must be %q or %q, got %q", AuthModeOff, AuthModeRequired, truncateForError(a.Mode))
+	}
+	if a.CacheTTL <= 0 || a.CacheTTL > maxAuthCacheTTL {
+		return fmt.Errorf("auth.cache_ttl must be > 0 and at most %v", maxAuthCacheTTL)
+	}
+	if a.NegativeTTL < minAuthNegativeTTL || a.NegativeTTL > a.CacheTTL {
+		return fmt.Errorf("auth.negative_ttl must be at least %v and no more than auth.cache_ttl", minAuthNegativeTTL)
+	}
+	if a.CacheSize < 1 || a.CacheSize > maxAuthCacheSize {
+		return fmt.Errorf("auth.cache_size must be in 1-%d, got %d", maxAuthCacheSize, a.CacheSize)
+	}
+	if a.StaleGrace < a.CacheTTL || a.StaleGrace > maxAuthStaleGrace {
+		return fmt.Errorf("auth.stale_grace must be at least auth.cache_ttl and at most %v", maxAuthStaleGrace)
 	}
 	return nil
 }

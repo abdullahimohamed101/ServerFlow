@@ -18,6 +18,9 @@ const (
 	CodeWorkerUnavailable = "WORKER_UNAVAILABLE"
 	CodeInferenceFailed   = "INFERENCE_FAILED"
 	CodeInternalError     = "INTERNAL_ERROR"
+	CodeUnauthorized      = "UNAUTHORIZED"
+	CodeForbidden         = "FORBIDDEN"
+	CodeAuthUnavailable   = "AUTH_UNAVAILABLE"
 )
 
 // Error is a gateway-originated API error. It implements error.
@@ -31,6 +34,8 @@ type Error struct {
 	EligibleWorkers *int
 	// RetryAfter, when positive, is sent as a Retry-After header in seconds.
 	RetryAfter int
+	// WWWAuthenticate, when set, is sent as a WWW-Authenticate header (RFC 9110 requires one on 401).
+	WWWAuthenticate string
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }
@@ -75,6 +80,30 @@ func ErrNoCapacity(model string, eligibleWorkers int) *Error {
 	}
 }
 
+// ErrUnauthorized reports a missing or unusable API key. Its body is identical whatever the
+// reason (absent, malformed, unknown, wrong secret, revoked, expired) so a response never
+// reveals whether a key exists.
+func ErrUnauthorized() *Error {
+	return &Error{Code: CodeUnauthorized, HTTPStatus: http.StatusUnauthorized, Message: "invalid or missing API key", WWWAuthenticate: "Bearer"}
+}
+
+// ErrForbidden reports a valid caller that may not use the service, such as a suspended tenant.
+func ErrForbidden() *Error {
+	return &Error{Code: CodeForbidden, HTTPStatus: http.StatusForbidden, Message: "this API key is not permitted to use the service"}
+}
+
+// ErrModelForbidden reports a model the caller's tenant may not use. Its text is the same for a
+// model that exists and one that does not, so a tenant cannot probe the catalogue.
+func ErrModelForbidden(model string) *Error {
+	return &Error{Code: CodeForbidden, HTTPStatus: http.StatusForbidden, Message: "the model `" + truncate(model, 64) + "` does not exist or is not available to this API key"}
+}
+
+// ErrAuthUnavailable reports that keys cannot be verified right now (the key store is down and
+// the key is not cached). It is not a 401: the key may well be valid.
+func ErrAuthUnavailable() *Error {
+	return &Error{Code: CodeAuthUnavailable, HTTPStatus: http.StatusServiceUnavailable, Message: "authentication is temporarily unavailable; retry shortly", RetryAfter: 2}
+}
+
 // ErrInternal reports an unexpected gateway failure.
 func ErrInternal() *Error {
 	return &Error{Code: CodeInternalError, HTTPStatus: http.StatusInternalServerError, Message: "internal server error"}
@@ -104,6 +133,9 @@ func WriteError(w http.ResponseWriter, e *Error) {
 	w.Header().Set("Content-Type", "application/json")
 	if e.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(e.RetryAfter))
+	}
+	if e.WWWAuthenticate != "" {
+		w.Header().Set("WWW-Authenticate", e.WWWAuthenticate)
 	}
 	w.WriteHeader(e.HTTPStatus)
 	_, _ = w.Write(e.Body())

@@ -19,16 +19,17 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 7 the repository contains the foundation (configuration,
+As of Phase 9 the repository contains the foundation (configuration,
 structured logging, CI), the gateway MVP, a configurable mock worker, the
-worker registry, a scheduler framework, and a benchmark harness. The gateway proxies OpenAI-compatible requests, including
+worker registry, a scheduler framework, a benchmark harness, and PostgreSQL-backed
+tenants and API keys. The gateway proxies OpenAI-compatible requests, including
 streaming, either to a single statically configured upstream (the default) or,
 in registry mode, to the worker a configured scheduler picks from the control
 plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
 tracks their state and health. A request that fails before any output is retried on a different
-worker, up to `gateway.max_attempts` (default 2; ADR-012). There is no circuit breaker, API-key authentication, or
-rate limiting yet. A benchmark harness drives reproducible load against it (below).
+worker, up to `gateway.max_attempts` (default 2; ADR-012). With `auth.mode: required` /v1 needs an API key whose hash lives in
+PostgreSQL (ADR-014). There is no circuit breaker or rate limiting yet. A benchmark harness drives reproducible load against it (below).
 
 ## Major Components
 
@@ -100,7 +101,18 @@ shared-secret bearer token. Placement and scaling are later phases. See
 Purpose: distributed ephemeral state (Redis), durable metadata (PostgreSQL),
 async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
 tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
-`internal/events`, `observability/`. Status: skeleton only (Phase 0).
+`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9);
+the rest are skeletons.
+
+### Authentication and PostgreSQL
+Purpose: tenants, hashed API keys, model configs and benchmark-run metadata,
+and gateway authentication. Location: `internal/auth` (key format, hashing,
+bounded key cache, `KeyStore` interface), `internal/postgres` (the only package
+that imports pgx: store and migration runner), `migrations/` (embedded forward-only
+SQL), `cmd/admin` (`serverflow-admin`). The gateway depends on `internal/auth`
+only. The database is never queried per request on a warm cache; revocation takes
+effect within `auth.cache_ttl`. Quotas and priority are stored and carried, not
+enforced (Phase 8/22). See ADR-014 and `docs/operations/postgres-and-auth.md`.
 
 
 
@@ -196,6 +208,7 @@ Run:
 go run ./cmd/gateway -config config.yaml
 go run ./cmd/mock-worker --model=mock-model --addr=127.0.0.1:9001   # GPU-free upstream; see docs/development/mock-worker.md
 go run ./cmd/control-plane                                         # worker registry on 127.0.0.1:9090
+make dev-postgres && go run ./cmd/admin migrate up                  # throwaway PostgreSQL + schema (docs/operations/postgres-and-auth.md)
 make dev-cluster                                                   # control plane + 3 mock workers + agents
 ```
 

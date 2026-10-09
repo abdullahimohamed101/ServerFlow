@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster bench bench-compare
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres bench bench-compare
 
 fmt:
 	gofmt -w .
@@ -59,6 +59,16 @@ dev-cluster:
 	done; \
 	SERVERFLOW_GATEWAY_WORKER_SOURCE=registry SERVERFLOW_SCHEDULER_STRATEGY=$${STRATEGY:-round-robin} bin/gateway & \
 	wait
+
+# A throwaway PostgreSQL 16 on 127.0.0.1:55432 (no Docker; data in .data/, gitignored).
+# Stop it with scripts/dev-postgres.sh stop, wipe it with scripts/dev-postgres.sh reset.
+dev-postgres:
+	scripts/dev-postgres.sh start
+
+# The database-backed tests, against the throwaway instance (started if needed).
+test-postgres:
+	scripts/dev-postgres.sh start >/dev/null
+	SERVERFLOW_TEST_POSTGRES_DSN="$$(scripts/dev-postgres.sh dsn)" go test -race -count=1 ./internal/auth/... ./internal/postgres/... ./internal/gateway/... ./cmd/admin/... ./tests/integration/...
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
 #   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"

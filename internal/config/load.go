@@ -184,6 +184,40 @@ func applyEnv(cfg *Config) {
 	if v, ok := env("POSTGRES_DSN"); ok {
 		cfg.Postgres.DSN = v
 	}
+	if v, ok := env("POSTGRES_MAX_CONNS"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Postgres.MaxConns = n
+		}
+	}
+	if v, ok := env("POSTGRES_CONNECT_TIMEOUT"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Postgres.ConnectTimeout = d
+		}
+	}
+	if v, ok := env("POSTGRES_ALLOW_INSECURE_TRANSPORT"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Postgres.AllowInsecureTransport = b
+		}
+	}
+	if v, ok := env("AUTH_MODE"); ok {
+		cfg.Auth.Mode = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok := env("AUTH_CACHE_SIZE"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Auth.CacheSize = n
+		}
+	}
+	for key, dst := range map[string]*time.Duration{
+		"AUTH_CACHE_TTL":    &cfg.Auth.CacheTTL,
+		"AUTH_NEGATIVE_TTL": &cfg.Auth.NegativeTTL,
+		"AUTH_STALE_GRACE":  &cfg.Auth.StaleGrace,
+	} {
+		if v, ok := env(key); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
+		}
+	}
 	if v, ok := env("LOG_LEVEL"); ok {
 		cfg.Log.Level = strings.ToLower(v)
 	}

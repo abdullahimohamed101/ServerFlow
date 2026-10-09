@@ -17,6 +17,10 @@ type Limits struct {
 	// AnyModel skips the check against Models. The gateway sets it when the
 	// worker registry, not a static list, decides which models exist.
 	AnyModel bool
+	// Allowed, when set, restricts the request to models it accepts (a tenant's allow-list). It is
+	// checked before the model is looked up, so a model that does not exist and one that is
+	// merely not allowed get the same answer (ErrModelForbidden).
+	Allowed func(model string) bool
 }
 
 // Fields the gateway validates. Go's encoding/json matches keys
@@ -49,6 +53,9 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 		return nil, ErrInvalidRequest("`model` is required")
 	} else if err := json.Unmarshal(raw, &model); err != nil || model == "" {
 		return nil, ErrInvalidRequest("`model` must be a non-empty string")
+	}
+	if lim.Allowed != nil && !lim.Allowed(model) {
+		return nil, ErrModelForbidden(model)
 	}
 	if !lim.AnyModel && !contains(lim.Models, model) {
 		return nil, ErrModelNotFound(model)

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"time"
 
+	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/scheduler"
@@ -41,6 +42,10 @@ type Server struct {
 	ready      *readiness
 	metrics    *metrics
 	handler    http.Handler
+	// authn, when set, requires an API key on /v1 requests (auth.mode=required).
+	authn *auth.Authenticator
+	// authRequired is true once authentication was asked for, even if authn is (wrongly) nil.
+	authRequired bool
 	// bodyReadTimeout bounds how long a client may take to send its request body.
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
@@ -48,8 +53,30 @@ type Server struct {
 }
 
 // New builds a Server that forwards to the upstream described by cfg.
-func New(cfg config.GatewayConfig, log *slog.Logger) *Server {
-	return newWithUpstream(cfg, log, newHTTPUpstream(cfg.UpstreamURL, cfg.ReadinessPath, cfg.UpstreamHeaderTimeout))
+func New(cfg config.GatewayConfig, log *slog.Logger, opts ...Option) *Server {
+	s := newWithUpstream(cfg, log, newHTTPUpstream(cfg.UpstreamURL, cfg.ReadinessPath, cfg.UpstreamHeaderTimeout))
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// NewFromConfig is New for a whole configuration: it honours auth.mode, so a configuration that
+// requires API keys cannot produce an open server by omitting the WithAuthenticator option. Without
+// an authenticator the server then refuses to Serve and answers every /v1 request with an error.
+func NewFromConfig(cfg config.Config, log *slog.Logger, opts ...Option) *Server {
+	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode)}, opts...)
+	return New(cfg.Gateway, log, opts...)
+}
+
+// requireIfConfigured marks authentication as required when the mode says so. A later
+// WithAuthenticator supplies the authenticator.
+func requireIfConfigured(mode string) Option {
+	return func(s *Server) {
+		if mode == config.AuthModeRequired {
+			s.authRequired = true
+		}
+	}
 }
 
 func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *Server {
@@ -66,8 +93,8 @@ func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *S
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.Handle("GET /metrics", s.metrics.handler())
-	mux.HandleFunc("GET /v1/models", s.handleModels)
-	mux.HandleFunc("POST "+chatCompletionsPath, s.handleChatCompletions)
+	mux.Handle("GET /v1/models", s.authenticate(s.handleModels))
+	mux.Handle("POST "+chatCompletionsPath, s.authenticate(s.handleChatCompletions))
 	s.handler = s.withRequest(mux)
 	return s
 }
@@ -80,6 +107,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // streams) finish, up to the configured shutdown timeout, after which
 // remaining connections are closed. It returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if s.authRequired && s.authn == nil {
+		return errors.New("gateway: authentication is required but no authenticator was provided")
+	}
 	srv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -91,10 +121,13 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if s.router != nil {
 		s.router.policy.SetSelf(ln.Addr()) // a worker must not be able to loop requests back through us
 	}
+	bctx, stopBackground := context.WithCancel(ctx)
+	defer stopBackground()
 	if s.background != nil {
-		bctx, stopBackground := context.WithCancel(ctx)
-		defer stopBackground()
 		go s.background(bctx)
+	}
+	if s.authn != nil {
+		go s.authn.Run(bctx) // records last_used_at; never on the request path
 	}
 
 	select {
@@ -120,7 +153,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // configured scheduler picks from the control plane's registry, which the
 // server polls in the background while it serves. It fails when the scheduler
 // strategy or worker networks are unusable.
-func NewRegistry(cfg config.Config, log *slog.Logger) (*Server, error) {
+func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, error) {
 	if len(cfg.Gateway.WorkerNetworks) == 0 {
 		// Registration is the trust boundary: any worker that may register can name an
 		// internal address (loopback and private ranges are allowed by default).
@@ -132,7 +165,15 @@ func NewRegistry(cfg config.Config, log *slog.Logger) (*Server, error) {
 			"component", "gateway")
 	}
 	cp := client.New(cfg.Gateway.ControlPlaneURL, cfg.ControlPlane.Token, nil)
-	return newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+	s, err := newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+	if err != nil {
+		return nil, err
+	}
+	requireIfConfigured(cfg.Auth.Mode)(s)
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter time.Duration, src workerLister, log *slog.Logger) (*Server, error) {

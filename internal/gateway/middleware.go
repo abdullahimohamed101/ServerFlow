@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/internal/auth"
 	"serverflow/pkg/protocol"
 )
 
@@ -23,6 +24,13 @@ type reqInfo struct {
 	inference bool
 	ttft      time.Duration
 	errCode   string
+	// tenantID, apiKeyID and principal identify the caller once authentication succeeded
+	// (auth.mode=required). They are empty when authentication is off. authReject is why a
+	// request was refused; it appears in logs only.
+	tenantID   string
+	apiKeyID   string
+	principal  *auth.Principal
+	authReject string
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
@@ -133,8 +141,12 @@ func (s *Server) logRequest(r *http.Request, info *reqInfo, status int, d time.D
 			attrs = append(attrs, "attempts", n, "worker_id", info.attempts[n-1].Worker)
 		}
 	}
+	attrs = append(attrs, tenantAttrs(info)...)
 	if info.errCode != "" {
 		attrs = append(attrs, "error_code", info.errCode)
+	}
+	if info.authReject != "" {
+		attrs = append(attrs, "auth_failure", info.authReject)
 	}
 	level := slog.LevelInfo
 	if status >= 500 || status == statusClientClosed {
