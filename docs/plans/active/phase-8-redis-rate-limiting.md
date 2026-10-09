@@ -217,3 +217,37 @@ transitive modules), README, ARCHITECTURE.
    fixes; narrower second verification; harden; small commits; `prepare-pr`; stop for approval.
 
 Steps 1 and 2 can proceed independently; 3 to 5 build on them.
+
+## Implementation Notes (deviations and additions)
+
+All of D1-D16 were implemented as approved. Differences and additions, in the order a reviewer is likely to care:
+
+- **Redis clock steps (new finding).** The limiter trusts Redis `TIME`, and Docker Desktop's Redis clock fell 14-45 s behind while the Mac
+  slept and then jumped forward; a forward step is indistinguishable from idle time, so buckets were credited with it (first benchmarks
+  admitted up to 2.4x the quota). The algorithm caps elapsed time at the burst window, never removes tokens for a backward step, and now
+  also never moves a bucket's stamp backwards (script and pure model, with a test); the residual risk (a forward step credits at most one
+  burst) is in ADR-015. The benchmark was re-run with the Mac awake (`caffeinate`) and the clock offset stable: exactly 800 of 800.
+  Real-clock tests use generous bounds; lease tests use a 1.5 s TTL.
+- **Cluster.** The single script touches tenant keys and a model key, so Redis Cluster is not supported (the plan said the layout is cluster-safe;
+  the tenant keys are, the combined call is not). Documented.
+- **Renewal** is one call per tenant with in-flight leases (not one batched call across tenants), to keep each call within one hash slot.
+- **Release is asynchronous** (bounded queue, four workers; dropped when full or Redis is backing off; the lease then expires by itself).
+- **Health tracking lives in `internal/redis.Client`** (backoff, one probe, one log line per outage/recovery), shared by the limiter and the
+  metadata recorder, rather than in the limiter. `Client.Run` is detached from the caller's cancellation so a client that hangs up neither
+  abandons an applied script nor counts as a Redis failure.
+- **Configuration additions:** `redis.allow_insecure_transport`, `redis.request_metadata_ttl`; `redis.address` may be a `redis://`, `rediss://` or
+  `unix://` URL parsed by the driver; the transport guard requires TLS **and** a password for a remote Redis; `rate_limit.mode: required` with
+  auth off and no model caps is refused as having nothing to enforce; `rate_limit.lease_ttl` must be at least 10 s and 3x `redis.timeout`.
+  `RedisConfig` also redacts itself under JSON marshalling.
+- **Cost estimate:** a request larger than the whole token bucket is charged the bucket's size (needs a full bucket) instead of being refused
+  forever. Non-ASCII characters count as one token each.
+- **Over the local lease cap** a request is refused as unavailable in both failure modes (the cap protects the gateway, not quotas).
+- **Retry-After for concurrency** is a fixed 1 s hint. When several quotas refuse, the longest wait is reported.
+- **`redis_errors_total`** (spec section 29) was not added; `rate_limit_rejections_total{limit="unavailable"}` and the log lines cover it.
+- **Gateway files touched:** `server.go`, `handlers.go`, `middleware.go`, `metrics.go`, `ratelimit.go` (new) and two lines in `attempt.go`
+  (`recordWorker` after a worker is chosen, and after a retry's worker is chosen); the retry/attempt logic is otherwise unchanged. `internal/auth`,
+  `internal/postgres`, `internal/scheduler`, `internal/registry`, `internal/worker`, `internal/mockworker` and `internal/bench` are untouched.
+- **CI:** Redis is started with `docker run ... --requirepass` in a step (a service container cannot take command arguments), and a
+  "Redis tests must run, not skip" step mirrors the PostgreSQL one.
+- **Benchmark:** the harness binary cannot authenticate (it sends fake `sk-bench-*` keys), so the measurement offers the harness's own
+  `multi-tenant` plan in-process to three gateways (`TestBenchmarkRateLimits`, opt-in). The harness is not modified.
