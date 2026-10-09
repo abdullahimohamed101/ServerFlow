@@ -289,3 +289,11 @@ Docker Desktop's Redis container clock fell 14-45 s behind the host while the Ma
 first benchmark runs was admitted 1052-1922 times against a bound of 800. With the Mac kept awake (`caffeinate`) and the offset stable the same run
 admitted exactly 800. The step-back handling (no tokens removed, stamp never moves back) is exact; a forward step can still credit up to one
 burst per bucket. Production Redis on an NTP-synchronised host does not behave like this, but a failover to a host with a wrong clock would.
+
+### Test stability under load
+
+The new ratelimit, redis and gateway tests pass with `-race -count=5` under 20 CPU-burning processes. One existing test,
+`TestAClientWhoLeavesStopsTheRetries` (`internal/gateway/attempt_test.go`), fails under that load, and **it fails identically on an unmodified
+copy of master** (`git archive master`, `-race -count=40`, same load), so it is pre-existing and unrelated to this phase; it passes in all
+normal runs. Not changed here. In one unloaded `go test ./...` run `TestProcessGatewayRetriesAroundAFlakyWorker` returned one 503 NO_CAPACITY
+(it passed in the race run and the repeat); also not touched.
