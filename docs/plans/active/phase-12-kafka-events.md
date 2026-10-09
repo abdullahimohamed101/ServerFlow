@@ -203,3 +203,5 @@ Untouched: scheduler, registry, rate limiter, auth, worker code, benchmark harne
 8. Overhead runs and benchmark note; ADR, schema reference, operations runbook (including the manual stop/replay and the broker-CLI offset reset), README and ARCHITECTURE; one Apache Kafka compatibility run; all CI steps locally; mutation checks; independent verification; fixes; narrower second verification; harden; `prepare-pr`; stop for approval.
 
 Steps 1, 2 and 6 (logic against fakes) can proceed in parallel once the prep plan is merged; 4 and 7 need the broker.
+
+**Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
