@@ -1,6 +1,6 @@
 # Phase 8 — Redis: Distributed Rate Limiting
 
-Status: In progress (plan approved with all defaults; implementation under way)
+Status: Completed (implemented, independently verified twice; see the PR)
 Owner: coding agent
 Depends on: Phase 9 (tenant quotas and API keys; PR #9) and Phase 6 (request path). Uses Phase 7 (the benchmark harness) for the acceptance run.
 Spec: `docs/architecture/serverflow-spec.md` §16–18, §29, §36, §44, §45–46, §51, §58 Phase 8, §63

@@ -115,13 +115,14 @@ At startup in `required` mode an unreachable Redis, a wrong password, or an unsa
   ACL SETUSER serverflow on >PASSWORD ~rl:* ~request:* -@all +evalsha +eval +time +hmget +hset +pexpire +zremrangebyscore +zcard +zadd +zscore +zrem +set +hello +ping
   ```
 
-  (`rl:*` are the limiter's keys, `request:*` the optional metadata, which needs `+set`; add `+select` if `redis.db` is not 0.) A missing command
+  (`rl:*` are the limiter's keys, `request:*` the optional metadata, which needs `+set`; add `+select` if `redis.db` is not 0.) `+hello` is optional (the client falls back without it); a missing `+eval` only shows after a `SCRIPT FLUSH` or restart. A missing command
   does not fail loudly: the script errors, which the gateway treats as Redis being unavailable (503 in closed mode).
 - Tenant and model names are escaped in keys; only models named in `model_requests_per_minute` become keys.
 - This limits authenticated tenants. Floods of unauthenticated requests still need a front proxy or per-IP limiter.
 - **Memory.** Keys are small and expire on their own (twice the burst window), so memory follows active tenants. Do not run this Redis with
-  `maxmemory-policy noeviction` at its limit: a write that cannot be stored makes the script fail with OOM, and every limited tenant gets
-  503 in closed mode (open mode: all limits lapse). Do not use `allkeys-lru`/`allkeys-random` either: evicting limiter keys resets those
+  `maxmemory-policy noeviction` at its limit: a write that cannot be stored makes the script fail with OOM, and tenants without a concurrency limit get
+  503 in closed mode (open mode: their limits lapse). Tenants with `max_concurrent_requests` can keep working under OOM, because their script
+  does a write first and Redis then skips the OOM check for the rest of it, but after any failure the limiter's backoff briefly returns 503 to everyone. Do not use `allkeys-lru`/`allkeys-random` either: evicting limiter keys resets those
   buckets and leases to full, so quotas silently reset. Give Redis headroom (set `maxmemory` well above the working set) and, if you must cap
   it, use a `volatile-*` policy: every limiter key has a TTL, and keys without one (other applications sharing the instance) are never evicted.
   Prefer a dedicated instance. Alert on `evicted_keys` and on `rate_limit_rejections_total{limit="unavailable"}`.

@@ -38,7 +38,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   token, a few framing tokens per message and for the reply. The reply part is the client's `max_tokens` (the larger of `max_tokens` and
   `max_completion_tokens` when both are present) or `gateway.max_tokens_limit` when the request names none. Every byte of the request body that is not already counted as message text (image parts, tool call arguments, the `tools` list, any other field) is
   charged at the same three bytes per token, so such content cannot be used to avoid the input charge (a base64 image is charged by its encoded size, which
-  over-charges images). Bounded at 2^32, monotonic, not
+  over-charges images, and text written as \uXXXX escapes is charged about twice the per-character estimate). Bounded at 2^32, monotonic, not
   refunded after the response. A request bigger than the whole token bucket is charged the bucket's size (needs a full bucket).
   **Known limitation: this is an approximation, not an upper bound.** (1) The gateway forwards the body unchanged (ADR-003), so when the
   request has no `max_tokens` the backend may generate up to its own limit (vLLM defaults to the context length) while the tenant is
