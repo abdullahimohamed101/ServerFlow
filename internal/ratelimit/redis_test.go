@@ -1121,3 +1121,27 @@ func TestPoolBusyFollowsTheFailureModeWithoutAnOutage(t *testing.T) {
 		})
 	}
 }
+
+func TestDroppedReleasesAreCountedWhenRedisIsDown(t *testing.T) {
+	rc := redistest.Config(t)
+	proxy := redistest.NewProxy(t, rc.Address)
+	rc.Address, rc.Timeout = proxy.Addr(), 100*time.Millisecond
+	c := redistest.NewClientWith(t, rc)
+	l, err := NewRedis(c, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := allow(t, l, tenantReq(redistest.Unique("t"), Limits{MaxConcurrent: 2}, 1))
+	if l.LocalLeases() != 1 || l.DroppedReleases() != 0 {
+		t.Fatalf("%d leases, %d dropped", l.LocalLeases(), l.DroppedReleases())
+	}
+	proxy.SetMode(redistest.Cut)
+	d.Release()
+	drain(l)
+	if l.LocalLeases() != 0 {
+		t.Fatal("the lease should stop being tracked at once")
+	}
+	if l.DroppedReleases() != 1 {
+		t.Fatalf("the release that could not be sent must be counted, got %d", l.DroppedReleases())
+	}
+}

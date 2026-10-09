@@ -17,7 +17,27 @@ import (
 // request with an error, so a wiring mistake cannot leave quotas unenforced. If the limiter has a
 // Run(ctx) method, Serve runs it (lease renewal and release).
 func WithLimiter(l ratelimit.Limiter) Option {
-	return func(s *Server) { s.limiter, s.limitRequired = l, true }
+	return func(s *Server) {
+		s.limiter, s.limitRequired = l, true
+		s.registerLimiterStats(l)
+	}
+}
+
+// limiterStats is what a limiter may expose for the gateway's metrics: the concurrency leases this process
+// tracks, and releases that were not sent (the lease then holds its slot until it expires).
+type limiterStats interface {
+	LocalLeases() int
+	DroppedReleases() int64
+}
+
+// registerLimiterStats exports rate_limit_local_leases and rate_limit_dropped_releases_total when the limiter
+// can report them (a replaced limiter, or a fake without the methods, simply has none).
+func (s *Server) registerLimiterStats(l ratelimit.Limiter) {
+	st, ok := l.(limiterStats)
+	if !ok || st == nil {
+		return
+	}
+	s.metrics.registerLimiterStats(st)
 }
 
 // SetLimiter is WithLimiter for a Server that already exists. Call it before Serve.

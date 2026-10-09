@@ -135,3 +135,16 @@ func (m *metrics) observeRateReject(limit ratelimit.Limit) {
 
 // observeRateDecision records how long the limiter took.
 func (m *metrics) observeRateDecision(d time.Duration) { m.rateDecision.Observe(d.Seconds()) }
+
+// registerLimiterStats exports the limiter's lease bookkeeping. Registering twice (a second limiter on the same
+// server) replaces nothing: the first registration stays, which is fine because a server has one limiter.
+func (m *metrics) registerLimiterStats(st limiterStats) {
+	_ = m.reg.Register(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "rate_limit_local_leases",
+		Help: "Concurrency leases this gateway currently tracks (requests in flight that hold a slot).",
+	}, func() float64 { return float64(st.LocalLeases()) }))
+	_ = m.reg.Register(prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "rate_limit_dropped_releases_total",
+		Help: "Concurrency slot releases that were not sent to Redis (queue full or Redis unavailable); the slot is held until lease_ttl.",
+	}, func() float64 { return float64(st.DroppedReleases()) }))
+}

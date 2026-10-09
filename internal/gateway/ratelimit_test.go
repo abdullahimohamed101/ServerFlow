@@ -59,6 +59,10 @@ func (f *fakeLimiter) releaseOnce() func() {
 
 func (f *fakeLimiter) Run(context.Context) { f.ran.Store(true) }
 
+// LocalLeases and DroppedReleases make the fake a limiterStats.
+func (f *fakeLimiter) LocalLeases() int       { return int(f.allowed.Load() - f.releases.Load()) }
+func (f *fakeLimiter) DroppedReleases() int64 { return 7 }
+
 func (f *fakeLimiter) calls() []ratelimit.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -436,4 +440,41 @@ func TestAuthOffModelCapStillReachesTheLimiter(t *testing.T) {
 	if resp.StatusCode != 200 || len(calls) != 1 || calls[0].TenantID != "" || calls[0].Model != "qwen-7b" || !calls[0].Limits.None() {
 		t.Fatalf("%d %+v", resp.StatusCode, calls)
 	}
+}
+
+func TestLimiterLeaseAndDroppedReleaseMetricsAreExported(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	lim := &fakeLimiter{}
+	env := newLimitEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		okUpstream(w, r)
+	}, lim)
+	t.Cleanup(func() { close(release) })
+	key := env.store.add("acme", nil, quotas(5, 5, 5))
+	go env.chat(t, key, "qwen-7b")
+	<-started
+	metrics := func() string {
+		resp, body := env.do(t, http.MethodGet, "/metrics", "")
+		_ = resp
+		return body
+	}
+	out := metrics()
+	if !strings.Contains(out, "rate_limit_local_leases 1\n") || !strings.Contains(out, "rate_limit_dropped_releases_total 7\n") {
+		t.Fatalf("lease and dropped-release metrics missing:\n%s", grepMetric(out, "rate_limit"))
+	}
+}
+
+func grepMetric(s, sub string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.Contains(l, sub) {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
