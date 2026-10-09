@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "run_id": "run_001",
+  "metadata": {
+    "date": "2026-10-09T03:26:56Z",
+    "harness_version": "1",
+    "go_version": "go1.27.1",
+    "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
+    "git_commit": "bb94c8c625ad7f3c5ce4eed284d26285aabfecb1",
+    "git_tree": "clean",
+    "target": "embedded",
+    "target_host": "loopback",
+    "scheduler": "round-robin",
+    "models": [
+      "qwen-7b"
+    ],
+    "worker_count": 3,
+    "gpu_type": "none (mock workers)",
+    "mode": "closed",
+    "concurrency": 12,
+    "rate_per_second": 0,
+    "max_in_flight": 0,
+    "duration_seconds": 20,
+    "warmup_seconds": 3,
+    "seed": 1,
+    "workload": "mixed",
+    "stream_ratio": 0.5,
+    "plan_digest": "d065b561cbd74cf2",
+    "prompt_distribution": [
+      {
+        "name": "short",
+        "weight": 0.6,
+        "input_tokens_min": 100,
+        "input_tokens_max": 300,
+        "max_tokens_min": 50,
+        "max_tokens_max": 150
+      },
+      {
+        "name": "medium",
+        "weight": 0.3,
+        "input_tokens_min": 500,
+        "input_tokens_max": 1500,
+        "max_tokens_min": 200,
+        "max_tokens_max": 500
+      },
+      {
+        "name": "long",
+        "weight": 0.1,
+        "input_tokens_min": 2000,
+        "input_tokens_max": 8000,
+        "max_tokens_min": 500,
+        "max_tokens_max": 1500
+      }
+    ],
+    "repeat": {
+      "index": 1,
+      "of": 3,
+      "group": "run_001"
+    },
+    "cluster": {
+      "worker_profile": "heterogeneous",
+      "heartbeat_interval_ms": 1000,
+      "gateway_registry_refresh_ms": 100,
+      "workers": [
+        {
+          "id": "worker-01",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128
+        },
+        {
+          "id": "worker-02",
+          "model": "qwen-7b",
+          "tokens_per_second": 600,
+          "ttft_ms": 30,
+          "max_concurrency": 8,
+          "queue_size": 128
+        },
+        {
+          "id": "worker-03",
+          "model": "qwen-7b",
+          "tokens_per_second": 200,
+          "ttft_ms": 60,
+          "max_concurrency": 8,
+          "queue_size": 128
+        }
+      ]
+    }
+  },
+  "summary": {
+    "sent": 433,
+    "succeeded": 433,
+    "failed": 0,
+    "warmup_excluded": 71,
+    "retried": 0,
+    "status_classes": {
+      "2xx": 433
+    },
+    "error_classes": {},
+    "latency_ms": {
+      "count": 433,
+      "min": 69.278209,
+      "mean": 550.3614519722862,
+      "p50": 246.501417,
+      "p95": 2210.738625,
+      "p99": 6396.806166,
+      "max": 7500.627542
+    },
+    "ttft_ms": {
+      "count": 206,
+      "min": 20.263875,
+      "mean": 31.783969699029118,
+      "p50": 30.359334,
+      "p95": 60.73075,
+      "p99": 61.228584,
+      "max": 62.457208
+    },
+    "input_tokens": 315704,
+    "output_tokens": 104061,
+    "usage_requests": 227,
+    "estimated_requests": 206,
+    "window_seconds": 20,
+    "span_seconds": 24.609980167,
+    "requests_per_second": 17.594487970397395,
+    "input_tokens_per_second": 12828.291524725957,
+    "output_tokens_per_second": 4228.406495814142,
+    "error_rate": 0
+  },
+  "queue": {
+    "samples": 80,
+    "avg_total_queue_depth": 0,
+    "p95_total_queue_depth": 0,
+    "max_total_queue_depth": 0,
+    "avg_total_active_requests": 12,
+    "workers": [
+      {
+        "id": "worker-01",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 2.375,
+        "samples": 80
+      },
+      {
+        "id": "worker-02",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 3.15,
+        "samples": 80
+      },
+      {
+        "id": "worker-03",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 6.475,
+        "samples": 80
+      }
+    ]
+  },
+  "workers": [
+    {
+      "id": "worker-01",
+      "model": "qwen-7b",
+      "completed": 179,
+      "mean_queue_depth": 0,
+      "mean_active_requests": 2.375
+    },
+    {
+      "id": "worker-02",
+      "model": "qwen-7b",
+      "completed": 181,
+      "mean_queue_depth": 0,
+      "mean_active_requests": 3.15
+    },
+    {
+      "id": "worker-03",
+      "model": "qwen-7b",
+      "completed": 85,
+      "mean_queue_depth": 0,
+      "mean_active_requests": 6.475
+    }
+  ],
+  "imbalance": {
+    "request_jain": 0.9164387428788279,
+    "request_jain_by_model": {
+      "qwen-7b": 0.9164387428788279
+    },
+    "queue_jain": null
+  },
+  "gpu_utilization": null,
+  "not_measured": {
+    "gpu_utilization": "workers did not report GPU utilization (mock workers have no GPU)",
+    "queue_imbalance": "every worker's queue stayed empty, so the index is undefined"
+  },
+  "sample_polls_failed": 0,
+  "samples_dropped": 0,
+  "notes": [
+    "Per-worker completed counts start at the end of warm-up, so requests sent in warm-up that finish later are counted in them.",
+    "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does."
+  ]
+}
