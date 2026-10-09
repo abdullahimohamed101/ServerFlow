@@ -44,7 +44,7 @@ func docExamples(t *testing.T, rel string) (runs [][]string, compares [][2]strin
 }
 
 func TestEveryDocumentedBenchmarkCommandParsesAndStaysWithinTheSafeLoad(t *testing.T) {
-	for _, file := range []string{"README.md", "Makefile", "cmd/benchmark/main.go", "docs/benchmarks/phase-7-harness.md", "docs/plans/active/phase-7-benchmark-harness.md"} {
+	for _, file := range []string{"README.md", "Makefile", "cmd/benchmark/main.go", "docs/benchmarks/phase-7-harness.md", "docs/plans/completed/phase-7-benchmark-harness.md"} {
 		t.Run(file, func(t *testing.T) {
 			runs, compares := docExamples(t, file)
 			if len(runs) == 0 {
