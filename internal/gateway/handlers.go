@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/internal/ratelimit"
 	"serverflow/pkg/protocol"
 )
 
@@ -67,6 +68,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer s.metrics.active.Dec()
 	start := time.Now()
 
+	if s.limitRequired && s.limiter == nil { // required but not wired: fail closed
+		w.Header().Set("Connection", "close")
+		s.fail(w, info, api.ErrInternal())
+		return
+	}
+
 	// Bound how long the client may take to send the body. net/http resets the
 	// read deadline itself once the body is fully read, so it does not cut off
 	// a long streaming response (TestStreamsOutliveTheBodyReadTimeout guards
@@ -110,10 +117,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ireq.TenantID, ireq.Priority = p.TenantID, p.Policy.Priority
 	}
 
+	if s.limitRequired {
+		// After parsing (the token cost needs the body) and the model checks, before any worker is touched.
+		// The slot is given back on every way out of this function: a normal return, an error, a client that
+		// left, and a panic.
+		release, ok := s.admit(w, r, info, ratelimit.EstimateCost(ireq.Messages, ireq.Prompt, ireq.MaxTokens, s.cfg.MaxTokensLimit), ireq.Model)
+		if !ok {
+			return
+		}
+		defer release()
+	}
+
 	if s.router != nil {
 		s.forwardRegistry(w, r, rc, ireq, body, info, start)
 		return
 	}
+	s.recordWorker(info, "static", 1)
 
 	// upCtx lets the idle timer abort a stalled upstream without touching the
 	// client's own context, which is how the two failures are told apart.

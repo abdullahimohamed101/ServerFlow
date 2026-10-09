@@ -15,6 +15,7 @@ import (
 
 	"serverflow/internal/auth"
 	"serverflow/internal/config"
+	"serverflow/internal/ratelimit"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/scheduler"
 )
@@ -46,6 +47,12 @@ type Server struct {
 	authn *auth.Authenticator
 	// authRequired is true once authentication was asked for, even if authn is (wrongly) nil.
 	authRequired bool
+	// limiter, when set, enforces quotas after the request is parsed (rate_limit.mode=required).
+	limiter ratelimit.Limiter
+	// limitRequired is true once rate limiting was asked for, even if limiter is (wrongly) nil.
+	limitRequired bool
+	// recorder, when set, receives request metadata (redis.request_metadata).
+	recorder RequestRecorder
 	// bodyReadTimeout bounds how long a client may take to send its request body.
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
@@ -65,7 +72,7 @@ func New(cfg config.GatewayConfig, log *slog.Logger, opts ...Option) *Server {
 // requires API keys cannot produce an open server by omitting the WithAuthenticator option. Without
 // an authenticator the server then refuses to Serve and answers every /v1 request with an error.
 func NewFromConfig(cfg config.Config, log *slog.Logger, opts ...Option) *Server {
-	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode)}, opts...)
+	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode), requireLimitIfConfigured(cfg.RateLimit.Mode)}, opts...)
 	return New(cfg.Gateway, log, opts...)
 }
 
@@ -110,6 +117,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if s.authRequired && s.authn == nil {
 		return errors.New("gateway: authentication is required but no authenticator was provided")
 	}
+	if s.limitRequired && s.limiter == nil {
+		return errors.New("gateway: rate limiting is required but no limiter was provided")
+	}
 	srv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -128,6 +138,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	if s.authn != nil {
 		go s.authn.Run(bctx) // records last_used_at; never on the request path
+	}
+	if r, ok := s.limiter.(interface{ Run(context.Context) }); ok {
+		go r.Run(bctx) // lease renewal and release
+	}
+	if r, ok := s.recorder.(interface{ Run(context.Context) }); ok {
+		go r.Run(bctx)
 	}
 
 	select {
@@ -170,6 +186,7 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 		return nil, err
 	}
 	requireIfConfigured(cfg.Auth.Mode)(s)
+	requireLimitIfConfigured(cfg.RateLimit.Mode)(s)
 	for _, o := range opts {
 		o(s)
 	}

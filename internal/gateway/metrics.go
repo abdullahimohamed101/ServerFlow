@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"serverflow/internal/ratelimit"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -25,6 +27,11 @@ type metrics struct {
 	// authRejects counts requests refused by authentication, by status only: tenants and
 	// reasons are unbounded or sensitive and stay out of the labels.
 	authRejects *prometheus.CounterVec
+	// rateRejects counts requests refused by rate limiting, by which limit (requests, tokens, concurrency,
+	// model, unavailable). Tenants stay out of the labels (unbounded).
+	rateRejects  *prometheus.CounterVec
+	rateBypassed prometheus.Counter
+	rateDecision prometheus.Histogram
 }
 
 func newMetrics() *metrics {
@@ -60,11 +67,25 @@ func newMetrics() *metrics {
 			Name: "auth_rejections_total",
 			Help: "Requests refused by API key authentication, by HTTP status (401, 403, 500 or 503).",
 		}, []string{"status"}),
+		rateRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "rate_limit_rejections_total",
+			Help: "Requests refused by rate limiting, by limit: requests, tokens, concurrency, model or unavailable (the check could not be made).",
+		}, []string{"limit"}),
+		rateBypassed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rate_limit_bypassed_total",
+			Help: "Requests admitted without a rate limit check because Redis was unavailable and redis.on_failure is open.",
+		}),
+		rateDecision: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "rate_limit_decision_seconds",
+			Help:    "Time the rate limiter took to decide a request.",
+			Buckets: []float64{.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25},
+		}),
 	}
 	m.reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.requests, m.active, m.duration, m.ttft, m.attempts, m.retries, m.authRejects,
+		m.rateRejects, m.rateBypassed, m.rateDecision,
 	)
 	return m
 }
@@ -106,3 +127,11 @@ func (m *metrics) observeRetry(model, reason string) {
 func (m *metrics) observeAuthReject(status int) {
 	m.authRejects.WithLabelValues(strconv.Itoa(status)).Inc()
 }
+
+// observeRateReject counts a request refused by rate limiting. limit is one of the fixed limit names.
+func (m *metrics) observeRateReject(limit ratelimit.Limit) {
+	m.rateRejects.WithLabelValues(string(limit)).Inc()
+}
+
+// observeRateDecision records how long the limiter took.
+func (m *metrics) observeRateDecision(d time.Duration) { m.rateDecision.Observe(d.Seconds()) }

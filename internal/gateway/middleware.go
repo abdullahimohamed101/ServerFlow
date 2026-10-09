@@ -31,6 +31,11 @@ type reqInfo struct {
 	apiKeyID   string
 	principal  *auth.Principal
 	authReject string
+	// cost is the token estimate charged to rate limits; rateLimit is the limit that refused the request
+	// ("unavailable" when the check could not be made); rateBypassed marks a request admitted unchecked.
+	cost         int
+	rateLimit    string
+	rateBypassed bool
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
@@ -144,6 +149,15 @@ func (s *Server) logRequest(r *http.Request, info *reqInfo, status int, d time.D
 	attrs = append(attrs, tenantAttrs(info)...)
 	if info.errCode != "" {
 		attrs = append(attrs, "error_code", info.errCode)
+	}
+	if info.rateLimit != "" {
+		attrs = append(attrs, "rate_limit", info.rateLimit)
+	}
+	if info.rateBypassed {
+		attrs = append(attrs, "rate_limit_bypassed", true)
+	}
+	if info.cost > 0 {
+		attrs = append(attrs, "est_cost", info.cost)
 	}
 	if info.authReject != "" {
 		attrs = append(attrs, "auth_failure", info.authReject)
