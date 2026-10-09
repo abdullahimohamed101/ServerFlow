@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -121,5 +122,44 @@ func TestStartBootsAWorkingClusterAndCloseStopsIt(t *testing.T) {
 func TestStartRejectsUnknownSchedulerWithoutLeaking(t *testing.T) {
 	if _, err := Start(context.Background(), Config{Scheduler: "nope", Workers: 1, Models: []string{"m"}}); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+// Start must not return before the gateway sees every worker: the first requests after it used to
+// reach a gateway that knew one worker and got 503. Round-robin sends consecutive requests to
+// different workers, so three requests made right after Start must reach three workers.
+func TestTheGatewaySeesEveryWorkerTheMomentStartReturns(t *testing.T) {
+	for n := 0; n < 4; n++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		c, err := Start(ctx, Config{Scheduler: "round-robin", Workers: 3, Models: []string{"m"}, TTFT: time.Millisecond, TokensPerSecond: 20000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			resp, err := http.Post(c.GatewayURL+"/v1/chat/completions", "application/json",
+				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":2}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != 200 {
+				t.Fatalf("start %d request %d: %d", n, i, resp.StatusCode)
+			}
+		}
+		for _, w := range c.Workers {
+			r, err := http.Get(w.URL + "/stats")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var st struct{ Completed int64 }
+			_ = json.NewDecoder(r.Body).Decode(&st)
+			_ = r.Body.Close()
+			if st.Completed != 1 {
+				t.Fatalf("start %d: %s completed %d, want 1: the gateway did not know every worker yet", n, w.ID, st.Completed)
+			}
+		}
+		c.Close()
+		cancel()
 	}
 }

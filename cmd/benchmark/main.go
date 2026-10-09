@@ -1,8 +1,8 @@
 // Command benchmark is the scheduler benchmark harness: it drives a reproducible load
 // test against ServerFlow, persists the result, and compares two results.
 //
-//	benchmark run --scheduler round-robin --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3
-//	benchmark compare run_001 run_002
+//	benchmark run --scheduler round-robin --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3
+//	benchmark compare run_001 run_004
 //	benchmark list
 //
 // See docs/benchmarks/phase-7-harness.md.
@@ -32,8 +32,14 @@ Usage:
   benchmark list [--dir D]          list past runs
   benchmark run -h                  all flags of run
 
+Example (two repeat groups, then a comparison of one run from each):
+  benchmark run --scheduler round-robin  --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --repeat 3
+  benchmark run --scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --repeat 3
+  benchmark compare run_001 run_004
+
 Without --target, run boots a simulated cluster (control plane, mock workers, gateway) in
-this process. Choose a load with --concurrency (closed loop, at most workers x mock-concurrency)
+this process. Choose a load with --concurrency (closed loop; keep it near half of
+workers x mock-concurrency: above 60% of that is warned about, above 100% refused)
 or --rate (open loop). A run with more than 5% failed requests is invalid and exits non-zero.`
 
 func main() {

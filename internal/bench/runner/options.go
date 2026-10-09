@@ -115,6 +115,37 @@ func (o Options) Models() workload.Models {
 	return workload.Models{Primary: o.Model, Secondary: o.Secondary}
 }
 
+// SafeSlotFraction is the share of an embedded cluster's request slots that closed-loop clients
+// can use before the run is likely to be invalid. Round-robin and random ignore load, so they
+// send a slow worker its share of requests however busy it is, and a worker whose slots are all
+// taken makes the gateway answer 503; heterogeneous workers and load balancing from heartbeats
+// that are a second old make it worse. 100% of the slots is refused outright; above this share
+// the run only warns.
+const SafeSlotFraction = 0.6
+
+// LoadWarning returns a warning when an embedded closed-loop run uses more than SafeSlotFraction
+// of the cluster's slots, and "" otherwise.
+func (o Options) LoadWarning() string {
+	if !o.Embedded() || o.Concurrency <= 0 {
+		return ""
+	}
+	wl, err := workload.New(workload.Spec{Name: o.Workload, Seed: o.Seed, Models: o.Models(), StreamRatio: o.StreamRatio})
+	if err != nil {
+		return ""
+	}
+	specs, err := embedded.Plan(o.EmbeddedConfig(wl.ModelNames()))
+	if err != nil {
+		return ""
+	}
+	slots := embedded.Slots(specs)
+	if float64(o.Concurrency) <= SafeSlotFraction*float64(slots) {
+		return ""
+	}
+	return fmt.Sprintf("%d clients on %d request slots is %.0f%% of them (above %.0f%%): a scheduler that ignores load will fill a slow worker's slots, the gateway will answer 503, "+
+		"and this run will probably be invalid (error rate above %.0f%%). Use at most %d clients, or add workers or --mock-concurrency.",
+		o.Concurrency, slots, 100*float64(o.Concurrency)/float64(slots), 100*SafeSlotFraction, 100*o.MaxErrorRate, int(SafeSlotFraction*float64(slots)))
+}
+
 // Validate refuses unsafe or inconsistent options with an error that says what to change.
 func (o Options) Validate() error {
 	if err := o.validateTarget(); err != nil {
@@ -252,7 +283,10 @@ func (o Options) validateLoad() error {
 		peak *= workload.BurstFactor
 	}
 	if peak > o.MaxRate {
-		return fmt.Errorf("the peak rate %g/s is above the cap of %g/s (the burst workload peaks at %dx --rate); raise it with --max-rate if you mean it", peak, o.MaxRate, workload.BurstFactor)
+		if o.Workload == workload.Burst {
+			return fmt.Errorf("the peak rate %g/s is above the cap of %g/s (the burst workload peaks at %dx --rate); raise it with --max-rate if you mean it", peak, o.MaxRate, workload.BurstFactor)
+		}
+		return fmt.Errorf("--rate %g is above the cap of %g/s; raise it with --max-rate if you mean it", peak, o.MaxRate)
 	}
 	if o.MaxInFlight < 1 || o.MaxInFlight > o.MaxConcurrency {
 		return fmt.Errorf("--max-inflight must be between 1 and %d, got %d", o.MaxConcurrency, o.MaxInFlight)

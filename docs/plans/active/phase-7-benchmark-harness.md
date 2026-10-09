@@ -1,6 +1,6 @@
 # Phase 7 — Baseline Benchmark Harness
 
-Status: In progress (plan approved with all defaults; implementation under way)
+Status: In review (implemented; independent review and verification findings fixed)
 Owner: coding agent
 Depends on: Phase 6 (multi-worker routing; PR #7). Runs in parallel with Phase 9 (PostgreSQL); the two share no code, see "Parallel work".
 Spec: `docs/architecture/serverflow-spec.md` §14, §31–36, §52, §58 Phase 7, §63
@@ -12,8 +12,8 @@ One command runs a reproducible load test against ServerFlow and writes a result
 can compare to a second result:
 
 ```bash
-benchmark run     --scheduler round-robin --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3
-benchmark compare run_001 run_002
+benchmark run     --scheduler round-robin --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3
+benchmark compare run_001 run_004
 ```
 
 `run` can boot a whole simulated cluster in-process (control plane, N mock workers with agents, a gateway

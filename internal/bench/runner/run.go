@@ -30,6 +30,9 @@ func Run(ctx context.Context, o Options, out io.Writer) ([]report.Result, error)
 	if err := o.Validate(); err != nil {
 		return nil, err
 	}
+	if w := o.LoadWarning(); w != "" {
+		say(out, "  WARNING: %s\n", w)
+	}
 	var results []report.Result
 	group := ""
 	for i := 1; i <= o.Repeat; i++ {
@@ -57,7 +60,7 @@ func Run(ctx context.Context, o Options, out io.Writer) ([]report.Result, error)
 		say(out, "%s: %s\n", id, Headline(res))
 		say(out, "%s: wrote %s\n", id, dir)
 		if res.Summary.Sent == 0 {
-			return results, fmt.Errorf("%s: no request was measured (sent 0): the window was empty or the run ended before it opened; see %s", id, dir)
+			return results, fmt.Errorf("%s: no request was measured (sent 0): none was due inside the measurement window; see %s", id, dir)
 		}
 		if !res.Valid {
 			for _, why := range res.InvalidReasons {
@@ -174,20 +177,10 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 		cfg.Segments = workload.Segments(o.Workload, o.Rate, o.Warmup, o.Duration)
 	}
 
-	// Worker-side measurement: queue samples for the whole run, and each worker's completed
-	// count at the start and end of the measurement window.
-	t0 := time.Now()
-	cfg.T0 = t0
-	sctx, stopSampler := context.WithCancel(ctx)
-	defer stopSampler()
-	var sampler *collect.Sampler
-	samplerDone := make(chan struct{})
-	if tgt.cp != nil {
-		sampler = collect.NewSampler(collect.ControlPlaneFetch(tgt.cp), o.SampleInterval, t0)
-		go func() { sampler.Run(sctx); close(samplerDone) }()
-	} else {
-		close(samplerDone)
-	}
+	// Everything that can block on the network before the load starts (listing the workers,
+	// reading their first counts) happens here, before t0: a control plane or /stats that takes
+	// seconds must delay the start of the run, never eat its window.
+	preStart := time.Now()
 	targets, missing := tgt.workers(ctx)
 	if meta.WorkerCount == nil && len(targets) > 0 {
 		n := len(targets)
@@ -208,15 +201,31 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 		counts, m := collect.FetchCompleted(c, tgt.hc, readable)
 		return snap{counts, m, true}
 	}
-	// The start snapshot is taken when the warm-up ends. If the run ends before that (the request
-	// cap, a cancellation) it is abandoned, and no per-worker delta is computed from an end
-	// snapshot that precedes a start.
-	startCtx, abandonStart := context.WithCancel(ctx)
-	defer abandonStart()
 	startCh := make(chan snap, 1)
 	if o.Warmup == 0 {
 		startCh <- snapshot(ctx)
+	}
+	tm.PreRun = phase(preStart)
+
+	// The clock starts now. Queue samples cover the whole run; the start count is taken when the
+	// warm-up ends (concurrently with the load, so a slow /stats cannot delay it).
+	t0 := time.Now()
+	cfg.T0 = t0
+	sctx, stopSampler := context.WithCancel(ctx)
+	defer stopSampler()
+	var sampler *collect.Sampler
+	samplerDone := make(chan struct{})
+	if tgt.cp != nil {
+		sampler = collect.NewSampler(collect.ControlPlaneFetch(tgt.cp), o.SampleInterval, t0)
+		go func() { sampler.Run(sctx); close(samplerDone) }()
 	} else {
+		close(samplerDone)
+	}
+	// If the run ends before the warm-up does, the start snapshot is abandoned, and no per-worker
+	// delta is computed from an end snapshot that precedes a start.
+	startCtx, abandonStart := context.WithCancel(ctx)
+	defer abandonStart()
+	if o.Warmup > 0 {
 		go func() {
 			select {
 			case <-time.After(time.Until(t0.Add(o.Warmup))):
@@ -272,6 +281,7 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 		RunID: id, Metadata: meta, Records: res.Records, Window: res.Window, Targets: targets,
 		StartCounts: start.counts, EndCounts: end.counts, StatsMissing: missing, Sampled: sampler != nil,
 		Notes: notes(o, res, tgt, tm), MaxErrorRate: o.MaxErrorRate, Timings: tm,
+		Truncated: res.Truncated, PlannedWindow: o.Duration,
 	}
 	if sampler != nil {
 		in.Samples, in.SamplePollsFailed, in.SamplesDropped = sampler.Samples()
@@ -330,6 +340,9 @@ func notes(o Options, res *driver.Output, tgt *target, tm report.Timings) []stri
 	}
 	if o.Mode() == driver.Closed {
 		n = append(n, "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does.")
+	}
+	if w := o.LoadWarning(); w != "" {
+		n = append(n, "WARNING: "+w)
 	}
 	n = append(n, "Streamed token counts are estimated from chunks (the gateway does not request usage for streams); non-streamed counts come from the response usage.")
 	if d := tm.WallClock - tm.MonotonicElapsed; d > 2 || d < -2 {

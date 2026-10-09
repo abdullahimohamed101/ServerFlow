@@ -23,12 +23,15 @@ make bench-compare A=run_001 B=run_004
 
 - Load: `--concurrency N` (closed loop: N clients, each sends when its last request ends) or `--rate R`
   (open loop: R requests per second on a schedule). Exactly one; `burst` needs `--rate`.
-- **Keep clients below the slots.** The embedded workers serve `--mock-concurrency` (default 8) requests at once
-  each, so 3 workers have 24 slots. Beyond that the gateway answers 503 instantly and the run measures
-  rejections: the harness refuses `--concurrency` above `workers x mock-concurrency` unless `--allow-overload`,
-  and the default is capped at the slots. (The spec's `--workers 4 --concurrency 100` needs
-  `--mock-concurrency 32` or more.) Closed-loop clients also wait 50 to 150 ms (or the capped `Retry-After`)
-  after a 429 or 503, so even an allowed overload cannot spin the machine.
+- **Keep clients well below the slots.** The embedded workers serve `--mock-concurrency` (default 8) requests at
+  once each, so 3 workers have 24 slots. When all of a gateway's workers are full it answers 503 instantly, and the
+  run measures rejections. The harness refuses `--concurrency` above 100% of the slots (`--allow-overload` to
+  override), prints a warning above 60%, and caps the default at the slots. 60% is not arbitrary: round-robin and
+  random ignore load, so they hand a slow worker its share of requests however busy it is; with a 5x slower worker
+  its 8 slots fill while the others sit half empty, and a run with 24 clients on 4 workers (75% of 32 slots) failed
+  11 to 15% of its requests, with identical workers as well. Between 12 and 16 clients on 32 slots ran valid. (The
+  spec's `--workers 4 --concurrency 100` needs `--mock-concurrency 64` or more to stay under 60%.) Closed-loop clients also wait 50 to
+  150 ms (or the capped `Retry-After`) after a 429 or 503, so even an allowed overload cannot spin the machine.
 - Workloads (spec section 33): `uniform-short`, `uniform-long`, `mixed` (60/30/10), `burst` (normal, 10x, normal),
   `hot-model` (90/10 between `--model` and `--secondary-model`), `multi-tenant` (one aggressive tenant sending
   ten times what each of four normal ones do, each with its own fake API key). `--seed` fixes the load.

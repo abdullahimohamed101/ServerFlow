@@ -61,13 +61,14 @@ dev-cluster:
 	wait
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
-#   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
-#   make bench-compare A=run_001 B=run_002
+#   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"
+#   make bench-compare A=run_001 B=run_004     (one run from each --repeat 3 group)
 # Without BENCH_ARGS it runs the defaults: an embedded cluster, round-robin, 16 clients, 30s, mixed.
-# Keep --concurrency below workers x --mock-concurrency (8 each): more is refused unless --allow-overload.
+# Keep --concurrency to about half of workers x --mock-concurrency (8 each): more than all of it is refused unless
+# --allow-overload, and more than 60% warns that the run will probably be invalid.
 bench:
 	go run ./cmd/benchmark run $(BENCH_ARGS)
 
 bench-compare:
-	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "usage: make bench-compare A=run_001 B=run_002"; exit 2; fi
+	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "usage: make bench-compare A=run_001 B=run_004"; exit 2; fi
 	go run ./cmd/benchmark compare $(A) $(B)

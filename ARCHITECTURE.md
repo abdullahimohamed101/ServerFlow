@@ -19,9 +19,9 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 7, the foundation (configuration, structured logging, CI), the
-gateway MVP, a configurable mock worker, the worker registry, and a scheduler
-framework exist. The gateway proxies OpenAI-compatible requests, including
+As of Phase 7 the repository contains the foundation (configuration,
+structured logging, CI), the gateway MVP, a configurable mock worker, the
+worker registry, a scheduler framework, and a benchmark harness. The gateway proxies OpenAI-compatible requests, including
 streaming, either to a single statically configured upstream (the default) or,
 in registry mode, to the worker a configured scheduler picks from the control
 plane's registry (`docs/architecture/scheduling.md`). The mock worker is a

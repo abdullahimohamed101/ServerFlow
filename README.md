@@ -70,13 +70,15 @@ curl -s 'localhost:9090/v1/workers?model=mock-model&eligible=true'
 Run a load test and compare two schedulers (an embedded simulated cluster; results in `benchmark/runs/`):
 
 ```bash
-make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
-make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
-make bench-compare A=run_001 B=run_002
+make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"
+make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"
+make bench-compare A=run_001 B=run_004      # a run from each --repeat 3 group (run_001-003 and run_004-006)
 ```
 
-Use fewer clients than the cluster has slots (workers x `--mock-concurrency`, 8 each by default; the harness refuses
-more unless `--allow-overload`), and `--repeat 3` or more so `compare` can show run-to-run spread. A run in which more than
+Use well fewer clients than the cluster has slots (workers x `--mock-concurrency`, 8 each by default). The harness refuses
+more than 100% of them (unless `--allow-overload`) and warns above 60%, because round-robin ignores load and fills a slow
+worker's slots first, after which the gateway answers 503 and the run is invalid; 12 to 16 clients on 32 slots is a safe
+range. Use `--repeat 3` or more so `compare` can show run-to-run spread. A run in which more than
 5% of requests fail is marked invalid and exits non-zero. See `docs/benchmarks/phase-7-harness.md` for how to read the output.
 
 On Windows (no `make`), use the existing quality gate:

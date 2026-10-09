@@ -532,3 +532,26 @@ func TestProgressCountsRequests(t *testing.T) {
 		t.Fatalf("completed %d in flight %d, records %d", cfg.Progress.Completed.Load(), cfg.Progress.InFlight.Load(), len(out.Records))
 	}
 }
+
+func TestOpenLoopWarmupArrivalsBeyondTheCapAreSkippedAndTheWindowStillRuns(t *testing.T) {
+	url := serve(t, func(w http.ResponseWriter, r *http.Request) { okJSON(w) })
+	// 50/s: 10 arrivals in the 200 ms warm-up (cap 8, so 2 are skipped) and 20 in the 400 ms window (cap 8).
+	out, err := Run(context.Background(), Config{
+		BaseURL: url, Workload: wl(t, workload.UniformShort, 0), Mode: Open, Segments: workload.Segments(workload.UniformShort, 50, 200*time.Millisecond, 400*time.Millisecond),
+		MaxInFlight: 100, Warmup: 200 * time.Millisecond, Duration: 400 * time.Millisecond, MaxRequests: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warm, measured := 0, 0
+	for _, r := range out.Records {
+		if r.Intended < 200*time.Millisecond {
+			warm++
+		} else {
+			measured++
+		}
+	}
+	if warm != 8 || measured != 8 || !out.Truncated {
+		t.Fatalf("warm-up %d measured %d truncated %v: a full warm-up must not stop the window from running", warm, measured, out.Truncated)
+	}
+}
