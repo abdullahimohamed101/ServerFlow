@@ -37,7 +37,7 @@ jobs:
       # (a service container cannot take command arguments, so it is started here).
       - name: Start Redis
         run: |
-          docker run -d --name redis -p 127.0.0.1:6379:6379 redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no
+          docker run -d --name redis -p 127.0.0.1:6379:6379 public.ecr.aws/docker/library/redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no
           for i in $(seq 1 30); do
             docker exec redis redis-cli -a "$SERVERFLOW_TEST_REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG && exit 0
             sleep 1
