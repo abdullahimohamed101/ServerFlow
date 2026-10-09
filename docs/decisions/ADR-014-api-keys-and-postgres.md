@@ -43,14 +43,33 @@ priority and carries them, nothing more.
   and negative caches are separate LRUs bounded by `auth.cache_size` (10,000 each), so random keys fill
   only the negative cache and cannot evict a real customer's key. Concurrent misses for one prefix share
   one lookup (singleflight), detached from any one client's cancellation, bounded by a lookup timeout.
-  Malformed keys are refused before any cache or database access. A flood of *distinct* well-formed
-  random keys still costs one indexed lookup each (bounded by the pool and the timeout); limiting
-  that is Phase 8's job.
+  Malformed keys are refused before any cache or database access.
+- **Lookup capacity and floods.** An unauthenticated client can send unlimited distinct, well-formed
+  random keys, each of which is a cache miss. Concurrent store lookups are therefore capped
+  (`MaxLookups`, set by the gateway to pool size minus two, minimum 2), so lookups can never take every
+  pool connection. A quarter of the cap (at least one slot) is reserved for refreshing keys that are
+  already cached; keys never seen before may use only the rest. Over the cap, unknown keys are shed
+  immediately with `503 AUTH_UNAVAILABLE` and `Retry-After`, without touching the database and
+  without arming the global backoff (which an attacker could otherwise use to keep every stale key
+  alive). Consequences: while a flood saturates the new-key slots a valid key the gateway has not
+  cached is also shed; cached keys still refresh and a revocation is still seen within `cache_ttl`.
+  Pool saturation by *other* clients of the same database (outside the cap) reaches the same state as
+  an outage for refreshes: lookups time out as "busy", the key stays served from its stale copy for up
+  to `stale_grace` (default 5 minutes, unchanged), and no backoff is armed. **A front proxy or per-IP
+  rate limiter is required in production until Phase 8 adds rate limiting.**
+- **Error classification.** The store tells the authenticator what kind of failure it saw: *not found*
+  (negative cache), *busy* (no connection before the deadline: not an outage, no backoff, a cached key
+  may be served stale), *bad record* (one key's row cannot be decoded, for example a NULL element in
+  `allowed_models`: not an outage, no backoff, no stale copy, `500` for that key only, logged at most
+  every ten seconds), and anything else (connection failures: an outage with backoff and stale serving).
+  Migration 0002 adds a CHECK forbidding NULL elements in `allowed_models`.
   **Consequence: revocation, suspension and quota changes take effect within `cache_ttl`.**
   Expiry is compared with the clock on every request from the cached record, so it is exact.
 - **Outage behaviour.** If the database is down: a cached key keeps working for `auth.stale_grace`
   (5 min) beyond its TTL (still checked for expiry); an uncached key gets `503 AUTH_UNAVAILABLE` with
-  `Retry-After` (not 401: it may be valid). After a failed lookup the store is left alone for one
+  `Retry-After` (not 401: it may be valid). The first such request waits for its lookup to fail, which
+  can take up to the lookup timeout (3 s) when the database hangs rather than refuses; later requests
+  within the backoff are refused immediately. After a failed lookup the store is left alone for one
   second so a dead or hanging database costs one slow request per second, not one per request. The
   outage is logged once and its end once. A revocation made during an outage is not seen until the
   database returns (or the grace ends). Fail-closed was chosen over fail-open: an unauthenticated
@@ -75,11 +94,23 @@ priority and carries them, nothing more.
   `github.com/jackc/pgpassfile v1.0.0`, `github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761`,
   `github.com/jackc/puddle/v2 v2.2.2`, `golang.org/x/sync v0.17.0`, and `golang.org/x/text` raised from
   v0.28.0 to v0.29.0.
-- **Secrets hygiene.** The DSN comes from config or `SERVERFLOW_POSTGRES_DSN`, never a flag. Config
-  errors never echo it; `PostgresConfig` prints redacted under `%v`, `%+v`, `%#v` and `slog`; connection
-  errors have the password scrubbed. A DSN with `sslmode=disable` to a non-loopback host is rejected
-  unless `postgres.allow_insecure_transport` is set (`sslmode=allow` and `prefer` are not rejected;
-  prefer `require` or `verify-full`).
+- **Secrets hygiene and transport.** The DSN comes from config or `SERVERFLOW_POSTGRES_DSN`, never a
+  flag. Config errors never echo it; `PostgresConfig` prints redacted under `%v`, `%+v`, `%#v` and `slog`;
+  connection errors have the password scrubbed. `postgres.CheckTransport` asks the driver
+  (`pgconn.ParseConfig`) what the DSN resolves to, so `PG*` environment variables, a `host=` query
+  parameter, several hosts and fallbacks are all honoured, and requires every connection attempt to use
+  TLS (`sslmode` `require`, `verify-ca` or `verify-full`) for any host that is not loopback, `localhost`
+  or a unix socket. An unset sslmode, `allow`, `prefer` and `disable` are refused, because each can fall
+  back to plain text. `postgres.allow_insecure_transport` is the escape hatch. The check runs in
+  `cmd/gateway` (required mode) and `cmd/admin`, not in `Validate()`, because the placeholder default DSN
+  would fail every binary. Errors never echo the DSN. `require` encrypts but does not authenticate the
+  server; prefer `verify-full`.
+- **Migration runner.** Takes a session advisory lock by polling `pg_try_advisory_lock` for up to 60 s
+  and then fails with a message naming the problem, so a hung migrator cannot wedge the others
+  forever. Session locks need a stable connection: a transaction-pooling proxy (PgBouncer) between the
+  migrator and the database is not supported. `schema_migrations` is resolved through the connection's
+  `search_path`. Migration files must not contain their own `BEGIN`/`COMMIT` or statements that cannot
+  run in a transaction (`CREATE INDEX CONCURRENTLY`).
 - **Metrics.** One counter, `auth_rejections_total{status}`, with three possible label values.
   Tenant and key IDs are not labels; Phase 10 decides how to expose tenants.
 
@@ -99,3 +130,11 @@ priority and carries them, nothing more.
 - Quotas and priority are carried (`Principal`, `InferenceRequest`) but not enforced until Phase 8/22.
 - The gateway has no knowledge of the `models` table yet; the registry and `gateway.models` remain
   the source of served models.
+
+## Known limits
+
+- The cache is guarded by one mutex (a global LRU); a sharded LRU is future work if profiling shows contention.
+- Tenant names are case sensitive; quota fields are plain integers without upper bounds; `expires_at` is
+  not constrained to be after `created_at`; `Authorization: Bearer` must have exactly one space. These
+  were reviewed and left as they are.
+- `scripts/dev-postgres.sh` is trust-auth on loopback for local use only.

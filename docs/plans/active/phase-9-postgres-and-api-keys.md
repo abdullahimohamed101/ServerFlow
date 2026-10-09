@@ -267,3 +267,29 @@ Steps 1 and 2 can proceed independently; 3–6 build on them.
   by the pool and lookup timeout); rate limiting that is Phase 8. `sslmode=allow|prefer` are not
   rejected by the transport rule.
 - **Mutation check (manual, 25 mutants in a scratch copy):** expiry comparison and removal, key and tenant status checks, hash comparison, constant-time helper, state revealed before the secret matched, cache TTL (never expires, off by one), negative cache and TTL, LRU bound, stale grace, fail-open on outage, singleflight, 401/403 mapping, distinct error bodies, allowed-model check, models-list filtering, tenant propagation, allow-list nil semantics, auth bypass, revoke no-op, model-forbidden text. All 25 were caught by the tests; none survived. Some kills may be compile failures rather than assertions; this was not separated.
+
+### Security review fixes (round 2)
+
+- **P2-1 lookup flood.** `Config.MaxLookups` caps concurrent store lookups (gateway: pool size - 2, min 2);
+  a quarter is reserved for refreshing cached keys; unknown keys over the cap are shed with 503 and no
+  database access, and shedding never arms the global backoff. Test:
+  `TestFloodCannotHideARevocationAndIsShedWithoutTouchingTheStore`. ADR-014 and the operations guide say
+  that pool saturation from outside reaches the stale state, that `stale_grace` stays 5 minutes, and that a
+  front proxy or per-IP limiter is required until Phase 8.
+- **P2-2 singleflight window.** `fetch` re-checks the caches under the lock before starting a flight. Tests:
+  `TestFetchRechecksTheCacheBeforeStartingALookup`; `TestConcurrentFirstRequestsShareOneLookup` ran
+  `-race -count=50` clean.
+- **P2-3 TLS guard.** `postgres.CheckTransport` (pgconn.ParseConfig) requires TLS for every attempt to any
+  non-local host; the hand-written parser in config was deleted. pgx v5.8.0 has no `hostaddr` support, so
+  that setting cannot redirect a connection. Tests: `TestCheckTransport*`.
+- **P2-4 error classes.** Store errors are not-found / busy / bad record / outage; bad records neither arm the
+  backoff nor serve stale copies (500 for that key). Migration 0002 forbids NULL elements in `allowed_models`.
+  Tests: `TestUnreadableRecordIsPerKeyNotAnOutage`, `TestBusyStoreIsNotAnOutage`, `TestLookupKeyClassifiesFailures`.
+- **P3 items.** postgrestest resolves hosts through pgconn (`TestCheckLoopback`); `gateway.WithAuthenticator`
+  (a nil authenticator fails closed: `TestRequiredButNotWiredFailsClosed`) and a startup line when auth is OFF;
+  `key revoke` with a whole key uses the prefix and warns; the migration lock times out
+  (`TestMigrateGivesUpWhenAnotherMigratorHoldsTheLock`); wall-clock sleeps replaced by the fake clock and an
+  `onWait` hook, except the process test's 1.3 s wait (a separate binary has its own clock); docs updated.
+- **Deliberately left:** pgx v5.8.0 pin; tenant name case sensitivity; no CHECK(expires_at > created_at);
+  unbounded quota ints; dev-postgres trust auth and default port (a `DEV_POSTGRES_PORT` override was added so
+  two worktrees can each run one); the global LRU mutex (a sharded LRU is future work); exactly-one-space Bearer.
