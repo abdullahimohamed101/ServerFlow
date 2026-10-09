@@ -64,7 +64,12 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   Redis backs off; never blocks or fails a request. Nothing reads it yet. Default off.
 - **Key layout.** `rl:{<tenant>}:req|tok|conc` and `rl:model:{<model>}`. Names are percent-encoded (braces, `%`, non-printable ASCII), so a
   name can neither close the hash tag nor spell another key, and are limited to 256 bytes. Only models listed in
-  `rate_limit.model_requests_per_minute` ever become keys, so client-chosen model names cannot create keys. Keys expire on their own (twice
+  `rate_limit.model_requests_per_minute` ever become keys, and only those names are ever put on the wire: for any other model the
+  limiter sends a constant placeholder as the model key, so a client-chosen model name can neither create a keyspace entry nor make the
+  command (and the time Redis and the gateway spend on it) grow with the name. A model name longer than 128 characters
+  (`protocol.MaxModelLen`) is refused at parse time as MODEL_NOT_FOUND, which also bounds metrics labels and logs. (A first version
+  escaped and sent the client's model name on every limited request; an independent review showed a 1 MiB name could trip the Redis
+  timeout and arm the global backoff for every tenant.) Keys expire on their own (twice
   the burst window), so memory follows active tenants. **Redis Cluster is not supported:** the combined script touches tenant keys and a model
   key in one call, which Cluster refuses across slots.
 - **Driver.** `github.com/redis/go-redis/v9`, confined to `internal/redis`. **v9.22.0** was chosen deliberately: v9.23.0 declares Go 1.26, and

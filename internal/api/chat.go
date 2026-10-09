@@ -54,6 +54,11 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 	} else if err := json.Unmarshal(raw, &model); err != nil || model == "" {
 		return nil, ErrInvalidRequest("`model` must be a non-empty string")
 	}
+	if len(model) > protocol.MaxModelLen {
+		// No model name this long exists, whatever the source of models. Refusing it here bounds the label,
+		// the log line and every later stage by the name's length (the answer truncates it).
+		return nil, ErrModelNotFound(model)
+	}
 	if lim.Allowed != nil && !lim.Allowed(model) {
 		return nil, ErrModelForbidden(model)
 	}

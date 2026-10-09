@@ -280,3 +280,20 @@ func TestRateLimitErrorsAlwaysAdviseAtLeastOneSecond(t *testing.T) {
 		t.Fatalf("%+v", u)
 	}
 }
+
+func TestOverlongModelNameIsNotFoundEvenWhenAnyModelIsAllowed(t *testing.T) {
+	long := strings.Repeat("m", 1<<20)
+	body := `{"model":"` + long + `","messages":[{"role":"user","content":"hi"}]}`
+	for _, lim := range []Limits{{AnyModel: true, MaxTokensLimit: 100}, {Models: []string{long}, MaxTokensLimit: 100}, {AnyModel: true, MaxTokensLimit: 100, Allowed: func(string) bool { return false }}} {
+		_, err := ParseChatRequest([]byte(body), lim)
+		var e *Error
+		if !errors.As(err, &e) || e.Code != CodeModelNotFound || e.HTTPStatus != 404 || len(e.Message) > 200 {
+			t.Fatalf("got %v", err)
+		}
+	}
+	// A name at the limit still works.
+	ok := strings.Repeat("m", 128)
+	if _, err := ParseChatRequest([]byte(`{"model":"`+ok+`","messages":[{"role":"user","content":"hi"}]}`), Limits{AnyModel: true, MaxTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -189,7 +189,14 @@ func (l *RedisLimiter) Allow(ctx context.Context, r Request) (Decision, error) {
 		l.mu.Unlock()
 	}
 
-	keys := []string{keyRequests(r.TenantID), keyTokens(r.TenantID), keyConcurrency(r.TenantID), keyModel(r.Model)}
+	// KEYS[4] is the model bucket and is touched only when the model has a cap. r.Model is chosen by the client,
+	// so without a cap a constant placeholder goes on the wire: no escaping, no length work, and a huge model
+	// name cannot make every limited request slow enough to trip the timeout for everyone.
+	modelKey := keyModelUnused
+	if modelQuota > 0 {
+		modelKey = keyModel(r.Model)
+	}
+	keys := []string{keyRequests(r.TenantID), keyTokens(r.TenantID), keyConcurrency(r.TenantID), modelKey}
 	res, err := l.c.Run(ctx, acquireScript, keys, l.nowOverride(), lim.RequestsPerMinute, lim.TokensPerMinute, lim.MaxConcurrent,
 		modelQuota, cost, l.cfg.BurstSeconds, leaseID, l.cfg.LeaseTTL.Milliseconds())
 	if err != nil {

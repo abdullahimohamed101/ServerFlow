@@ -1036,3 +1036,52 @@ func TestExpiredAndReleasedLeasesAreNotRevivedByRenewal(t *testing.T) {
 		t.Fatal("renewing an unknown lease created a ghost")
 	}
 }
+
+// The model name is chosen by the client (in registry mode any non-empty name reaches the limiter). A model with no
+// cap must put nothing of it on the wire, or one tenant could slow every limited request past the timeout.
+func TestHugeUncappedModelNameSendsOnlySmallCommandsAndArmsNoBackoff(t *testing.T) {
+	rc := redistest.Config(t)
+	proxy := redistest.NewProxy(t, rc.Address)
+	rc.Address, rc.Timeout = proxy.Addr(), 50*time.Millisecond
+	c := redistest.NewClientWith(t, rc)
+	l, err := NewRedis(c, Config{ModelRequestsPerMinute: map[string]int{"capped-model": 5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := redistest.Unique("t")
+	lim := Limits{RequestsPerMinute: 1000, TokensPerMinute: 100000, MaxConcurrent: 5}
+	// Warm the connection and script cache so the measurement below is one EVALSHA per call.
+	if d := allow(t, l, tenantReq(tn, lim, 1)); !d.Allowed {
+		t.Fatal("refused")
+	} else {
+		d.Release()
+	}
+	drain(l)
+	huge := strings.Repeat("{x}%\x00", 1<<20/6) // about 1 MiB, every byte needing escaping if it were ever used in a key
+	before := proxy.BytesFromClient()
+	for i := 0; i < 20; i++ {
+		d, err := l.Allow(context.Background(), Request{TenantID: tn, Model: huge, Cost: 10, Limits: lim})
+		if err != nil || !d.Allowed {
+			t.Fatalf("call %d: %+v %v", i, d, err)
+		}
+		d.Release()
+		drain(l)
+	}
+	if sent := proxy.BytesFromClient() - before; sent > 20*2048 {
+		t.Fatalf("20 calls with a 1 MiB model name sent %d bytes to Redis (a small constant per call expected)", sent)
+	}
+	if down, _ := c.Down(); down {
+		t.Fatal("a huge model name armed the backoff")
+	}
+	// A model that is capped still gets its real key, so its cap applies.
+	n := 0
+	for allow(t, l, Request{TenantID: tn, Model: "capped-model", Cost: 1, Limits: Limits{RequestsPerMinute: 1000}}).Allowed {
+		n++
+		if n > 50 {
+			t.Fatal("cap not applied")
+		}
+	}
+	if n < 1 || n > 5 {
+		t.Fatalf("capped model admitted %d, want at most its cap of 5", n)
+	}
+}

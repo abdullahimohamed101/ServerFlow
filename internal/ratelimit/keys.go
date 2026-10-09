@@ -17,6 +17,11 @@ import (
 // key can equal a model key. The combined script touches the tenant keys and a model key in one call,
 // which Redis Cluster refuses across slots; Cluster is not supported (ADR-015).
 
+// keyModelUnused is sent as the model key when the request's model has no cap (the script never touches it).
+// It cannot collide with a real model key: a capped model's name is non-empty (configuration requires it),
+// and the placeholder is the key for the empty name.
+const keyModelUnused = "rl:model:{}"
+
 // maxKeyPart bounds a tenant or model name used in a key.
 const maxKeyPart = 256
 

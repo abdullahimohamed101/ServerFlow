@@ -26,14 +26,15 @@ const (
 
 // Proxy is a TCP forwarder in front of a real server whose behaviour tests change at run time.
 type Proxy struct {
-	ln       net.Listener
-	target   string
-	mode     atomic.Int32
-	delay    atomic.Int64
-	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
-	accepted atomic.Int64
-	done     chan struct{}
+	ln         net.Listener
+	target     string
+	mode       atomic.Int32
+	delay      atomic.Int64
+	mu         sync.Mutex
+	conns      map[net.Conn]struct{}
+	accepted   atomic.Int64
+	fromClient atomic.Int64 // bytes forwarded from clients to the server
+	done       chan struct{}
 }
 
 // NewProxy listens on a loopback port and forwards to target. It stops when the test ends.
@@ -51,6 +52,9 @@ func NewProxy(t testing.TB, target string) *Proxy {
 
 // Addr is the address clients should use.
 func (p *Proxy) Addr() string { return p.ln.Addr().String() }
+
+// BytesFromClient counts the bytes clients sent through the proxy to the server.
+func (p *Proxy) BytesFromClient() int64 { return p.fromClient.Load() }
 
 // Accepted counts connections the proxy accepted.
 func (p *Proxy) Accepted() int64 { return p.accepted.Load() }
@@ -140,18 +144,21 @@ func (p *Proxy) serve(client net.Conn) {
 	}()
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); p.pipe(up, client); _ = up.Close() }()
-	go func() { defer wg.Done(); p.pipe(client, up); _ = client.Close() }()
+	go func() { defer wg.Done(); p.pipe(up, client, &p.fromClient); _ = up.Close() }()
+	go func() { defer wg.Done(); p.pipe(client, up, nil); _ = client.Close() }()
 	wg.Wait()
 }
 
 // pipe copies src to dst chunk by chunk, consulting the mode on every chunk so that a change takes effect
 // on connections that are already open.
-func (p *Proxy) pipe(dst, src net.Conn) {
+func (p *Proxy) pipe(dst, src net.Conn, count *atomic.Int64) {
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			if count != nil {
+				count.Add(int64(n))
+			}
 			switch Mode(p.mode.Load()) {
 			case Blackhole:
 				continue // swallow
