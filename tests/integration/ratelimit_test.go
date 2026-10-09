@@ -218,7 +218,9 @@ func TestThreeGatewaysShareOneTokenQuota(t *testing.T) {
 	}
 	wg.Wait()
 	elapsed := time.Since(start)
-	cost := ratelimit.EstimateCost([]protocol.Message{{Role: "user", Content: "hi"}}, "", 10, 4096)
+	// The gateway charges the whole body (framing included), as chat() builds it.
+	body := `{"model":"` + model + `","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`
+	cost := ratelimit.EstimateRequestCost([]protocol.Message{{Role: "user", Content: "hi"}}, "", len(body), 10, 4096)
 	want := int64(1000 / cost)
 	// Real Redis time keeps refilling while the load runs (1000 tokens a minute), so the upper bound follows the
 	// measured duration instead of a fixed count that depends on how fast the machine is.
