@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres bench bench-compare
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres bench bench-compare quality quality-fast
 
 fmt:
 	gofmt -w .
@@ -82,3 +82,12 @@ bench:
 bench-compare:
 	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "usage: make bench-compare A=run_001 B=run_004"; exit 2; fi
 	go run ./cmd/benchmark compare $(A) $(B)
+
+# The same checks CI runs (docs/development/ci.md). `quality` also runs the database-backed tests when
+# SERVERFLOW_TEST_POSTGRES_DSN is set; `quality-fast` is lint plus unit tests.
+quality:
+	scripts/quality.sh full
+
+quality-fast:
+	scripts/quality.sh lint
+	scripts/quality.sh unit

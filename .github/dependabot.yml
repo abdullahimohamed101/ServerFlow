@@ -1,0 +1,26 @@
+# Weekly dependency updates. Actions are pinned to commit SHAs, so Dependabot is what keeps them
+# from going stale: it bumps the SHA and the version comment together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    ignore:
+      # These releases raise the module's Go floor (go.mod says go 1.24.0). Bumping the floor is a
+      # deliberate project decision, not something a dependency bot should do (see ADR-014, ADR-015).
+      - dependency-name: github.com/jackc/pgx/v5
+        versions: [">=5.9.0"]
+      - dependency-name: github.com/redis/go-redis/v9
+        versions: [">=9.23.0"]

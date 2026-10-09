@@ -121,4 +121,5 @@ On Windows (no `make`), use the existing quality gate:
 ## Development
 
 See `docs/development/setup.md` for tooling requirements and Windows notes.
+`make quality` runs the same checks as CI (`scripts/quality.sh`; see `docs/development/ci.md`).
 See `docs/plans/active/` for the current execution plan (empty between phases).
