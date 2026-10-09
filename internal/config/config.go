@@ -295,6 +295,12 @@ func (c *Config) Validate() error {
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
+	if c.Auth.Mode == AuthModeRequired && c.Postgres.MaxConns < minAuthPoolConns {
+		// Key lookups may use all but two pool connections (so they never take the whole pool, and
+		// last_used_at writes and the startup check can still run) and need two of their own: one for
+		// unseen keys and one reserved for refreshing cached keys.
+		return fmt.Errorf("postgres.max_conns must be at least %d when auth.mode is %q", minAuthPoolConns, AuthModeRequired)
+	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -311,6 +317,7 @@ const (
 	maxAuthCacheTTL    = time.Hour
 	maxAuthStaleGrace  = 24 * time.Hour
 	minAuthNegativeTTL = time.Millisecond
+	minAuthPoolConns   = 4
 )
 
 // validate checks the settings that do not depend on whether the database is used. It never

@@ -59,7 +59,7 @@ func TestValidateAuth(t *testing.T) {
 
 func TestAuthLoadFromFileAndEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "c.yaml")
-	yaml := "auth:\n  mode: required\n  cache_ttl: 10s\n  negative_ttl: 2s\n  cache_size: 50\n  stale_grace: 1m\npostgres:\n  dsn: postgres://u:p@127.0.0.1/x\n  max_conns: 3\n  connect_timeout: 2s\n"
+	yaml := "auth:\n  mode: required\n  cache_ttl: 10s\n  negative_ttl: 2s\n  cache_size: 50\n  stale_grace: 1m\npostgres:\n  dsn: postgres://u:p@127.0.0.1/x\n  max_conns: 4\n  connect_timeout: 2s\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestAuthLoadFromFileAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.Mode != "required" || cfg.Auth.CacheTTL != 10*time.Second || cfg.Auth.CacheSize != 50 || cfg.Postgres.MaxConns != 3 {
+	if cfg.Auth.Mode != "required" || cfg.Auth.CacheTTL != 10*time.Second || cfg.Auth.CacheSize != 50 || cfg.Postgres.MaxConns != 4 {
 		t.Fatalf("file not applied: %+v %v", cfg.Auth, cfg.Postgres)
 	}
 	t.Setenv("SERVERFLOW_AUTH_MODE", "OFF")
@@ -75,7 +75,7 @@ func TestAuthLoadFromFileAndEnv(t *testing.T) {
 	t.Setenv("SERVERFLOW_AUTH_NEGATIVE_TTL", "3s")
 	t.Setenv("SERVERFLOW_AUTH_CACHE_SIZE", "77")
 	t.Setenv("SERVERFLOW_AUTH_STALE_GRACE", "2m")
-	t.Setenv("SERVERFLOW_POSTGRES_MAX_CONNS", "4")
+	t.Setenv("SERVERFLOW_POSTGRES_MAX_CONNS", "5")
 	t.Setenv("SERVERFLOW_POSTGRES_CONNECT_TIMEOUT", "3s")
 	t.Setenv("SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT", "true")
 	cfg, err = Load(path)
@@ -83,7 +83,7 @@ func TestAuthLoadFromFileAndEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Auth.Mode != "off" || cfg.Auth.CacheTTL != 20*time.Second || cfg.Auth.NegativeTTL != 3*time.Second || cfg.Auth.CacheSize != 77 ||
-		cfg.Auth.StaleGrace != 2*time.Minute || cfg.Postgres.MaxConns != 4 || cfg.Postgres.ConnectTimeout != 3*time.Second || !cfg.Postgres.AllowInsecureTransport {
+		cfg.Auth.StaleGrace != 2*time.Minute || cfg.Postgres.MaxConns != 5 || cfg.Postgres.ConnectTimeout != 3*time.Second || !cfg.Postgres.AllowInsecureTransport {
 		t.Fatalf("env not applied: %+v %v", cfg.Auth, cfg.Postgres)
 	}
 	t.Setenv("SERVERFLOW_AUTH_MODE", "requierd") // a typo must not silently disable authentication
@@ -115,6 +115,26 @@ func TestDSNIsNeverEchoedOrPrinted(t *testing.T) {
 	} {
 		if strings.Contains(s, pw) {
 			t.Fatalf("the DSN password was printed: %s", s)
+		}
+	}
+}
+
+func TestRequiredAuthNeedsAPoolOfAtLeastFourConnections(t *testing.T) {
+	for conns, ok := range map[int]bool{1: false, 2: false, 3: false, 4: true, 5: true, 100: true} {
+		cfg := Default()
+		cfg.Auth.Mode = AuthModeRequired
+		cfg.Postgres.MaxConns = conns
+		err := cfg.Validate()
+		if (err == nil) != ok {
+			t.Errorf("max_conns=%d with auth required: ok=%v err=%v", conns, ok, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "at least 4") {
+			t.Errorf("max_conns=%d: unhelpful message %v", conns, err)
+		}
+		// With authentication off the pool is not used by the gateway and any valid size is fine.
+		cfg.Auth.Mode = AuthModeOff
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("max_conns=%d with auth off: %v", conns, err)
 		}
 	}
 }

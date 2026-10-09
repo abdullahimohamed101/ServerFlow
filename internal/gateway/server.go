@@ -61,6 +61,24 @@ func New(cfg config.GatewayConfig, log *slog.Logger, opts ...Option) *Server {
 	return s
 }
 
+// NewFromConfig is New for a whole configuration: it honours auth.mode, so a configuration that
+// requires API keys cannot produce an open server by omitting the WithAuthenticator option. Without
+// an authenticator the server then refuses to Serve and answers every /v1 request with an error.
+func NewFromConfig(cfg config.Config, log *slog.Logger, opts ...Option) *Server {
+	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode)}, opts...)
+	return New(cfg.Gateway, log, opts...)
+}
+
+// requireIfConfigured marks authentication as required when the mode says so. A later
+// WithAuthenticator supplies the authenticator.
+func requireIfConfigured(mode string) Option {
+	return func(s *Server) {
+		if mode == config.AuthModeRequired {
+			s.authRequired = true
+		}
+	}
+}
+
 func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *Server {
 	s := &Server{
 		cfg:                cfg,
@@ -151,6 +169,7 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	if err != nil {
 		return nil, err
 	}
+	requireIfConfigured(cfg.Auth.Mode)(s)
 	for _, o := range opts {
 		o(s)
 	}

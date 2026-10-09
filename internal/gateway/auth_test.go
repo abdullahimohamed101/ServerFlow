@@ -616,6 +616,9 @@ func TestUnreadableKeyRecordIsA500ForThatKeyOnly(t *testing.T) {
 	if !found {
 		t.Fatal("the fault was not logged with its reason")
 	}
+	if _, m := e.do(t, http.MethodGet, "/metrics", ""); !strings.Contains(m, `auth_rejections_total{status="500"} 1`) || !strings.Contains(m, "500") {
+		t.Fatalf("an unreadable key record must be counted under status 500:\n%s", m)
+	}
 	// It was not an outage: no global backoff, so the next key is looked up at once.
 	e.store.bad.Store(false)
 	other := e.store.add("b", nil)
@@ -657,5 +660,41 @@ func TestServeRunsTheAuthenticatorsBackgroundWork(t *testing.T) {
 	cancel()
 	if err := <-served; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConstructorsHonourAuthMode(t *testing.T) {
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	for _, mode := range []string{config.AuthModeOff, config.AuthModeRequired} {
+		cfg := config.Default()
+		cfg.Auth.Mode = mode
+		cfg.Gateway.WorkerSource = config.WorkerSourceRegistry
+		want := mode == config.AuthModeRequired
+
+		reg, err := NewRegistry(cfg, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reg.AuthRequired() != want {
+			t.Errorf("NewRegistry with auth.mode=%s: AuthRequired=%v", mode, reg.AuthRequired())
+		}
+		if got := NewFromConfig(cfg, log).AuthRequired(); got != want {
+			t.Errorf("NewFromConfig with auth.mode=%s: AuthRequired=%v", mode, got)
+		}
+		if want {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := reg.Serve(context.Background(), ln); err == nil {
+				t.Error("a registry server that requires keys and has no authenticator must refuse to serve")
+			}
+			_ = ln.Close()
+			// And with an authenticator supplied it is wired normally.
+			ok, err := NewRegistry(cfg, log, WithAuthenticator(newAuthenticator(newAuthStore(), &lockedBuffer{}, &testClock{t: time.Now()})))
+			if err != nil || !ok.AuthRequired() || ok.authn == nil {
+				t.Errorf("NewRegistry with an authenticator: %v", err)
+			}
+		}
 	}
 }

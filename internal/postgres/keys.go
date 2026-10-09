@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"serverflow/internal/auth"
 )
@@ -101,22 +103,19 @@ func (s *Store) LookupKey(ctx context.Context, prefix string) (auth.KeyRecord, e
 	}
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return auth.KeyRecord{}, fmt.Errorf("%w: no connection became available", auth.ErrBusy)
-		}
-		return auth.KeyRecord{}, err
+		return auth.KeyRecord{}, s.classifyAcquire(ctx, err)
 	}
 	defer conn.Release()
 	rows, err := conn.Query(ctx, `SELECT k.id, k.tenant_id, k.prefix, k.secret_hash, k.status, k.expires_at,
 			t.status, t.allowed_models, t.requests_per_minute, t.tokens_per_minute, t.max_concurrent_requests, t.priority
 		FROM api_keys k JOIN tenants t ON t.id = k.tenant_id WHERE k.prefix = $1`, prefix)
 	if err != nil {
-		return auth.KeyRecord{}, err
+		return auth.KeyRecord{}, classifyQuery(err)
 	}
 	defer rows.Close()
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return auth.KeyRecord{}, err // the connection failed mid-read: an outage
+			return auth.KeyRecord{}, classifyQuery(err) // the query failed mid-read: never "no such key"
 		}
 		return auth.KeyRecord{}, auth.ErrNotFound
 	}
@@ -131,6 +130,43 @@ func (s *Store) LookupKey(ctx context.Context, prefix string) (auth.KeyRecord, e
 		return auth.KeyRecord{}, err
 	}
 	return r, nil
+}
+
+// tooManyConnections is SQLSTATE 53300: the server (or the role) has no connection slot left.
+const tooManyConnections = "53300"
+
+func isTooManyConnections(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == tooManyConnections
+}
+
+// classifyAcquire decides what a failure to get a connection means.
+//   - The server refusing for lack of connection slots (53300) is busy: it clears by itself and
+//     says nothing about the database being down.
+//   - A deadline that passed while every pool connection was in use is busy: other work holds them.
+//   - A deadline that passed with spare pool capacity means the attempt to connect or to check an
+//     idle connection got no answer (a database that accepts connections and never replies): an
+//     outage, so the authenticator backs off instead of making every request wait.
+//   - Anything else (refused, reset, unreachable) is an outage too.
+func (s *Store) classifyAcquire(ctx context.Context, err error) error {
+	if isTooManyConnections(err) {
+		return fmt.Errorf("%w: the server has no free connection slot", auth.ErrBusy)
+	}
+	if ctx.Err() != nil {
+		if st := s.pool.Stat(); st.AcquiredConns() >= st.MaxConns() {
+			return fmt.Errorf("%w: every pool connection is in use", auth.ErrBusy)
+		}
+	}
+	return err
+}
+
+// classifyQuery treats a server running out of connection slots as busy and every other query
+// failure as it is (an outage).
+func classifyQuery(err error) error {
+	if isTooManyConnections(err) {
+		return fmt.Errorf("%w: the server has no free connection slot", auth.ErrBusy)
+	}
+	return err
 }
 
 // TouchKey records that a key was used, never moving last_used_at backwards. It implements auth.KeyToucher.

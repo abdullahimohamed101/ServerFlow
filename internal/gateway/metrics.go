@@ -58,7 +58,7 @@ func newMetrics() *metrics {
 		}, []string{"model", "reason"}),
 		authRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "auth_rejections_total",
-			Help: "Requests refused by API key authentication, by HTTP status (401, 403 or 503).",
+			Help: "Requests refused by API key authentication, by HTTP status (401, 403, 500 or 503).",
 		}, []string{"status"}),
 	}
 	m.reg.MustRegister(

@@ -53,7 +53,7 @@ func main() {
 			CacheTTL: cfg.Auth.CacheTTL, NegativeTTL: cfg.Auth.NegativeTTL, CacheSize: cfg.Auth.CacheSize,
 			StaleGrace: cfg.Auth.StaleGrace, Logger: logger,
 			// Lookups may use all but two pool connections, so the pool is never entirely theirs.
-			MaxLookups: max(2, cfg.Postgres.MaxConns-2),
+			MaxLookups: lookupCap(cfg.Postgres.MaxConns),
 		})
 		opts = append(opts, gateway.WithAuthenticator(authn))
 		logger.Info("api key authentication required", "component", "gateway", "cache_ttl", cfg.Auth.CacheTTL.String(),
@@ -82,13 +82,13 @@ func main() {
 			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
 			"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
 	} else {
-		srv = gateway.New(cfg.Gateway, logger, opts...)
+		srv = gateway.NewFromConfig(cfg, logger, opts...)
 		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
 			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
 	}
 
-	if (cfg.Auth.Mode == config.AuthModeRequired) != srv.AuthRequired() {
-		fmt.Fprintln(os.Stderr, "gateway: authentication wiring does not match auth.mode; refusing to start")
+	if err := checkAuthWiring(cfg.Auth.Mode, srv.AuthRequired()); err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -123,4 +123,17 @@ func openAuthStore(ctx context.Context, cfg config.Config) (*postgres.Store, err
 		}
 	}
 	return store, nil
+}
+
+// lookupCap is how many key lookups may run at once: all pool connections but two, so lookups never
+// take the whole pool. Configuration validation guarantees at least four connections in required mode.
+func lookupCap(maxConns int) int { return maxConns - 2 }
+
+// checkAuthWiring refuses to start when the server's idea of whether API keys are required differs
+// from auth.mode, in either direction.
+func checkAuthWiring(mode string, serverRequiresAuth bool) error {
+	if (mode == config.AuthModeRequired) != serverRequiresAuth {
+		return fmt.Errorf("authentication wiring does not match auth.mode %q; refusing to start", mode)
+	}
+	return nil
 }
