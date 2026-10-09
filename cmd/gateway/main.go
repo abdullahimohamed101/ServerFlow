@@ -7,15 +7,19 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
 	"serverflow/internal/postgres"
+	"serverflow/internal/ratelimit"
+	"serverflow/internal/redis"
 	"serverflow/internal/telemetry"
 )
 
@@ -60,6 +64,39 @@ func main() {
 			"negative_ttl", cfg.Auth.NegativeTTL.String(), "cache_size", cfg.Auth.CacheSize, "stale_grace", cfg.Auth.StaleGrace.String())
 	}
 
+	// Rate limiting (and optional request metadata) need Redis. With rate_limit.mode=required an
+	// unreachable or unauthenticated Redis is a startup failure, like the database above.
+	rc, err := openRedis(ctx, cfg, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+	if rc != nil {
+		defer func() { _ = rc.Close() }()
+	}
+	if cfg.RateLimit.Mode == config.RateLimitRequired {
+		lim, err := ratelimit.NewRedis(rc, ratelimit.Config{
+			OnFailure: ratelimit.FailureMode(cfg.Redis.OnFailure), BurstSeconds: cfg.RateLimit.BurstSeconds, LeaseTTL: cfg.RateLimit.LeaseTTL,
+			MaxLocalLeases: cfg.RateLimit.MaxLocalLeases, ModelRequestsPerMinute: cfg.RateLimit.ModelRequestsPerMinute, Logger: logger,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+			os.Exit(1)
+		}
+		defer lim.Close(5 * time.Second) // send the releases still queued
+		opts = append(opts, gateway.WithLimiter(lim))
+		logger.Info("rate limiting required", "component", "gateway", "on_failure", cfg.Redis.OnFailure, "burst_seconds", cfg.RateLimit.BurstSeconds,
+			"lease_ttl", cfg.RateLimit.LeaseTTL.String(), "model_caps", len(cfg.RateLimit.ModelRequestsPerMinute), "tenant_quotas", cfg.Auth.Mode == config.AuthModeRequired)
+		if cfg.Auth.Mode != config.AuthModeRequired {
+			logger.Warn("auth.mode is off: tenant quotas cannot be enforced without identities; only per-model caps apply", "component", "gateway")
+		}
+	} else if len(cfg.RateLimit.ModelRequestsPerMinute) > 0 {
+		logger.Warn("rate_limit.model_requests_per_minute is set but rate_limit.mode is off: no limit is enforced", "component", "gateway")
+	}
+	if cfg.Redis.RequestMetadata {
+		opts = append(opts, gateway.WithRequestRecorder(redis.NewRecorder(rc, cfg.Redis.RequestMetadataTTL)))
+	}
+
 	if cfg.Auth.Mode == config.AuthModeOff {
 		logger.Info("api key authentication is OFF: /v1 is open to any caller that can reach this port", "component", "gateway", "auth_mode", cfg.Auth.Mode)
 	}
@@ -89,6 +126,11 @@ func main() {
 
 	if err := checkAuthWiring(cfg.Auth.Mode, srv.AuthRequired()); err != nil {
 		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+
+	if (cfg.RateLimit.Mode == config.RateLimitRequired) != srv.RateLimitRequired() {
+		fmt.Fprintf(os.Stderr, "gateway: rate limiting wiring does not match rate_limit.mode %q; refusing to start\n", cfg.RateLimit.Mode)
 		os.Exit(1)
 	}
 
@@ -136,4 +178,33 @@ func checkAuthWiring(mode string, serverRequiresAuth bool) error {
 		return fmt.Errorf("authentication wiring does not match auth.mode %q; refusing to start", mode)
 	}
 	return nil
+}
+
+// openRedis builds the Redis client when rate limiting or request metadata needs one, and checks that Redis
+// answers and accepts the password when rate limiting is required. It returns nil when Redis is not used.
+// Errors never contain the address or the password.
+func openRedis(ctx context.Context, cfg config.Config, logger *slog.Logger) (*redis.Client, error) {
+	if cfg.RateLimit.Mode != config.RateLimitRequired && !cfg.Redis.RequestMetadata {
+		return nil, nil
+	}
+	rcfg := redis.Config{
+		Address: cfg.Redis.Address, Password: cfg.Redis.Password, DB: cfg.Redis.DB, TLS: cfg.Redis.TLS, Timeout: cfg.Redis.Timeout,
+		Backoff: cfg.Redis.Backoff, AllowInsecureTransport: cfg.Redis.AllowInsecureTransport, Logger: logger,
+	}
+	if err := redis.CheckTransport(rcfg); err != nil {
+		return nil, err
+	}
+	c, err := redis.New(rcfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.RateLimit.Mode == config.RateLimitRequired {
+		pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := c.Ping(pctx); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("rate_limit.mode is required but Redis is not usable: %w", err)
+		}
+	}
+	return c, nil
 }

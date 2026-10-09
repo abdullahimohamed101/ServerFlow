@@ -28,8 +28,21 @@ jobs:
           --health-retries 10
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      SERVERFLOW_TEST_REDIS_ADDR: 127.0.0.1:6379
+      SERVERFLOW_TEST_REDIS_PASSWORD: ci-redis-test-password
     steps:
       - uses: actions/checkout@v4
+
+      # A real Redis 7 for the rate limiting tests, started with a password like scripts/dev-redis.sh does
+      # (a service container cannot take command arguments, so it is started here).
+      - name: Start Redis
+        run: |
+          docker run -d --name redis -p 127.0.0.1:6379:6379 redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no
+          for i in $(seq 1 30); do
+            docker exec redis redis-cli -a "$SERVERFLOW_TEST_REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG && exit 0
+            sleep 1
+          done
+          echo "Redis did not start"; exit 1
 
       - uses: actions/setup-go@v5
         with:
@@ -58,6 +71,17 @@ jobs:
           fi
           for t in TestMigrateUpCreatesSchemaAndIsIdempotent TestFullWorkflowAndKeyShownOnce TestProcessAuthEndToEnd TestGatewayWithRealPostgresHotPathAndFloods; do
             grep -q -- "--- PASS: $t " postgres-tests.log || { echo "expected $t to run and pass"; exit 1; }
+          done
+
+      # Same for the Redis tests.
+      - name: Redis tests must run, not skip
+        run: |
+          go test -count=1 -v ./internal/redis/... ./internal/ratelimit/... ./internal/gateway/... ./tests/integration/... > redis-tests.log 2>&1 || { tail -50 redis-tests.log; exit 1; }
+          if grep -q "SERVERFLOW_TEST_REDIS_ADDR is not set" redis-tests.log; then
+            echo "Redis tests were skipped"; exit 1
+          fi
+          for t in TestRunAndPingWithPassword TestRequestsBoundaryAgainstRedis TestScriptMatchesModelOnRandomSequences TestFailureClosedAcrossTheMatrix TestThreeGatewaysShareOneRequestQuota TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd; do
+            grep -q -- "--- PASS: $t " redis-tests.log || { echo "expected $t to run and pass"; exit 1; }
           done
 
       - name: Build
