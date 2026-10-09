@@ -40,7 +40,7 @@ docs/          architecture, ADRs, benchmarks, operations, development
 
 ## Quick Start
 
-Building and testing requires only Go 1.24+.
+Building and testing requires only Go 1.25+.
 
 ```bash
 go build ./...
