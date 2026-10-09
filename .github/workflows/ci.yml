@@ -1,17 +1,77 @@
 name: CI
 
+# Every job runs scripts/quality.sh, so what CI checks is exactly what `make quality` runs locally.
+# Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
+
 on:
   push:
     branches: [master, main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run in progress; pushes to master always finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  build:
+  lint:
+    name: lint (gofmt, vet, golangci-lint)
     runs-on: ubuntu-latest
-    # A real PostgreSQL for the database tests. The tests create and drop their own databases.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Same version as the developers run (golangci-lint 2.14.0); the script runs it.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          install-only: true
+      - name: Lint
+        run: scripts/quality.sh lint
+
+  test:
+    # The module's minimum Go (go.mod) and the current stable Go: the first catches use of newer
+    # APIs than we promise, the second catches the next release breaking us.
+    name: unit and race tests (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [minimum, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go == 'minimum'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.go == 'stable'
+        with:
+          go-version: stable
+          cache: true
+      - name: Unit tests
+        run: scripts/quality.sh unit
+      - name: Race tests
+        run: scripts/quality.sh race
+
+  integration:
+    name: integration (PostgreSQL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A real PostgreSQL with password authentication. The tests create and drop their own databases.
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:16  # ECR mirror: Docker Hub rate-limits shared runners
@@ -29,36 +89,55 @@ jobs:
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
+      - name: Keep test logs in the runner's temp directory
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Database tests must run, not skip
+        run: scripts/quality.sh integration
+      - name: Keep the test log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-test-log
+          path: ${{ runner.temp }}/serverflow-*
+          if-no-files-found: ignore
 
-      - name: Format
-        run: test -z "$(gofmt -l .)"
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test ./...
-
-      - name: Race
-        run: go test -race ./...
-
-      # The database tests skip when no server is configured. In CI that would be a silent
-      # green, so run them verbosely and fail if any of them skipped or none ran.
-      - name: PostgreSQL tests must run, not skip
-        run: |
-          go test -count=1 -v ./internal/postgres/... ./internal/auth/... ./cmd/admin/... ./tests/integration/... > postgres-tests.log 2>&1 || { tail -50 postgres-tests.log; exit 1; }
-          if grep -q "SERVERFLOW_TEST_POSTGRES_DSN is not set" postgres-tests.log; then
-            echo "PostgreSQL tests were skipped"; exit 1
-          fi
-          for t in TestMigrateUpCreatesSchemaAndIsIdempotent TestFullWorkflowAndKeyShownOnce TestProcessAuthEndToEnd TestGatewayWithRealPostgresHotPathAndFloods; do
-            grep -q -- "--- PASS: $t " postgres-tests.log || { echo "expected $t to run and pass"; exit 1; }
-          done
-
+  build:
+    name: build (cross-compile, go.mod tidy and verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Build
-        run: go build ./...
+        run: scripts/quality.sh build
+
+  vulncheck:
+    # Known vulnerabilities in dependencies and the standard library. A new advisory can appear
+    # between two pushes and has nothing to do with the change under review, so on pull requests this
+    # job reports without blocking; the nightly run (nightly.yml) fails loudly.
+    name: govulncheck (advisory on pull requests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: govulncheck
+        run: scripts/quality.sh vuln
