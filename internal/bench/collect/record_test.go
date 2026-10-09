@@ -41,8 +41,16 @@ func TestSummaryCountsAndThroughputAreExact(t *testing.T) {
 	if s.WindowSeconds != 10 || s.SpanSeconds != 12 {
 		t.Errorf("window %v span %v", s.WindowSeconds, s.SpanSeconds)
 	}
-	if math.Abs(s.RequestsPerSecond-3.0/12) > 1e-12 || math.Abs(s.OutputTokensPerSecond-60.0/12) > 1e-12 || math.Abs(s.InputTokensPerSecond-30.0/12) > 1e-12 {
-		t.Errorf("throughput: %+v", s)
+	// Headline throughput counts successes that finished inside [2s, 12s) over the 10 s window:
+	// request 1 (warm-up, done 2.5), 2 (done 3), 3 (done 5.5) finish inside it; request 4 (done 14)
+	// is in the drain; 7 is outside. The warm-up request that finishes in the window counts.
+	if s.CompletedInWindow != 3 || math.Abs(s.RequestsPerSecond-3.0/10) > 1e-12 ||
+		math.Abs(s.OutputTokensPerSecond-60.0/10) > 1e-12 || math.Abs(s.InputTokensPerSecond-30.0/10) > 1e-12 {
+		t.Errorf("windowed throughput: %+v", s)
+	}
+	// With the tail: the 3 measured successes (2, 3, 4) over the 12 s span.
+	if math.Abs(s.RequestsPerSecondWithTail-3.0/12) > 1e-12 || math.Abs(s.OutputTokensPerSecondWithTail-60.0/12) > 1e-12 {
+		t.Errorf("throughput with tail: %+v", s)
 	}
 	if math.Abs(s.ErrorRate-0.4) > 1e-12 {
 		t.Errorf("error rate = %v", s.ErrorRate)
@@ -58,7 +66,7 @@ func TestSummaryCountsAndThroughputAreExact(t *testing.T) {
 
 func TestSpanIsTheWindowWhenEverythingFinishesInside(t *testing.T) {
 	s := SummarizeRecords([]Record{ok(0, sec(0), sec(1))}, Window{Start: 0, End: sec(10)})
-	if s.SpanSeconds != 10 || s.RequestsPerSecond != 0.1 {
+	if s.SpanSeconds != 10 || s.RequestsPerSecond != 0.1 || s.RequestsPerSecondWithTail != 0.1 {
 		t.Fatalf("%+v", s)
 	}
 }
@@ -125,5 +133,21 @@ func TestStatusClass(t *testing.T) {
 		if got := StatusClass(in); got != want {
 			t.Errorf("StatusClass(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestOneSlowTailRequestDoesNotMoveTheHeadlineThroughput(t *testing.T) {
+	fast := func(tail time.Duration) Summary {
+		recs := []Record{ok(0, sec(1), sec(2)), ok(1, sec(3), sec(4)), ok(2, sec(9), sec(9)+tail)}
+		return SummarizeRecords(recs, Window{End: sec(10)})
+	}
+	a, b := fast(sec(0.5)), fast(sec(60))
+	// The third request finishes at 9.5 s (inside the window) or at 69 s (in the drain): the
+	// headline changes by that one request only, not by the length of the tail.
+	if a.RequestsPerSecond != 0.3 || b.RequestsPerSecond != 0.2 {
+		t.Fatalf("headline %v and %v", a.RequestsPerSecond, b.RequestsPerSecond)
+	}
+	if b.RequestsPerSecondWithTail >= a.RequestsPerSecondWithTail/3 {
+		t.Fatalf("the with-tail figure is the one that collapses: %v vs %v", a.RequestsPerSecondWithTail, b.RequestsPerSecondWithTail)
 	}
 }

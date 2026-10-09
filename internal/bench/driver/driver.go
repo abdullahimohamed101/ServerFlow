@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
@@ -57,7 +58,35 @@ const (
 
 	maxBodyBytes   = 16 << 20
 	headerAttempts = "X-ServerFlow-Attempts"
+
+	// A closed-loop client that is told the server is overloaded (429 or 503) waits before its
+	// next request: failures are instant, and without a pause the clients spin at thousands of
+	// requests per second, flood the results with failures and starve the machine. The wait is
+	// the response's Retry-After, capped at BackoffCap, or else BackoffBase plus up to
+	// BackoffJitter at random.
+	BackoffCap    = 500 * time.Millisecond
+	BackoffBase   = 50 * time.Millisecond
+	BackoffJitter = 100 * time.Millisecond
 )
+
+// Backoff is how long a closed-loop client waits after a response with this status and
+// Retry-After header (seconds, or empty). jitter returns a value in [0, 1). It is zero for
+// responses that do not mean overload.
+func Backoff(status int, retryAfter string, jitter func() float64) time.Duration {
+	if status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
+		return min(time.Duration(secs)*time.Second, BackoffCap)
+	}
+	return BackoffBase + time.Duration(jitter()*float64(BackoffJitter))
+}
+
+// Progress counts what a run is doing, for progress lines; the driver updates it.
+type Progress struct {
+	InFlight  atomic.Int64
+	Completed atomic.Int64
+}
 
 // Config configures a run.
 type Config struct {
@@ -76,7 +105,10 @@ type Config struct {
 	// RequestTimeout bounds one request. DrainTimeout bounds the wait, after the window ends,
 	// for requests still in flight; those still running are cancelled and recorded as failed.
 	RequestTimeout, DrainTimeout time.Duration
-	// MaxRequests caps the requests issued, bounding memory; the run ends early when it is reached.
+	// MaxRequests caps the requests issued inside the window, bounding memory; the run ends early
+	// when it is reached. Warm-up requests do not count against it (they have the same cap of their
+	// own: clients idle until the window opens once it is reached), so a small cap can never eat
+	// the window.
 	MaxRequests int
 
 	// T0 is the run's time zero; the zero value means now. Samplers share it.
@@ -84,6 +116,8 @@ type Config struct {
 	// Client is the HTTP client; nil gets a default without proxies and with room for Concurrency
 	// idle connections.
 	Client *http.Client
+	// Progress, if set, is updated as requests start and finish.
+	Progress *Progress
 }
 
 // Output is what a run produced.
@@ -141,7 +175,9 @@ type runner struct {
 	mu      sync.Mutex
 	records []collect.Record
 	lag     time.Duration
-	issued  atomic.Int64
+	next    atomic.Int64 // next request index
+	warm    atomic.Int64 // requests taken during warm-up
+	meas    atomic.Int64 // requests taken inside the window
 	stopAt  atomic.Int64 // offset (ns) at which the request cap was hit, 0 if not
 }
 
@@ -167,6 +203,7 @@ func Run(ctx context.Context, cfg Config) (*Output, error) {
 	if r.client == nil {
 		r.client = DefaultClient(max(cfg.Concurrency, cfg.MaxInFlight))
 	}
+	defer r.client.CloseIdleConnections()
 	r.reqCtx, r.cancelReq = context.WithCancel(context.WithoutCancel(ctx))
 	defer r.cancelReq()
 	// Parent cancellation abandons everything at once; the end of the window starts the drain clock.
@@ -200,14 +237,39 @@ func DefaultClient(conns int) *http.Client {
 	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-// take reserves the next request index, or reports that the cap is reached.
-func (r *runner) take() (int, bool) {
-	n := int(r.issued.Add(1)) - 1
-	if n >= r.cfg.MaxRequests {
-		r.stopAt.CompareAndSwap(0, max(1, int64(time.Since(r.t0))))
-		return 0, false
+type takeStatus int
+
+const (
+	takeOK   takeStatus = iota
+	takeStop            // the window's request cap is reached: end the run
+	takeWait            // the warm-up's request cap is reached: idle until the window opens
+)
+
+// take reserves the next request index for a request due at the given offset. Warm-up and
+// window requests are counted against separate caps.
+func (r *runner) take(due time.Duration) (int, takeStatus) {
+	if due < r.cfg.Warmup {
+		if int(r.warm.Add(1)) > r.cfg.MaxRequests {
+			return 0, takeWait
+		}
+	} else if int(r.meas.Add(1)) > r.cfg.MaxRequests {
+		r.stopAt.CompareAndSwap(0, max(1, int64(due)))
+		return 0, takeStop
 	}
-	return n, true
+	return int(r.next.Add(1)) - 1, takeOK
+}
+
+// sleep waits d, or until ctx ends.
+func sleep(ctx context.Context, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 func (r *runner) runClosed(ctx context.Context) {
@@ -217,14 +279,24 @@ func (r *runner) runClosed(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for ctx.Err() == nil {
-				if time.Since(r.t0) >= r.end {
+				// One reading of the clock decides whether the request is still inside the
+				// window and is its intended time, so a request is never recorded as due
+				// at a moment the end check did not see.
+				now := time.Since(r.t0)
+				if now >= r.end {
 					return
 				}
-				i, ok := r.take()
-				if !ok {
+				i, st := r.take(now)
+				switch st {
+				case takeStop:
 					return
+				case takeWait:
+					sleep(ctx, r.cfg.Warmup-now)
+					continue
 				}
-				r.add(r.send(r.cfg.Workload.Request(i), -1))
+				rec, wait := r.send(r.cfg.Workload.Request(i), now)
+				r.add(rec)
+				sleep(ctx, wait)
 			}
 		}()
 	}
@@ -240,35 +312,37 @@ func (r *runner) runOpen(ctx context.Context) {
 		if !ok || due >= r.end {
 			return
 		}
-		if wait := time.Until(r.t0.Add(due)); wait > 0 {
-			t := time.NewTimer(wait)
-			select {
-			case <-t.C:
-			case <-ctx.Done():
-				t.Stop()
-				return
-			}
+		sleep(ctx, time.Until(r.t0.Add(due)))
+		if ctx.Err() != nil {
+			return
 		}
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			return
 		}
-		if _, ok := r.take(); !ok {
+		switch _, st := r.take(due); st {
+		case takeStop:
 			<-sem
 			return
+		case takeWait:
+			<-sem
+			continue
 		}
 		wg.Add(1)
 		go func(i int, due time.Duration) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			rec := r.send(r.cfg.Workload.Request(i), due)
+			rec, _ := r.send(r.cfg.Workload.Request(i), due) // open loop never backs off: the schedule is the load
 			r.add(rec)
 		}(i, due)
 	}
 }
 
 func (r *runner) add(rec collect.Record) {
+	if p := r.cfg.Progress; p != nil {
+		p.Completed.Add(1)
+	}
 	r.mu.Lock()
 	r.records = append(r.records, rec)
 	if lag := rec.Started - rec.Intended; lag > r.lag {
@@ -277,13 +351,14 @@ func (r *runner) add(rec collect.Record) {
 	r.mu.Unlock()
 }
 
-// send performs one request that was due at intended and records it. A negative intended
-// means due now (closed loop): the intended time is the moment of sending.
-func (r *runner) send(req workload.Request, intended time.Duration) collect.Record {
-	started := time.Since(r.t0)
-	if intended < 0 {
-		intended = started
+// send performs one request that was due at intended and records it. It also returns how long
+// a closed-loop client should wait before its next request (see Backoff).
+func (r *runner) send(req workload.Request, intended time.Duration) (collect.Record, time.Duration) {
+	if p := r.cfg.Progress; p != nil {
+		p.InFlight.Add(1)
+		defer p.InFlight.Add(-1)
 	}
+	started := time.Since(r.t0)
 	rec := collect.Record{
 		Seq: req.Seq, Tenant: req.Tenant, Model: req.Model, Stream: req.Stream,
 		PlannedInputTokens: req.InputTokens, MaxTokens: req.MaxTokens,
@@ -293,14 +368,14 @@ func (r *runner) send(req workload.Request, intended time.Duration) collect.Reco
 	body, err := workload.ChatBody(req)
 	if err != nil {
 		rec.ErrClass, rec.Done = ErrTransport, time.Since(r.t0)
-		return rec
+		return rec, 0
 	}
 	ctx, cancel := context.WithTimeout(r.reqCtx, r.cfg.RequestTimeout)
 	defer cancel()
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(r.cfg.BaseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		rec.ErrClass, rec.Done = ErrTransport, time.Since(r.t0)
-		return rec
+		return rec, 0
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Authorization", "Bearer "+workload.APIKey(req.Tenant))
@@ -312,7 +387,7 @@ func (r *runner) send(req workload.Request, intended time.Duration) collect.Reco
 	if err != nil {
 		rec.ErrClass = r.classify(ctx, err)
 		rec.Done = time.Since(r.t0)
-		return rec
+		return rec, 0
 	}
 	defer func() { _ = resp.Body.Close() }()
 	rec.Status = resp.StatusCode
@@ -328,7 +403,7 @@ func (r *runner) send(req workload.Request, intended time.Duration) collect.Reco
 		r.readBody(ctx, resp.Body, &rec)
 	}
 	rec.Done = time.Since(r.t0)
-	return rec
+	return rec, Backoff(resp.StatusCode, resp.Header.Get("Retry-After"), rand.Float64)
 }
 
 // classify names why a transport-level call failed.

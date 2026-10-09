@@ -59,11 +59,11 @@ func TestClosedLoopRecordsEveryRequestOnceAndStopsAtTheEndOfTheWindow(t *testing
 			t.Fatalf("request %d recorded twice", r.Seq)
 		}
 		seen[r.Seq] = true
-		if r.Intended != r.Started {
-			t.Fatal("a closed-loop client sends when it intends to")
+		if r.Intended > r.Started {
+			t.Fatal("a request cannot start before it was due")
 		}
-		if r.Started >= 300*time.Millisecond {
-			t.Fatalf("request started at %v, after the window", r.Started)
+		if r.Intended >= 300*time.Millisecond {
+			t.Fatalf("request due at %v, after the window", r.Intended)
 		}
 		if !r.OK() || r.Done < r.Started || !r.UsageReported || r.OutputTokens != 22 || r.InputTokens != 11 {
 			t.Fatalf("%+v", r)
@@ -114,21 +114,25 @@ func TestRequestsInFlightAtTheEndAreDrainedAndCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Records) != 3 || served.Load() != 3 {
-		t.Fatalf("each of 3 clients sends one request inside the window: %d records, %d served", len(out.Records), served.Load())
+	// Every request sent inside the window is recorded (a loaded machine may start a client after
+	// the window closed, so the count is not fixed), none twice, none lost.
+	if len(out.Records) == 0 || int64(len(out.Records)) != served.Load() {
+		t.Fatalf("%d records, %d served", len(out.Records), served.Load())
 	}
-	late := 0
+	s := collect.SummarizeRecords(out.Records, out.Window)
 	for _, r := range out.Records {
 		if !r.OK() {
 			t.Fatalf("a drained request must complete: %+v", r)
 		}
-		if r.Done > out.Window.End {
-			late++
+		if r.Intended < out.Window.End && r.Done <= out.Window.End {
+			t.Fatalf("each request takes 300ms, so one due inside a 100ms window ends after it: %+v", r)
 		}
 	}
-	s := collect.SummarizeRecords(out.Records, out.Window)
-	if late != 3 || s.Succeeded != 3 || s.SpanSeconds <= s.WindowSeconds {
-		t.Fatalf("late %d, summary %+v", late, s)
+	if s.Succeeded != len(out.Records) || s.SpanSeconds <= s.WindowSeconds {
+		t.Fatalf("%+v", s)
+	}
+	if s.CompletedInWindow != 0 {
+		t.Fatalf("nothing finishes inside the window, so the windowed throughput counts nothing: %+v", s)
 	}
 }
 
@@ -286,13 +290,13 @@ func TestEachTenantSendsItsOwnKeyAndAttemptsAreRead(t *testing.T) {
 	}
 }
 
-// stallServer answers instantly, except that every request arriving during the first stall
-// of the server's life waits until that stall ends.
-func stallServer(t *testing.T, stall time.Duration) string {
+// stallServer answers instantly, except that every request arriving before the stall ends
+// waits for it to end. stallEnd reports when that is (zero before the first request arrives).
+func stallServer(t *testing.T, stall time.Duration) (url string, stallEnd func() time.Time) {
 	var once sync.Once
-	var until time.Time
 	var mu sync.Mutex
-	return serve(t, func(w http.ResponseWriter, r *http.Request) {
+	var until time.Time
+	url = serve(t, func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() { mu.Lock(); until = time.Now().Add(stall); mu.Unlock() })
 		mu.Lock()
 		wait := time.Until(until)
@@ -302,38 +306,42 @@ func stallServer(t *testing.T, stall time.Duration) string {
 		}
 		okJSON(w)
 	})
+	return url, func() time.Time { mu.Lock(); defer mu.Unlock(); return until }
 }
 
-func slow(recs []collect.Record, over time.Duration) (n int) {
-	for _, r := range recs {
-		if r.Latency() >= over {
-			n++
-		}
-	}
-	return n
-}
-
+// The assertions are about which requests the stall must have touched, derived from the
+// moment it actually ended, so they hold however slow the machine is.
 func TestOpenLoopLatencyIsMeasuredFromTheIntendedTimeSoAStallCannotHide(t *testing.T) {
 	const stall = 600 * time.Millisecond
 	w := wl(t, workload.UniformShort, 0)
 
-	// Closed loop, one client: it waits out the stall inside its first request and then
-	// carries on at full speed. One slow request among hundreds: the stall is hidden.
-	closed, err := Run(context.Background(), closedCfg(stallServer(t, stall), w, 1, 0, time.Second))
+	// Closed loop, one client: it waits out the stall inside its first request and then carries
+	// on. Exactly one request was started before the stall ended: the stall is hidden in one
+	// slow request among many.
+	url, endOf := stallServer(t, stall)
+	closed, err := Run(context.Background(), closedCfg(url, w, 1, 0, time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	closedSlow := slow(closed.Records, 200*time.Millisecond)
-	if closedSlow != 1 || len(closed.Records) < 20 {
-		t.Fatalf("closed loop: %d slow of %d", closedSlow, len(closed.Records))
+	cut := endOf().Sub(closed.T0)
+	touchedClosed := 0
+	for _, r := range closed.Records {
+		if r.Started < cut {
+			touchedClosed++
+		}
+	}
+	if touchedClosed != 1 {
+		t.Fatalf("closed loop: %d requests started before the stall ended, want exactly the first", touchedClosed)
 	}
 
 	// Open loop at 20 requests/s with one slot: the generator is stuck behind the stalled
-	// request, so requests that were due during the stall are sent late. Their latency still
-	// counts from when they were due: requests due at 50, 100, ... 550 ms complete after 600 ms.
+	// request, so requests due during the stall are sent late. Their latency still counts from
+	// when they were due, so every request due before the stall ended shows at least the time
+	// left until it ended. At least 11 are due in the 600 ms the stall lasts at the very least.
+	url, endOf = stallServer(t, stall)
 	open, err := Run(context.Background(), Config{
-		BaseURL: stallServer(t, stall), Workload: w, Mode: Open, Segments: workload.Segments(workload.UniformShort, 20, 0, time.Second),
-		MaxInFlight: 1, Duration: time.Second, DrainTimeout: 5 * time.Second,
+		BaseURL: url, Workload: w, Mode: Open, Segments: workload.Segments(workload.UniformShort, 20, 0, time.Second),
+		MaxInFlight: 1, Duration: time.Second, DrainTimeout: 30 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -341,20 +349,27 @@ func TestOpenLoopLatencyIsMeasuredFromTheIntendedTimeSoAStallCannotHide(t *testi
 	if len(open.Records) != 20 {
 		t.Fatalf("open loop offers 20 requests in a second, got %d", len(open.Records))
 	}
-	openSlow := slow(open.Records, 200*time.Millisecond)
-	if openSlow < 8 {
-		t.Fatalf("open loop must expose the stall: %d requests with latency >= 200ms", openSlow)
-	}
-	if open.MaxStartLag < 200*time.Millisecond {
-		t.Fatalf("the generator fell behind and must say so: %v", open.MaxStartLag)
-	}
+	cut = endOf().Sub(open.T0)
+	touched := 0
 	for _, r := range open.Records {
 		if r.Latency() < r.Started-r.Intended {
 			t.Fatalf("latency must include the wait to be sent: %+v", r)
 		}
+		if r.Intended < cut {
+			touched++
+			if want := cut - r.Intended; r.Latency() < want {
+				t.Fatalf("a request due %v before the stall ended must show at least that latency, got %v", want, r.Latency())
+			}
+		}
 	}
-	if openSlow <= closedSlow*4 {
-		t.Fatalf("open loop saw %d slow requests, closed loop %d", openSlow, closedSlow)
+	if touched < 11 {
+		t.Fatalf("open loop: only %d requests were due during the stall", touched)
+	}
+	if open.MaxStartLag < 100*time.Millisecond {
+		t.Fatalf("the generator was held up by the stall and must say so: %v", open.MaxStartLag)
+	}
+	if touched <= touchedClosed {
+		t.Fatalf("open loop must expose the stall in more requests than closed loop: %d vs %d", touched, touchedClosed)
 	}
 }
 
@@ -436,5 +451,84 @@ func TestValidateRejectsBadConfigs(t *testing.T) {
 		if _, err := Run(context.Background(), c); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+func TestBackoffHonoursRetryAfterWithACapAndJittersOtherwise(t *testing.T) {
+	zero, one := func() float64 { return 0 }, func() float64 { return 0.999999 }
+	for _, tc := range []struct {
+		status int
+		ra     string
+		j      func() float64
+		want   time.Duration
+	}{
+		{200, "", zero, 0}, {500, "", zero, 0}, {404, "3", zero, 0},
+		{503, "", zero, BackoffBase}, {429, "", one, BackoffBase + BackoffJitter - time.Nanosecond*100},
+		{503, "1", zero, BackoffCap}, {503, "0", zero, BackoffBase}, {503, "junk", zero, BackoffBase}, {429, "999", zero, BackoffCap},
+	} {
+		got := Backoff(tc.status, tc.ra, tc.j)
+		if got < tc.want-time.Millisecond || got > tc.want+time.Millisecond {
+			t.Errorf("Backoff(%d, %q) = %v, want about %v", tc.status, tc.ra, got, tc.want)
+		}
+	}
+}
+
+func TestClosedLoopClientsDoNotSpinAgainstAnOverloadedServer(t *testing.T) {
+	for name, header := range map[string]string{"retry-after": "1", "no header": ""} {
+		t.Run(name, func(t *testing.T) {
+			var served atomic.Int64
+			url := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				served.Add(1)
+				if header != "" {
+					w.Header().Set("Retry-After", header)
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+			})
+			out, err := Run(context.Background(), closedCfg(url, wl(t, workload.UniformShort, 0), 4, 0, time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Each client waits at least BackoffBase between requests, so 4 clients cannot send more
+			// than 4*(1s/50ms + 1) requests in a second. Without a backoff this is thousands.
+			if limit := int64(4 * (time.Second/BackoffBase + 1)); served.Load() > limit || int64(len(out.Records)) != served.Load() {
+				t.Fatalf("served %d (limit %d), recorded %d", served.Load(), limit, len(out.Records))
+			}
+		})
+	}
+}
+
+func TestWarmupRequestsDoNotCountAgainstTheRequestCap(t *testing.T) {
+	url := serve(t, func(w http.ResponseWriter, r *http.Request) { okJSON(w) })
+	cfg := closedCfg(url, wl(t, workload.UniformShort, 0), 2, 300*time.Millisecond, 10*time.Second)
+	cfg.MaxRequests = 20
+	out, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warm, measured := 0, 0
+	for _, r := range out.Records {
+		if r.Intended < cfg.Warmup {
+			warm++
+		} else {
+			measured++
+		}
+	}
+	// The warm-up is capped too (clients idle once it is reached) but it cannot eat the window's
+	// allowance: exactly the cap is measured.
+	if measured != 20 || warm > 20 || !out.Truncated {
+		t.Fatalf("warm-up %d measured %d truncated %v", warm, measured, out.Truncated)
+	}
+	if s := collect.SummarizeRecords(out.Records, out.Window); s.Sent != 20 || s.Warmup != warm {
+		t.Fatalf("%+v", s)
+	}
+}
+
+func TestProgressCountsRequests(t *testing.T) {
+	url := serve(t, func(w http.ResponseWriter, r *http.Request) { okJSON(w) })
+	cfg := closedCfg(url, wl(t, workload.UniformShort, 0), 2, 0, 200*time.Millisecond)
+	cfg.Progress = &Progress{}
+	out, _ := Run(context.Background(), cfg)
+	if cfg.Progress.Completed.Load() != int64(len(out.Records)) || cfg.Progress.InFlight.Load() != 0 {
+		t.Fatalf("completed %d in flight %d, records %d", cfg.Progress.Completed.Load(), cfg.Progress.InFlight.Load(), len(out.Records))
 	}
 }

@@ -16,9 +16,10 @@ import (
 	"serverflow/pkg/protocol"
 )
 
-// maxSamples bounds the memory the sampler may use; a run that outlasts it keeps the
-// first samples and counts the rest as dropped.
-const maxSamples = 200000
+// maxEntries bounds the memory the sampler may use, counted in worker entries (a sample of
+// 64 workers is 64 entries); a run that outlasts it keeps the first samples and counts the
+// rest as dropped.
+const maxEntries = 2000000
 
 // WorkerSample is one worker's load at one instant, as the control plane reports it.
 type WorkerSample struct {
@@ -66,6 +67,8 @@ type Sampler struct {
 
 	mu      sync.Mutex
 	samples []Sample
+	entries int
+	limit   int
 	errs    int
 	dropped int
 }
@@ -73,7 +76,7 @@ type Sampler struct {
 // NewSampler returns a sampler that calls fetch every interval, with times measured
 // from t0.
 func NewSampler(fetch FetchFunc, interval time.Duration, t0 time.Time) *Sampler {
-	return &Sampler{fetch: fetch, interval: interval, t0: t0}
+	return &Sampler{fetch: fetch, interval: interval, t0: t0, limit: maxEntries}
 }
 
 // Run samples until ctx is done. A failed poll is counted, never fatal: a control plane
@@ -101,9 +104,10 @@ func (s *Sampler) once(ctx context.Context) {
 	switch {
 	case err != nil:
 		s.errs++
-	case len(s.samples) >= maxSamples:
+	case s.entries+len(ws)+1 > s.limit:
 		s.dropped++
 	default:
+		s.entries += len(ws) + 1
 		s.samples = append(s.samples, Sample{At: at, Workers: ws})
 	}
 }
@@ -216,24 +220,40 @@ type WorkerCounts map[string]int64
 // WorkerTarget names a worker whose /stats can be read.
 type WorkerTarget struct {
 	ID, Model, Address string
+	// State is the worker's registry state when known ("" for an embedded worker).
+	State string
 }
 
 // maxStatsBytes bounds a /stats response.
 const maxStatsBytes = 1 << 20
 
+// statsDeadline bounds reading every worker's /stats together.
+const statsDeadline = 10 * time.Second
+
 // FetchCompleted reads each worker's completed-request count from its /stats endpoint (the
-// mock worker serves one). Workers that cannot be read are returned in missing with the
-// reason, and left out of the counts.
+// mock worker serves one), all workers in parallel under one overall deadline. Workers that
+// cannot be read are returned in missing with the reason, and left out of the counts.
 func FetchCompleted(ctx context.Context, hc *http.Client, targets []WorkerTarget) (counts WorkerCounts, missing map[string]string) {
 	counts, missing = WorkerCounts{}, map[string]string{}
+	ctx, cancel := context.WithTimeout(ctx, statsDeadline)
+	defer cancel()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for _, t := range targets {
-		n, err := fetchCompleted(ctx, hc, t.Address)
-		if err != nil {
-			missing[t.ID] = err.Error()
-			continue
-		}
-		counts[t.ID] = n
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := fetchCompleted(ctx, hc, t.Address)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				missing[t.ID] = err.Error()
+				return
+			}
+			counts[t.ID] = n
+		}()
 	}
+	wg.Wait()
 	return counts, missing
 }
 

@@ -90,14 +90,25 @@ type Summary struct {
 	UsageRequests     int `json:"usage_requests"`
 	EstimatedRequests int `json:"estimated_requests"`
 
-	// WindowSeconds is the nominal window; SpanSeconds is the longer of it and the time
-	// until the last measured request finished (the drain), and is the divisor of throughput.
+	// WindowSeconds is the nominal window length. SpanSeconds is the longer of it and the time
+	// until the last measured request finished (the drain).
 	WindowSeconds float64 `json:"window_seconds"`
 	SpanSeconds   float64 `json:"span_seconds"`
 
+	// CompletedInWindow counts successful requests that finished inside the window, whenever
+	// they were sent: warm-up requests that finish inside it count, requests sent inside it
+	// that finish in the drain do not. It is the numerator of the headline throughput, which
+	// divides by the nominal window, so one slow tail request cannot move it.
+	CompletedInWindow     int     `json:"completed_in_window"`
 	RequestsPerSecond     float64 `json:"requests_per_second"`
 	InputTokensPerSecond  float64 `json:"input_tokens_per_second"`
 	OutputTokensPerSecond float64 `json:"output_tokens_per_second"`
+	// The WithTail figures divide the measured (sent inside the window) successes and their
+	// tokens by SpanSeconds, so the drain counts against them. They move with the slowest
+	// request and are reported next to the headline, never instead of it.
+	RequestsPerSecondWithTail     float64 `json:"requests_per_second_with_tail"`
+	InputTokensPerSecondWithTail  float64 `json:"input_tokens_per_second_with_tail"`
+	OutputTokensPerSecondWithTail float64 `json:"output_tokens_per_second_with_tail"`
 	// ErrorRate is Failed/Sent, 0 when nothing was sent.
 	ErrorRate float64 `json:"error_rate"`
 }
@@ -121,7 +132,13 @@ func SummarizeRecords(records []Record, w Window) Summary {
 	s := Summary{StatusClasses: map[string]int{}, ErrorClasses: map[string]int{}}
 	var lat, ttft []float64
 	last := w.End
+	var winIn, winOut int64
 	for _, r := range records {
+		if r.OK() && w.Contains(r.Done) {
+			s.CompletedInWindow++
+			winIn += int64(r.InputTokens)
+			winOut += int64(r.OutputTokens)
+		}
 		if r.Intended < w.Start {
 			s.Warmup++
 			continue
@@ -162,10 +179,15 @@ func SummarizeRecords(records []Record, w Window) Summary {
 	s.Latency, s.TTFT = Summarize(lat), Summarize(ttft)
 	s.WindowSeconds = (w.End - w.Start).Seconds()
 	s.SpanSeconds = (last - w.Start).Seconds()
+	if s.WindowSeconds > 0 {
+		s.RequestsPerSecond = float64(s.CompletedInWindow) / s.WindowSeconds
+		s.InputTokensPerSecond = float64(winIn) / s.WindowSeconds
+		s.OutputTokensPerSecond = float64(winOut) / s.WindowSeconds
+	}
 	if s.SpanSeconds > 0 {
-		s.RequestsPerSecond = float64(s.Succeeded) / s.SpanSeconds
-		s.InputTokensPerSecond = float64(s.InputTokens) / s.SpanSeconds
-		s.OutputTokensPerSecond = float64(s.OutputTokens) / s.SpanSeconds
+		s.RequestsPerSecondWithTail = float64(s.Succeeded) / s.SpanSeconds
+		s.InputTokensPerSecondWithTail = float64(s.InputTokens) / s.SpanSeconds
+		s.OutputTokensPerSecondWithTail = float64(s.OutputTokens) / s.SpanSeconds
 	}
 	if s.Sent > 0 {
 		s.ErrorRate = float64(s.Failed) / float64(s.Sent)

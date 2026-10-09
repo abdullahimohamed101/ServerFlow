@@ -139,3 +139,16 @@ func TestDeltaIsEndMinusStartForWorkersInBoth(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+func TestSamplerBoundsMemoryByEntriesNotSamples(t *testing.T) {
+	ws := make([]WorkerSample, 10)
+	s := NewSampler(func(context.Context) ([]WorkerSample, error) { return ws, nil }, time.Second, time.Now())
+	s.limit = 35 // room for three samples of 10 workers (11 entries each)
+	for range 5 {
+		s.once(context.Background())
+	}
+	got, _, dropped := s.Samples()
+	if len(got) != 3 || dropped != 2 {
+		t.Fatalf("kept %d dropped %d", len(got), dropped)
+	}
+}
