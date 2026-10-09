@@ -98,9 +98,11 @@ harness: an aggressive tenant and several normal tenants spread over three gatew
   (fail fast, like auth) and for tenant limits needs `auth.mode=required` (otherwise only model caps apply, and the config says so).
   A non-loopback Redis without TLS or a password is refused unless `redis.allow_insecure_transport` is set (the same guard as the
   Postgres DSN, using the driver's parsed options, never a hand-written parser).
-- **D12 Redis key layout is cluster-safe.** Per-tenant keys share a hash tag: `rl:{<tenant_id>}:req`, `rl:{<tenant_id>}:tok`,
+- **D12 Redis key layout.** Per-tenant keys share a hash tag: `rl:{<tenant_id>}:req`, `rl:{<tenant_id>}:tok`,
   `rl:{<tenant_id>}:conc`; the model cap is `rl:model:{<model>}`. Keys expire on their own (idle buckets are deleted after twice the
-  refill period), so memory is bounded by active tenants.
+  burst window), so memory is bounded by active tenants. *Correction after implementation:* the single acquire script touches a tenant's keys
+  and a model key in one call, so **Redis Cluster is not supported** (a CROSSSLOT/MOVED error would fail closed like any Redis error); only
+  the tenant keys are slot-friendly. Names are escaped, and a model with no cap is sent as a constant placeholder.
 - **D13 Metrics and logs.** `rate_limit_rejections_total{limit}` (spec §29; limit in `requests|tokens|concurrency|model|unavailable`),
   `rate_limit_bypassed_total`, `rate_limit_decision_seconds` histogram. No tenant label. Log lines carry `tenant_id`, `limit`, and the
   estimated cost. Never the API key or the Redis password.
@@ -297,3 +299,9 @@ The new ratelimit, redis and gateway tests pass with `-race -count=5` under 20 C
 copy of master** (`git archive master`, `-race -count=40`, same load), so it is pre-existing and unrelated to this phase; it passes in all
 normal runs. Not changed here. In one unloaded `go test ./...` run `TestProcessGatewayRetriesAroundAFlakyWorker` returned one 503 NO_CAPACITY
 (it passed in the race run and the repeat); also not touched.
+
+### Clock finding: what a backward step leaves behind
+
+After a clock step back, a bucket whose stamp is ahead of the clock refills nothing until the clock catches up or the key expires (at most
+twice the burst window), and `Retry-After` can then be too short. Shutdown behaviour (renewals and release workers stop when shutdown begins;
+releases are flushed by `Close(5s)`; a stream that outlives `lease_ttl` during a drain loses its lease) is documented in the operations guide.

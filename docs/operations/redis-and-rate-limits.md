@@ -36,6 +36,7 @@ while the Mac sleeps, which makes exact-count tests and the benchmark unreliable
 | `redis.password` (`REDIS_PASSWORD`) | none | A secret: never logged, echoed or printed; config prints it as `<redacted>`. |
 | `redis.db`, `redis.tls` | 0, false | Database number; TLS 1.2+ with verification. |
 | `redis.timeout` | 50ms | Bounds every Redis call. A slower Redis is treated as failed. |
+| `redis.pool_size` | 64 | Connections to Redis (1-1000). Running out of them is the gateway's own congestion, not an outage: the request gets 503 (closed) or is admitted and counted (open), with no backoff and no outage log. |
 | `redis.backoff` | 1s | After a failure Redis is left alone this long (one probe, then back to normal). |
 | `redis.on_failure` | `closed` | `closed` or `open`; see below. |
 | `redis.request_metadata`, `redis.request_metadata_ttl` | false, 1h | Best-effort `request:{id}` records (tenant, model, worker, attempt). Nothing reads them yet. |
@@ -81,6 +82,23 @@ A gateway that dies holding slots frees them within `lease_ttl`.
 Choose `closed` when quotas protect money or shared capacity, `open` when availability matters more; both are tested.
 At startup in `required` mode an unreachable Redis, a wrong password, or an unsafe transport stops the gateway with a clear message.
 
+## After an outage, and at shutdown
+
+- **Slots whose release was dropped.** A release is sent asynchronously through a bounded queue and is dropped when the queue is full or Redis
+  is backing off. Such a lease is no longer renewed, but it holds its slot until it expires, up to `lease_ttl` (60 s by default). So for up
+  to a minute after Redis recovers a tenant with a small `max_concurrent_requests` can see `429` for `concurrency` although nothing of its is
+  running. `rate_limit_dropped_releases_total` counts the drops and `rate_limit_local_leases` the leases a gateway tracks; lower
+  `rate_limit.lease_ttl` (minimum 10 s) to shorten the window.
+- **A sub-millisecond race.** Release happens after the response is written, asynchronously. A client that fires its next request the moment
+  it receives a response can arrive before the release script runs and get a spurious `429` (concurrency) when it is exactly at its limit.
+  Retrying after the `Retry-After` second succeeds.
+- **Shutdown.** When shutdown begins the renewer and the release workers stop; the gateway then drains in-flight requests (up to
+  `gateway.shutdown_timeout`) and flushes the queued releases for up to 5 s. A long stream that outlives `lease_ttl` during a drain loses its
+  lease (its slot may be given to another request) because it is no longer renewed. Leases of requests that finish are released.
+- **Clock steps.** The limiter trusts Redis's clock (ADR-015). After a step *back* a bucket whose stamp is ahead refills nothing until the
+  clock catches up or the key expires (at most twice the burst window), and `Retry-After` can then be too short. A step *forward* credits
+  refill (at most one burst per bucket).
+
 ## Security notes
 
 - Keep Redis private: no public Redis (spec section 44). A remote Redis needs TLS and a password, or `allow_insecure_transport`.
@@ -93,5 +111,6 @@ At startup in `required` mode an unreachable Redis, a wrong password, or an unsa
 ## Metrics
 
 `rate_limit_rejections_total{limit}` (`requests`, `tokens`, `concurrency`, `model`, `unavailable`), `rate_limit_bypassed_total`,
-`rate_limit_decision_seconds`. No tenant labels (cardinality is Phase 10's decision); the request log line has `tenant_id`, `rate_limit`
+`rate_limit_decision_seconds`, `rate_limit_local_leases` (gauge: leases this gateway tracks) and `rate_limit_dropped_releases_total`
+(releases not sent; see above). No tenant labels (cardinality is Phase 10's decision); the request log line has `tenant_id`, `rate_limit`
 (the limit hit) and `est_cost`.

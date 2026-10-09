@@ -62,7 +62,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   check could not be made.
 - **Failure behaviour (spec 36).** `redis.on_failure`: **closed** (default) refuses requests that need a check with 503; **open** admits
   them, logs, and counts `rate_limit_bypassed_total`. Requests with nothing to enforce (all quotas 0, no model cap) never call Redis and
-  are unaffected either way. Every call is bounded by `redis.timeout` (default 50 ms; a slow Redis counts as failed). After a failure
+  are unaffected either way. Every call is bounded by `redis.timeout` (default 50 ms; a slow Redis counts as failed). Running out of the gateway's own connection pool (`redis.pool_size`, default 64) is *busy*, not an outage: no backoff and no outage log, and the request follows the failure mode for that one call. The driver does not retry a script on its own, because a script Redis already applied would be charged twice. After a failure
   Redis is left alone for `redis.backoff` (default 1 s) and only one probe is let through when the backoff ends, so a dead Redis costs one
   timeout per second, not one per request, and no goroutines or connections pile up. The outage and the recovery are each logged once.
   Closed protects quotas and turns a Redis outage into an API outage for limited tenants; open protects availability and lets quotas lapse.
