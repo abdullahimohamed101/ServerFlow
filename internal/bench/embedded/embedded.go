@@ -46,12 +46,16 @@ const (
 	// The registry and gateway timings are short so a run is not dominated by waiting; they
 	// are recorded in every result, because least-active routing follows load reported up to
 	// one heartbeat ago.
-	HeartbeatInterval = 200 * time.Millisecond
+	HeartbeatInterval = time.Second
 	RegistryRefresh   = 100 * time.Millisecond
 
 	// MockOutputTokens is the mock workers' natural output length: above the largest max_tokens
 	// any workload asks for, so max_tokens decides how much each request generates.
 	MockOutputTokens = 2000
+
+	// settle is how long Start waits, once the control plane lists every worker, for the gateway
+	// to have taken several snapshots of it.
+	settle = 5 * RegistryRefresh
 )
 
 // Defaults for the mock workers' base speed.
@@ -204,9 +208,10 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	c := &Cluster{Token: token, Workers: specs, cancel: cancel}
 	fail := func(err error) (*Cluster, error) { c.Close(); return nil, err }
 
-	// Control plane. The failure thresholds are long: a loaded machine must not make a healthy
-	// worker look suspect and distort a measurement.
-	reg, err := registry.New(registry.Config{Suspect: 2 * time.Second, Unhealthy: 4 * time.Second, Lost: 10 * time.Second,
+	// Control plane. The failure thresholds are long: a loaded machine (the load generator shares
+	// the CPU) must not make a healthy worker look suspect: under CPU starvation a 2s threshold
+	// made the gateway answer 503 for workers that were alive.
+	reg, err := registry.New(registry.Config{Suspect: 10 * time.Second, Unhealthy: 20 * time.Second, Lost: 60 * time.Second,
 		Retention: time.Minute, MaxWorkers: 1000, HeartbeatInterval: HeartbeatInterval}, log)
 	if err != nil {
 		return fail(err)
@@ -243,10 +248,10 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Gateway.WorkerSource = config.WorkerSourceRegistry
 	gcfg.Gateway.ControlPlaneURL = cpURL
 	gcfg.Gateway.RegistryRefresh = RegistryRefresh
-	gcfg.Gateway.RegistryMaxStaleness = 5 * time.Second
+	gcfg.Gateway.RegistryMaxStaleness = 10 * time.Second
 	gcfg.Gateway.UpstreamHeaderTimeout = 2 * time.Minute
 	gcfg.Gateway.ShutdownTimeout = 2 * time.Second
-	gcfg.Worker.SuspectTimeout = 2 * time.Second
+	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token
 	gcfg.Scheduler.Strategy = cfg.Scheduler
 	gw, err := gateway.NewRegistry(gcfg, log)
@@ -279,6 +284,16 @@ func (c *Cluster) waitReady(ctx context.Context, models []string) error {
 	defer cancel()
 	for {
 		if c.ready(ctx, models) {
+			// The control plane lists every worker, but the gateway reads it on its own refresh
+			// timer and /v1/models is true as soon as it sees one. Without this pause the first
+			// requests found a single worker, which was at capacity, and got 503 NO_CAPACITY
+			// (hundreds of them in the first 250ms of a run). Let the gateway take several
+			// snapshots first.
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("cluster not ready: %w", ctx.Err())
+			case <-time.After(settle):
+			}
 			return nil
 		}
 		select {
