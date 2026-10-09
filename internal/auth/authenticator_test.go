@@ -497,6 +497,45 @@ func TestFloodCannotHideARevocationAndIsShedWithoutTouchingTheStore(t *testing.T
 	}
 }
 
+// Refreshes of cached keys are capped too: the store is never asked for more than MaxLookups
+// things at once, and the excess keeps being served from its stale copy.
+func TestRefreshesAreCappedAtMaxLookups(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{MaxLookups: 4, CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
+	const n = 10
+	keys := make([]string, n)
+	for i := range keys {
+		keys[i], _ = st.add(i)
+		if _, err := a.Authenticate(context.Background(), keys[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := st.lookups.Load()
+	st.gate = make(chan struct{})
+	clk.advance(time.Minute) // every entry is now past its TTL and inside the grace
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for _, k := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.Authenticate(context.Background(), k)
+			errs <- err
+		}()
+	}
+	// Six are shed and answered from their stale copies at once; four lookups are blocked.
+	waitUntil(t, "the excess refreshes to be shed", func() bool { return len(errs) == n-4 })
+	if got := st.lookups.Load() - base; got != 4 {
+		t.Fatalf("%d concurrent refreshes reached the store, cap is 4", got)
+	}
+	close(st.gate)
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("a refresh failed: %v", err)
+		}
+	}
+}
+
 func TestBusyStoreIsNotAnOutage(t *testing.T) {
 	a, st, clk, _ := setup(t, Config{CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
 	cached, _ := st.add(1)
