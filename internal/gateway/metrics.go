@@ -1,11 +1,9 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"strconv"
-	"time"
-
-	"serverflow/internal/ratelimit"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -94,47 +92,77 @@ func (m *metrics) handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
 }
 
-// observe records a finished inference request.
-func (m *metrics) observe(info *reqInfo, status int, d time.Duration) {
-	model := info.model
+// metrics is the first Observer (ADR-016). Instruments are driven by the lifecycle events; the series, labels
+// and buckets are pinned by TestMetricsSeriesGolden*.
+var _ Observer = (*metrics)(nil)
+
+// RequestStarted counts the request as in flight.
+func (m *metrics) RequestStarted(ctx context.Context, _ RequestStart) context.Context {
+	m.active.Inc()
+	return ctx
+}
+
+// RequestAdmitted records how long the limiter took and whether it let the request through unchecked.
+func (m *metrics) RequestAdmitted(_ context.Context, e Admission) {
+	if e.RateLimitChecked {
+		m.rateDecision.Observe(e.RateLimitDuration.Seconds())
+	}
+	if e.RateLimitBypassed {
+		m.rateBypassed.Inc()
+	}
+}
+
+// RequestRejected counts authentication and rate limit refusals. The other kinds have no series.
+func (m *metrics) RequestRejected(_ context.Context, e Rejection) {
+	switch e.Kind {
+	case RejectAuth:
+		m.authRejects.WithLabelValues(strconv.Itoa(e.Status)).Inc()
+	case RejectRateLimit:
+		m.rateDecision.Observe(e.DecisionDuration.Seconds())
+		m.rateRejects.WithLabelValues(e.Reason).Inc()
+	}
+}
+
+// AttemptStarted has no series of its own.
+func (m *metrics) AttemptStarted(ctx context.Context, _ AttemptStart) context.Context { return ctx }
+
+// FirstToken has no series of its own: the TTFT histogram is fed from the completion.
+func (m *metrics) FirstToken(context.Context, FirstToken) {}
+
+// AttemptEnded counts a finished attempt on a registry worker, and an attempt abandoned for a retry. A
+// static-mode attempt (empty worker ID) is not counted: inference_attempts_total is a registry-mode series.
+func (m *metrics) AttemptEnded(_ context.Context, e AttemptEnd) {
+	if e.WorkerID == "" {
+		return
+	}
+	model := modelLabel(e.Model)
+	m.attempts.WithLabelValues(model, e.Outcome).Inc()
+	if e.WillRetry {
+		m.retries.WithLabelValues(model, e.Class).Inc()
+	}
+}
+
+// RequestCompleted records a finished inference request that reached the handler.
+func (m *metrics) RequestCompleted(_ context.Context, e Completion) {
+	m.active.Dec()
+	if !e.Handled {
+		return
+	}
+	model := modelLabel(e.Model)
+	m.requests.WithLabelValues(model, strconv.Itoa(e.Status)).Inc()
+	m.duration.WithLabelValues(model).Observe(e.Duration.Seconds())
+	if e.TTFT > 0 {
+		m.ttft.WithLabelValues(model).Observe(e.TTFT.Seconds())
+	}
+}
+
+// modelLabel keeps the model label bounded: only a model the registry (or the configured list) confirmed.
+func modelLabel(model string) string {
 	if model == "" {
-		model = "unknown"
+		return "unknown"
 	}
-	m.requests.WithLabelValues(model, strconv.Itoa(status)).Inc()
-	m.duration.WithLabelValues(model).Observe(d.Seconds())
-	if info.ttft > 0 {
-		m.ttft.WithLabelValues(model).Observe(info.ttft.Seconds())
-	}
+	return model
 }
-
-// observeAttempt counts a finished attempt. outcome is one of the fixed attempt outcomes.
-func (m *metrics) observeAttempt(model, outcome string) {
-	if model == "" {
-		model = "unknown"
-	}
-	m.attempts.WithLabelValues(model, outcome).Inc()
-}
-
-// observeRetry counts an attempt abandoned for a retry. reason is an attempt error class.
-func (m *metrics) observeRetry(model, reason string) {
-	if model == "" {
-		model = "unknown"
-	}
-	m.retries.WithLabelValues(model, reason).Inc()
-}
-
-// observeAuthReject counts a request refused by authentication.
-func (m *metrics) observeAuthReject(status int) {
-	m.authRejects.WithLabelValues(strconv.Itoa(status)).Inc()
-}
-
-// observeRateReject counts a request refused by rate limiting. limit is one of the fixed limit names.
-func (m *metrics) observeRateReject(limit ratelimit.Limit) {
-	m.rateRejects.WithLabelValues(string(limit)).Inc()
-}
-
-// observeRateDecision records how long the limiter took.
-func (m *metrics) observeRateDecision(d time.Duration) { m.rateDecision.Observe(d.Seconds()) }
 
 // registerLimiterStats exports the limiter's lease bookkeeping. Registering twice (a second limiter on the same
 // server) replaces nothing: the first registration stays, which is fine because a server has one limiter.
