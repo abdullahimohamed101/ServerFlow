@@ -297,3 +297,37 @@ Steps 1 and 2 can proceed independently; 3–6 build on them.
 - **Deliberately left:** pgx v5.8.0 pin; tenant name case sensitivity; no CHECK(expires_at > created_at);
   unbounded quota ints; dev-postgres trust auth and default port (a `DEV_POSTGRES_PORT` override was added so
   two worktrees can each run one); the global LRU mutex (a sharded LRU is future work); exactly-one-space Bearer.
+
+### Security review fixes (round 3: verifier findings)
+
+- **Hanging database (blackhole).** A request for a cached key past its TTL waits at most `refresh_wait` (250 ms)
+  for the refresh and otherwise serves the stale copy (valid for `stale_grace`); the lookup carries on in its own
+  goroutine and requests that arrive meanwhile do not wait at all. Uncached keys still wait up to the 3 s lookup
+  timeout. Tests: `TestHangingStoreDoesNotStallCachedKeys` (30 concurrent clients, one shared flight, latency under
+  1 s with a 5 s lookup timeout, and a revocation made meanwhile is seen once the database answers). The "one slow
+  request per second" sentence in ADR-014 and the operations guide was replaced with the accurate statement.
+- **Out-of-range numbers.** Quotas, priority, max tokens and the benchmark counters are range-checked in the store
+  (int32 columns; the CLI inherits it) with a plain message; `22003` is also mapped. Reproduced first: the mutant
+  that removes the model max-tokens check prints the driver's "unable to encode (*int)(0x...)" text, which the new
+  tests forbid. Tests: `TestNumericFlagsAreRangeCheckedBeforeTheDatabase` (every flag at 0, 1, 2147483647 and
+  2147483648, 99999999999, 9223372036854775807, negatives), `TestStoreRangeChecks`, `TestCheckRange`.
+- **Control characters.** Names, labels, display names, notes, benchmark text and model lists reject control,
+  format (bidi, zero-width), line/paragraph separator and invalid-UTF-8 characters (`badRune`). The CLI also
+  filters every byte it prints, so rows written around the application cannot inject escapes when listed.
+  Tests: `TestControlCharactersAreRefused`, `TestListingNeverEmitsTerminalEscapes`,
+  `TestValidateTextRejectsControlAndInvisibleCharacters`. Free text is now single-line (newline and tab are refused).
+- **Docs.** GRANT example including `schema_migrations`; exact timing wording (about 2 us between cached paths, about
+  55 us for a fresh random prefix, plus the 5 s versus 30 s cadence oracle); Status line; acceptance criterion 5 states
+  its known limits; the gateway start log now has `control_plane_token` and `api_key_auth` fields (the old
+  `auth` field was the control-plane token).
+- **Mutation survivors from the verifier (22).** Killed by new tests: au-dummy-removed, cfg-cache-ttl-max,
+  adm-expiry-max, adm-expiry-zero, adm-empty-models-all, adm-tls-validation-off, adm-collision-retry,
+  au-stale-boundary, au-stale-masks-notfound, au-downuntil-not-reset, ty-allow-prefix, pg-tenant-name-prefix,
+  pg-label-nul, srv-run-removed, au-ttl-neg-age, au-recovered-never-clears, lru-not-lru, pg-name-check,
+  pg-set-status-validate, and key-nonconstant (structurally: `TestHashComparisonIsStructurallyConstantTime` asserts
+  `HashesEqual` is only `subtle.ConstantTimeCompare`; constant time itself is not observable from a test).
+  **Equivalent, not killable:** `key-len` (`!=` to `<`): a longer key is still refused, by the decoded-secret length check
+  in the same function, so behaviour is identical. `au-neg-remove-on-success`: a prefix is never in the negative
+  cache when a lookup succeeds (an expired negative entry is removed before the lookup starts and a fresh one short
+  circuits it), so the removal is defensive. Re-run on the current code: all 20 observable mutants plus 8 new ones
+  for the new code killed; the 3 survivors are the equivalent ones above and one no-op mutant of mine.
