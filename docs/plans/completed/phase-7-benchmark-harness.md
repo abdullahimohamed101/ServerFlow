@@ -1,6 +1,6 @@
 # Phase 7 — Baseline Benchmark Harness
 
-Status: In review (implemented; independent review and verification findings fixed)
+Status: Completed (implemented; reviewed once and independently verified, with fixes; merged with its PR)
 Owner: coding agent
 Depends on: Phase 6 (multi-worker routing; PR #7). Runs in parallel with Phase 9 (PostgreSQL); the two share no code, see "Parallel work".
 Spec: `docs/architecture/serverflow-spec.md` §14, §31–36, §52, §58 Phase 7, §63
