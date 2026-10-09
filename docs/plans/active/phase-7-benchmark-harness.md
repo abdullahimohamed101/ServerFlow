@@ -205,3 +205,32 @@ merge.
    `prepare-pr`, and stop for approval.
 
 Steps 1 and 2 can proceed independently; 3–5 build on them.
+
+## Implementation Notes (deviations and additions)
+
+- **`internal/bench/runner` was added** (not in the plan's package list) so flag validation, safety checks, and run
+  orchestration are testable; `cmd/benchmark` only dispatches `run`, `compare`, `list`.
+- **Integration tests are new files** `tests/integration/benchmark_test.go` and `benchmark_process_test.go`; the
+  existing test files were not edited. No file outside the planned scope was changed, and go.mod/go.sum are untouched.
+- **Embedded cluster timings (D2/D14):** heartbeat 1 s, gateway registry refresh 100 ms, failure thresholds
+  10/20/60 s, and a settle pause of 5 refresh intervals before the first request. Found by failure: with 200 ms
+  heartbeats and 2 s thresholds a busy machine made workers look suspect, and the first requests reached a gateway
+  that had seen only one worker (hundreds of 503 `NO_CAPACITY` in the first 250 ms). Recorded in every result.
+- **Default mock profile** is 1000 tokens/s, 20 ms first token, 8 concurrent, queue 128 (heterogeneous: speeds x1, 0.6,
+  0.2; first-token x1, 1.5, 3), faster than `make dev-cluster` so runs finish quickly; `--mock-*` flags change it.
+- **Repeat spread (D5/D11):** each repeat is its own run directory in one group (`repeat.group`); `compare` finds
+  the group's siblings to judge spread, so no earlier result is rewritten.
+- **Request balance (D7):** Jain index of per-worker completed counts among workers of one model, lowest across
+  models; counts are read from `/stats` (mock workers only) at the end of warm-up and after the drain, so with a
+  warm-up they include warm-up requests that finish later (stated in the report).
+- **Throughput divisor** is the window plus the drain (longest counted request), not the nominal window.
+- **Caps (D12):** also `--max-requests` (500,000; stops a run early and cuts the window) and a refusal of URLs with
+  credentials. No secret is a flag; the control plane token comes from `SERVERFLOW_CONTROL_PLANE_TOKEN` / `--config`.
+- **Closed-loop saturation:** clients as numerous as worker slots make the gateway reject instantly and the clients
+  retry in a tight loop (300,000 requests, 98% failed); documented in the harness note. Not changed (gateway scope).
+- **Not done / follow-ups:** Postgres storage of results (Phase 9), Poisson arrivals, `multi-tenant` enforcement
+  checks (need Phase 9 API keys), remote-target runs were only tested against loopback fakes and the embedded gateway
+  by URL (not against a separately started gateway process).
+- Two foreground sample runs once stalled for 3 to 6 minutes at about 1% CPU while the machine was busy; they did not
+  recur in about ten later runs and every wait in the harness is bounded (drain 60 s, stats 5 s, cluster close 15 s),
+  so the cause is unproven (suspected host contention).
