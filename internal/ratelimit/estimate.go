@@ -6,12 +6,16 @@ import (
 	"serverflow/pkg/protocol"
 )
 
-// Cost estimation (spec section 17): input_tokens + max_tokens, deliberately simple and deliberately an
-// over-estimate. No model is consulted and nothing is refunded after the response.
+// Cost estimation (spec section 17): input_tokens + max_tokens, deliberately simple. No tokenizer is consulted and
+// nothing is refunded after the response. It is an approximation, not a bound: it is typically LOW for very dense
+// text (digits, base64, hex, minified JSON and code can take 1.5 to 3 characters per token; the 1 MiB request body cap is
+// the outer bound on the input), and when max_tokens is absent the reply is charged at gateway.max_tokens_limit while the
+// backend, which receives the body unchanged (ADR-003), may generate up to its own limit. See ADR-015.
 const (
-	// charsPerToken is the usual rule of thumb for English text; it errs low on tokens, so the
-	// non-ASCII rule below and the per-message overhead push the estimate up.
-	charsPerToken = 4
+	// charsPerToken: English prose is about four characters per token; dense ASCII (code, digits, base64,
+	// hex, minified JSON) is 1.5 to 3. Three is a compromise that leans towards charging more for text that
+	// is mostly not prose; it is still low for the densest text.
+	charsPerToken = 3
 	// perMessageOverhead covers role and framing tokens (OpenAI documents about 3-4 per message).
 	perMessageOverhead = 4
 	// replyPriming covers the tokens that prime the assistant's reply.
@@ -22,10 +26,11 @@ const (
 
 // EstimateCost estimates a request's token cost: input tokens plus the output budget.
 //
-// Input tokens: ASCII bytes count one token per four bytes (rounded up per piece of text), every
+// Input tokens: ASCII bytes count one token per three bytes (rounded up per piece of text), every
 // non-ASCII character counts as a whole token (multi-byte scripts are expensive to tokenize), each
 // message adds a few framing tokens, and the reply adds a few more. Output tokens: maxTokens when the
-// client set it, otherwise limit (gateway.max_tokens_limit, the most the gateway would allow). A
+// client set it (the larger of max_tokens and max_completion_tokens when both are present), otherwise limit
+// (gateway.max_tokens_limit, an assumption: the backend may generate more when the request names no limit). A
 // non-positive limit contributes nothing. The result is at least 1 and at most MaxCost, and is
 // monotonic: more text or a larger maxTokens never lowers it.
 func EstimateCost(msgs []protocol.Message, prompt string, maxTokens, limit int) int {

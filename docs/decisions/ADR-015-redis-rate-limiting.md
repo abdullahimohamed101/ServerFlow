@@ -34,10 +34,18 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   refusing). Production Redis on a host with NTP does not do this; tests that depend on exact admission counts against Docker Desktop
   should run with the Mac awake (`caffeinate`) and the clock offset stable, and the benchmark note says how it was run. The only way to
   inject a clock is `ratelimit.Config.Clock`, which the configuration file cannot set.
-- **Cost estimate (spec 17).** `input_tokens + max_tokens`: ASCII at about four bytes per token, every non-ASCII character as a whole
-  token, a few framing tokens per message and for the reply; `max_tokens` is the client's value or `gateway.max_tokens_limit` when absent
-  (the worst the gateway would allow). It is an over-estimate by design, monotonic, bounded at 2^32, and not refunded after the response.
-  A request bigger than the whole token bucket needs a full bucket (it is charged the bucket's size) instead of being refused forever.
+- **Cost estimate (spec 17).** `input_tokens + max_tokens`: ASCII at about three bytes per token, every non-ASCII character as a whole
+  token, a few framing tokens per message and for the reply. The reply part is the client's `max_tokens` (the larger of `max_tokens` and
+  `max_completion_tokens` when both are present) or `gateway.max_tokens_limit` when the request names none. Bounded at 2^32, monotonic, not
+  refunded after the response. A request bigger than the whole token bucket is charged the bucket's size (needs a full bucket).
+  **Known limitation: this is an approximation, not an upper bound.** (1) The gateway forwards the body unchanged (ADR-003), so when the
+  request has no `max_tokens` the backend may generate up to its own limit (vLLM defaults to the context length) while the tenant is
+  charged `gateway.max_tokens_limit` (4096 by default): such a tenant can consume more backend capacity than its token quota suggests. The
+  gateway does not rewrite the body to close this; the mitigations are the worker's own maximum length setting and Phase 15
+  (admission control). (2) The input estimate is typically LOW for very dense text (digits, base64, hex, minified JSON and code can take
+  1.5 to 3 characters per token); the 1 MiB request body cap is the outer bound on the input. (3) Tenants are charged at admission: a
+  request that then fails (503 NO_CAPACITY, an upstream 5xx, an unknown model in registry mode) still consumed its request and token
+  quota; nothing is refunded.
 - **Concurrency as leases.** In-flight requests are members of a per-tenant sorted set scored by expiry. A gateway renews its own
   in-flight leases every `lease_ttl/3` (one call per tenant with leases, so a tenant's keys share a slot) and releases them when the
   handler ends; a crashed gateway's leases lapse within `lease_ttl`. Renewal never revives a released or expired lease, so a renewal
@@ -91,7 +99,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   `docs/benchmarks/phase-8-rate-limits.md`), bounded by a timeout and a backoff.
 - Estimates are not usage: a tenant is charged `input + max_tokens`, so a large `max_tokens` spends quota faster than the model generates.
   A refund after the response is the natural follow-up.
-- Unauthenticated floods are still the job of a front proxy or per-IP limiter (ADR-014): this phase limits authenticated tenants.
+- Unauthenticated traffic is **not rate limited** (a known gap: tenant quotas need an identity). Floods of it are still the job of a front proxy or per-IP limiter (ADR-014's advice stands).
 - Quota changes take effect within `auth.cache_ttl` (the authenticator's cache); a bucket keeps its state and is clamped to a lowered quota.
 - Redis 7 is used in CI and documentation (Redis 8 changed its license); Valkey is wire-compatible. The code uses plain commands and one Lua script.
 - Out of scope: admission control and queues (Phase 15), priority tiers (Phase 22), per-tenant metric labels (Phase 10), usage records

@@ -18,12 +18,12 @@ func msgs(contents ...string) []protocol.Message {
 }
 
 func TestEstimateCostKnownValues(t *testing.T) {
-	// One message "hello world" (11 ASCII bytes = 3 tokens) + role "user" (1) + 4 framing + 3 priming + 100 output.
-	if got := EstimateCost(msgs("hello world"), "", 100, 4096); got != 3+1+4+3+100 {
+	// One message "hello world" (11 ASCII bytes = 4 tokens at 3 per token) + role "user" (2) + 4 framing + 3 priming + 100 output.
+	if got := EstimateCost(msgs("hello world"), "", 100, 4096); got != 4+2+4+3+100 {
 		t.Fatalf("got %d", got)
 	}
-	// An absent max_tokens costs the gateway limit, the worst case the gateway would allow.
-	if got := EstimateCost(msgs("hi"), "", 0, 4096); got != 1+1+4+3+4096 {
+	// An absent max_tokens costs the gateway limit, the gateway's assumption (a backend may generate more).
+	if got := EstimateCost(msgs("hi"), "", 0, 4096); got != 1+2+4+3+4096 {
 		t.Fatalf("absent max_tokens: got %d", got)
 	}
 }
@@ -105,10 +105,10 @@ func TestEstimateCostBoundedAndNoOverflow(t *testing.T) {
 	}
 }
 
-func TestEstimateIsAnOverEstimateOfFourCharsPerToken(t *testing.T) {
+func TestEstimateAssumesThreeCharsPerToken(t *testing.T) {
 	text := strings.Repeat("the quick brown fox ", 500) // 10,000 ASCII chars
 	in := EstimateCost(msgs(text), "", 1, 1) - 1
-	if in < len(text)/4 {
+	if in < len(text)/3 {
 		t.Fatalf("input estimated at %d tokens for %d characters", in, len(text))
 	}
 }

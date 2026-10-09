@@ -297,3 +297,18 @@ func TestOverlongModelNameIsNotFoundEvenWhenAnyModelIsAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBothTokenFieldsKeepTheLarger(t *testing.T) {
+	for _, tc := range []struct{ fields string; want int }{
+		{`"max_tokens":50,"max_completion_tokens":20`, 50},
+		{`"max_tokens":20,"max_completion_tokens":50`, 50},
+		{`"max_tokens":7`, 7},
+		{`"max_completion_tokens":9`, 9},
+	} {
+		body := `{"model":"qwen-7b","messages":[{"role":"user","content":"hi"}],` + tc.fields + `}`
+		req, err := ParseChatRequest([]byte(body), testLimits)
+		if err != nil || req.MaxTokens != tc.want {
+			t.Fatalf("%s: %v %v", tc.fields, req, err)
+		}
+	}
+}

@@ -50,8 +50,19 @@ Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_r
   model) and nothing else. For requests and tokens the wait is exact: a client that waits it gets in (unless other traffic took the tokens).
   For concurrency it is a 1 s hint: a slot frees when some request finishes.
 - `503 RATE_LIMIT_UNAVAILABLE`, `Retry-After`: Redis could not answer and the gateway fails closed (or this gateway holds too many leases).
-- Cost is `input_tokens + max_tokens` (`gateway.max_tokens_limit` when absent), a deliberate over-estimate, not refunded. A request larger
-  than the whole token bucket needs a full bucket.
+- Cost is `input_tokens + max_tokens` (the larger of `max_tokens` and `max_completion_tokens` when both are sent; `gateway.max_tokens_limit`
+  when neither is). It is charged at admission and **never refunded**: a request that then fails (503 NO_CAPACITY, an upstream 5xx, an
+  unknown model in registry mode) still consumed its request and token quota. A request larger than the whole token bucket needs a full bucket.
+
+## Known limits of the estimate and of the scope
+
+- **Not an upper bound.** The gateway forwards the body unchanged, so a request without `max_tokens` is charged `gateway.max_tokens_limit`
+  (4096 by default) while the backend may generate up to its own limit (vLLM defaults to the context length). Set the worker's own maximum
+  length (for vLLM `--max-model-len`, and a default `max_tokens` where the backend supports one) to the same value; Phase 15 adds admission
+  control.
+- **Dense text is under-counted.** Input is estimated at three ASCII characters per token; digits, base64, hex, minified JSON and code can take
+  1.5 to 3. The 1 MiB request body cap bounds the input.
+- **Unauthenticated traffic is not rate limited.** Tenant quotas need an identity (ADR-014's front-proxy or per-IP limiter advice stands).
 
 ## When Redis fails
 
