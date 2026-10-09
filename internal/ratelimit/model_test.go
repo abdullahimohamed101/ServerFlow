@@ -288,7 +288,7 @@ func TestModelClockGoingBackwardsNeverRemovesTokens(t *testing.T) {
 }
 
 func TestKeysAreInjectiveAndBraceFree(t *testing.T) {
-	names := []string{"a", "a}:conc", "a}", "{a", "a}:req}:req", "%7D", "}", "{", "", "a b", "é", "\x00", strings.Repeat("a", 300)}
+	names := []string{"\x01", "\x1f", "\x7f", "\x80", "\xff", "a\xffb", "a\nb", "a}:conc", "a}", "{a", "a}:req}:req", "%7D", "}", "{", "", "a b", "é", "\x00", strings.Repeat("a", 300)}
 	seen := map[string]string{}
 	for _, n := range names {
 		for _, k := range []string{keyRequests(n), keyTokens(n), keyConcurrency(n), keyModel(n)} {
@@ -296,6 +296,11 @@ func TestKeysAreInjectiveAndBraceFree(t *testing.T) {
 				t.Fatalf("key %q produced by %q and %q", k, prev, n)
 			}
 			seen[k] = n
+			for i := 0; i < len(k); i++ {
+				if k[i] < 0x21 || k[i] > 0x7e {
+					t.Fatalf("key %q contains the unprintable byte %#x from name %q", k, k[i], n)
+				}
+			}
 			inner := strings.TrimPrefix(strings.TrimPrefix(k, "rl:model:{"), "rl:{")
 			if strings.Count(inner, "{")+strings.Count(inner, "}") != 1 {
 				t.Fatalf("key %q has extra braces", k)

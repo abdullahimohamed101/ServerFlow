@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1146,5 +1148,98 @@ func TestDroppedReleasesAreCountedWhenRedisIsDown(t *testing.T) {
 	}
 	if l.DroppedReleases() != 1 {
 		t.Fatalf("the release that could not be sent must be counted, got %d", l.DroppedReleases())
+	}
+}
+
+// ---- survivors of the second mutation round ----
+
+// The stored level is an exact integer string, however large, and quotas and costs are clamped before they reach the script.
+func TestStoredBucketLevelIsExactAndInputsAreClamped(t *testing.T) {
+	l, _ := newTestLimiter(t, Config{BurstSeconds: MaxBurstSeconds})
+	tn := redistest.Unique("t")
+	ctx := context.Background()
+	level := func(key string) string {
+		v, err := l.c.HGet(ctx, key, "l")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// A quota far beyond the bound is treated as MaxQuota: the full bucket is MaxQuota*3600*1000 scaled units and one request takes 60,000.
+	if d := allow(t, l, tenantReq(tn, Limits{RequestsPerMinute: math.MaxInt}, 1)); !d.Allowed {
+		t.Fatal("refused")
+	}
+	capacity := int64(MaxQuota) * MaxBurstSeconds * 1000
+	if got, want := level(keyRequests(tn)), strconv.FormatInt(capacity-60000, 10); got != want {
+		t.Fatalf("request bucket level %q, want %q (an exact integer, quota clamped)", got, want)
+	}
+	// 16-digit levels survive the round trip through Lua (plain Lua formatting would keep 14 digits; Redis 7 converts with %.17g and keeps them either way).
+	if d := allow(t, l, tenantReq(tn, Limits{TokensPerMinute: MaxQuota}, MaxCost)); !d.Allowed {
+		t.Fatal("refused")
+	}
+	if got, want := level(keyTokens(tn)), strconv.FormatInt(capacity-int64(MaxCost)*60000, 10); got != want {
+		t.Fatalf("token bucket level %q, want %q", got, want)
+	}
+	// A cost beyond the bound is MaxCost; a negative cost is nothing and can never add tokens.
+	tn2 := redistest.Unique("t")
+	allow(t, l, Request{TenantID: tn2, Model: "m", Cost: math.MaxInt, Limits: Limits{TokensPerMinute: MaxQuota}})
+	if got, want := level(keyTokens(tn2)), strconv.FormatInt(capacity-int64(MaxCost)*60000, 10); got != want {
+		t.Fatalf("an oversized cost left level %q, want %q", got, want)
+	}
+	tn3 := redistest.Unique("t")
+	allow(t, l, Request{TenantID: tn3, Model: "m", Cost: -1_000_000, Limits: Limits{TokensPerMinute: 600}})
+	if got, want := level(keyTokens(tn3)), strconv.FormatInt(int64(600)*MaxBurstSeconds*1000, 10); got != want {
+		t.Fatalf("a negative cost changed the level to %q (want it untouched at %q)", got, want)
+	}
+}
+
+func TestKeysExpireAfterMoreThanTheirRefillTime(t *testing.T) {
+	// A bucket key must outlive the time it takes to refill, or expiry would reset a partly drained bucket to full.
+	l, _ := newTestLimiter(t, Config{BurstSeconds: 10, LeaseTTL: 10 * time.Second})
+	tn := redistest.Unique("t")
+	allow(t, l, tenantReq(tn, Limits{RequestsPerMinute: 60, TokensPerMinute: 60}, 1))
+	for _, k := range []string{keyRequests(tn), keyTokens(tn)} {
+		ttl, err := l.c.TTL(context.Background(), k)
+		if err != nil || ttl < 15*time.Second || ttl > 20*time.Second {
+			t.Fatalf("%s ttl %v %v, want about twice the 10 s burst window", k, ttl, err)
+		}
+	}
+}
+
+func TestLeaseExpiresAtExactlyItsTTLAgainstRedis(t *testing.T) {
+	l, clk := newTestLimiter(t, Config{LeaseTTL: 30 * time.Second})
+	tn := redistest.Unique("t")
+	lim := Limits{MaxConcurrent: 1}
+	if !allow(t, l, tenantReq(tn, lim, 1)).Allowed {
+		t.Fatal("refused")
+	}
+	clk.Advance(30*time.Second - time.Millisecond)
+	if allow(t, l, tenantReq(tn, lim, 1)).Allowed {
+		t.Fatal("the lease expired a millisecond early")
+	}
+	clk.Advance(time.Millisecond)
+	if !allow(t, l, tenantReq(tn, lim, 1)).Allowed {
+		t.Fatal("a lease whose expiry has been reached must be gone")
+	}
+}
+
+func TestCloseSendsTheQueuedReleases(t *testing.T) {
+	l, _ := newTestLimiter(t, Config{LeaseTTL: 30 * time.Second})
+	tn := redistest.Unique("t")
+	lim := Limits{MaxConcurrent: 1}
+	d := allow(t, l, tenantReq(tn, lim, 1))
+	d.Release() // queued; the background workers are not running
+	if allow(t, l, tenantReq(tn, lim, 1)).Allowed {
+		t.Fatal("the slot was freed without the release being sent")
+	}
+	l.Close(5 * time.Second)
+	if !allow(t, l, tenantReq(tn, lim, 1)).Allowed {
+		t.Fatal("Close must flush the releases still queued")
+	}
+	// After Close nothing more is queued.
+	d2 := allow(t, l, tenantReq(tn, Limits{MaxConcurrent: 2}, 1))
+	d2.Release()
+	if l.DroppedReleases() < 1 || len(l.releaseQ) != 0 {
+		t.Fatal("a release after Close must be dropped, not queued")
 	}
 }

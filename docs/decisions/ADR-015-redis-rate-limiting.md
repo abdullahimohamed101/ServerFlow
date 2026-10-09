@@ -22,7 +22,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   (default 60 s: one minute of quota) and refills continuously at `quota / 60` per second. New buckets start full.
   All arithmetic is on integers (levels are scaled by 60,000, so a refill of `e` ms adds `e * quota`); quotas are capped at 10^9 and
   bursts at 3,600 s so every intermediate stays exactly representable in a Lua double, and numbers are written with `%.0f` because
-  Lua's default conversion keeps only 14 digits. `internal/ratelimit/model.go` is the same algorithm in plain Go; the tests run both on
+  Lua's default conversion keeps only 14 digits (Redis 7 itself converts with `%.17g` and would be exact; the explicit format keeps the stored text independent of that). `internal/ratelimit/model.go` is the same algorithm in plain Go; the tests run both on
   randomised sequences (with a fake clock) and require identical answers.
 - **Redis `TIME`, never the gateway's clock.** Gateways with skewed clocks agree. Redis's own clock is the one thing the limiter
   trusts, and the phase found out what that costs: on Docker Desktop for Mac the Redis container's clock fell 14-45 s behind while the host

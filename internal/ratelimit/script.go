@@ -9,7 +9,8 @@ import "serverflow/internal/redis"
 //
 // All arithmetic is on integers held in doubles and stays below 2^53 given the bounds in limiter.go
 // (quota <= MaxQuota, burst <= MaxBurstSeconds, cost <= MaxCost). Numbers are written to Redis with
-// '%.0f' because Lua's default number-to-string conversion keeps only 14 significant digits.
+// '%.0f' so the stored text does not depend on the server's number-to-string conversion (Lua's default keeps 14
+// significant digits; Redis 7 converts script numbers with %.17g and would be exact anyway, which a mutation test showed).
 // model.go is the same algorithm in Go; the tests require them to agree.
 
 // acquireScript checks every active quota and, only if all admit the request, charges all of them and

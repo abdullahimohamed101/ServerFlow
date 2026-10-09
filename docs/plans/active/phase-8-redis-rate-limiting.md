@@ -340,3 +340,25 @@ Each item was reproduced first, fixed with a test that fails without the fix, an
   assumption, not a product bug; the test now waits for the workers to report again and repeats the request (at most five blips, logged).
 - **Environment note.** `go test ./...` on this Mac opens thousands of loopback connections; with a second test run in parallel the ephemeral
   ports were exhausted (`can't assign requested address`, about 9,000 sockets in TIME_WAIT) and unrelated tests failed until they drained.
+
+### Second review round (verifier's notes and mutation results)
+
+- **Estimator bypass (fixed).** Image parts, tool call arguments and the `tools` field were not in the parsed messages, so 500 KB of them was
+  estimated at 14-21 tokens. `EstimateRequestCost` now also charges every byte of the body that is not already counted as message text at three bytes
+  per token (over-charges JSON framing a little and images a lot). Test: four 500 KB bodies (text, tools, image part, tool call arguments) are estimated within
+  10% of each other, and the test fails with the old call.
+- `go mod tidy -diff` is empty (adds `github.com/kylelemons/godebug` indirect, pulled in by prometheus `testutil` in the gateway tests).
+- The ACL list in the operations guide was wrong (scripts run as the connecting user); the corrected list was verified against a real ACL user.
+  `maxmemory`/eviction guidance added. A host-only `redis.address` is accepted again while Redis is unused (regression test). `dev-redis.sh` names
+  the container from the port (round one).
+- **Registry mode, unknown model (documented, not changed).** The limiter runs before the router, so a 404 for an unknown model has already
+  charged the tenant. Moving the limiter after routing would mean undoing a reserved worker slot on every refusal; the cost is bounded by the
+  tenant's own quota. Tenants with an allow-list are not charged for forbidden models.
+- **Mutation survivors:** S15 (bucket PEXPIRE window/2), S13 (lease purge now-1000), R03 (quota clamp), R15 (negative cost), R24 (Close without
+  drain), C07 (Set not detached), C13 (Set during backoff), C14 (RetryAfter remainder), E08 (prompt), K04/K05 (key escaping) and G02 (refusal continues to the
+  upstream) each have a test that fails against the mutant; all re-run and killed. S26 (plain number instead of `%.0f` in the stored level) is an
+  **equivalent mutant on Redis 7**: Redis converts script numbers with `%.17g`, so 16-digit levels survive either way (checked with `redis-cli`);
+  the explicit format stays for servers whose Lua converts with 14 digits, and the earlier ADR wording was corrected.
+- **TestReleaseAndRenewalRunInTheBackground** passed 20/20 with `-race` and 15/15 under 20 busy processes here; the verifier's 2-in-5 failure is
+  not reproducible. The most likely cause is the environment (the Docker VM's clock stepping forward makes a lease expire in Redis time while the test is
+  holding it), not a renewal bug; the test is unchanged.

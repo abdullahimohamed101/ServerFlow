@@ -467,3 +467,44 @@ func TestAScriptIsNeverSentTwiceAfterAConnectionReset(t *testing.T) {
 		t.Fatalf("the server saw %d script commands; a retry after a reset could double-charge an acquire", n)
 	}
 }
+
+func TestSetIsDetachedFromCancellationAndSkippedWhileDown(t *testing.T) {
+	cfg := redistest.Config(t)
+	proxy := redistest.NewProxy(t, cfg.Address)
+	clk := newClock()
+	cfg.Address, cfg.Timeout, cfg.Backoff, cfg.Now = proxy.Addr(), 100*time.Millisecond, 10*time.Second, clk.Now
+	c := redistest.NewClientWith(t, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	key := redistest.Unique("request")
+	if err := c.Set(ctx, key, "v", time.Minute); err != nil {
+		t.Fatalf("a client that hung up must not abandon the best-effort write: %v", err)
+	}
+	if v, err := c.Get(context.Background(), key); err != nil || v != "v" {
+		t.Fatalf("%q %v", v, err)
+	}
+	// While Redis is backing off, Set sends nothing at all.
+	proxy.SetMode(redistest.Blackhole)
+	if _, err := c.Run(context.Background(), echo, []string{"k"}, 1); err == nil {
+		t.Fatal("expected the black-holed call to fail")
+	}
+	before := c.Commands()
+	if err := c.Set(context.Background(), key, "w", time.Minute); !errors.Is(err, redis.ErrBackoff) {
+		t.Fatalf("Set during the backoff: %v", err)
+	}
+	if c.Commands() != before {
+		t.Fatal("Set sent a command while Redis was backing off")
+	}
+	// RetryAfter is what is left of the backoff, not a full interval, and a full interval once a probe is due.
+	if d := c.RetryAfter(); d <= 9*time.Second || d > 10*time.Second {
+		t.Fatalf("right after the failure RetryAfter = %v, want about 10s", d)
+	}
+	clk.Advance(6 * time.Second)
+	if d := c.RetryAfter(); d <= 3*time.Second || d > 4*time.Second {
+		t.Fatalf("6s into a 10s backoff RetryAfter = %v, want about 4s", d)
+	}
+	clk.Advance(5 * time.Second)
+	if d := c.RetryAfter(); d != 10*time.Second {
+		t.Fatalf("with the backoff over RetryAfter = %v, want a full interval", d)
+	}
+}

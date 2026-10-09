@@ -511,3 +511,27 @@ func TestBodyContentOutsideTheMessageTextIsCharged(t *testing.T) {
 		}
 	}
 }
+
+// A refused request must stop there: nothing reaches a worker and the client gets exactly one answer.
+func TestARefusedRequestNeverReachesTheUpstream(t *testing.T) {
+	var hits atomic.Int64
+	for name, decide := range map[string]func(ratelimit.Request) (ratelimit.Decision, error){
+		"429": func(ratelimit.Request) (ratelimit.Decision, error) {
+			return ratelimit.Decision{Limit: ratelimit.LimitRequests, RetryAfter: time.Second}, nil
+		},
+		"503": func(ratelimit.Request) (ratelimit.Decision, error) {
+			return ratelimit.Decision{}, &ratelimit.UnavailableError{RetryAfter: time.Second}
+		},
+	} {
+		lim := &fakeLimiter{decide: decide}
+		env := newLimitEnv(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); okUpstream(w, r) }, lim)
+		key := env.store.add("acme", nil, quotas(1, 1, 1))
+		resp, body := env.chat(t, key, "qwen-7b")
+		if resp.StatusCode != map[string]int{"429": 429, "503": 503}[name] || strings.Count(body, `"error"`) != 1 || strings.Contains(body, `"ok":true`) {
+			t.Fatalf("%s: %d %s", name, resp.StatusCode, body)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("%d requests reached the upstream although the limiter refused them", hits.Load())
+	}
+}

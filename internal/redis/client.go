@@ -187,6 +187,14 @@ func (c *Client) Get(ctx context.Context, key string) (string, error) {
 	return v, c.scrub(err)
 }
 
+// HGet reads one hash field, for tests and debugging, not the request path.
+func (c *Client) HGet(ctx context.Context, key, field string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	v, err := c.rdb.HGet(cctx, key, field).Result()
+	return v, c.scrub(err)
+}
+
 // TTL returns a key's remaining life, for tests and debugging.
 func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
 	cctx, cancel := context.WithTimeout(ctx, c.timeout)
