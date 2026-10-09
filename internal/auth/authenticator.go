@@ -207,7 +207,7 @@ func (a *Authenticator) record(ctx context.Context, prefix string) (KeyRecord, e
 	now := a.now()
 
 	a.mu.Lock()
-	rec, err, hit, stale := a.cachedLocked(prefix, now)
+	rec, hit, stale, err := a.cachedLocked(prefix, now)
 	down := now.Before(a.downUntil)
 	a.mu.Unlock()
 	if hit {
@@ -236,25 +236,25 @@ func (a *Authenticator) record(ctx context.Context, prefix string) (KeyRecord, e
 // cachedLocked answers from the caches. hit means the answer (a record, or ErrNotFound for a
 // remembered unknown prefix) is fresh. Otherwise stale is the expired-but-within-grace entry, if
 // any. Caller holds a.mu.
-func (a *Authenticator) cachedLocked(prefix string, now time.Time) (rec KeyRecord, err error, hit bool, stale *posEntry) {
+func (a *Authenticator) cachedLocked(prefix string, now time.Time) (rec KeyRecord, hit bool, stale *posEntry, err error) {
 	if e, ok := a.pos.get(prefix); ok {
 		age := now.Sub(e.fetched)
 		switch {
 		case age < a.cfg.CacheTTL && age >= 0:
-			return e.rec, nil, true, nil
+			return e.rec, true, nil, nil
 		case age < a.cfg.CacheTTL+a.cfg.StaleGrace && age >= 0:
-			return KeyRecord{}, nil, false, e
+			return KeyRecord{}, false, e, nil
 		default:
 			a.pos.remove(prefix)
 		}
 	}
 	if at, ok := a.neg.get(prefix); ok {
 		if age := now.Sub(at); age < a.cfg.NegativeTTL && age >= 0 {
-			return KeyRecord{}, ErrNotFound, true, nil
+			return KeyRecord{}, true, nil, ErrNotFound
 		}
 		a.neg.remove(prefix)
 	}
-	return KeyRecord{}, nil, false, nil
+	return KeyRecord{}, false, nil, nil
 }
 
 // errShed is what a request gets when lookup capacity is exhausted. The store was not asked.
@@ -275,7 +275,7 @@ var errShed = fmt.Errorf("%w: lookup capacity exhausted", ErrUnavailable)
 // request is shed without touching the store.
 func (a *Authenticator) fetch(ctx context.Context, prefix string, refresh bool) (KeyRecord, error) {
 	a.mu.Lock()
-	if rec, err, hit, _ := a.cachedLocked(prefix, a.now()); hit {
+	if rec, hit, _, err := a.cachedLocked(prefix, a.now()); hit {
 		a.mu.Unlock()
 		return rec, err
 	}
