@@ -169,3 +169,5 @@ Untouched: `internal/worker`, `internal/registry`, `internal/scheduler`, `intern
 8. Overhead measurement and note; ADR-017, operations guide, README, ARCHITECTURE; run every CI step locally; independent verification and review; fixes; narrower second verification; harden; small commits; `prepare-pr`; stop for approval.
 
 Steps 1 and 2 can proceed independently; 3 needs prep merged; 4 and 5 build on 1-3.
+
+**Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
