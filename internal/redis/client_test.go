@@ -379,3 +379,33 @@ func (r *recorder) Fatal(...any)          { r.failed = true; panic("fatal") }
 func (r *recorder) Fatalf(string, ...any) { r.failed = true; panic("fatal") }
 func (r *recorder) Helper()               {}
 func (r *recorder) Cleanup(func())        {}
+
+// A Redis (or anything impersonating one) that echoes the password in an error must not get it into the error
+// the caller sees, or the logs.
+func TestPasswordEchoedByTheServerIsScrubbed(t *testing.T) {
+	cfg := redistest.Config(t)
+	pw := cfg.Password
+	fake := redistest.NewFakeServer(t, "-ERR invalid credentials for password "+pw+" (tried "+pw+")")
+	logs := &lockedBuf{}
+	cfg.Address, cfg.Logger = fake.Addr(), slog.New(slog.NewTextHandler(logs, nil))
+	c := redistest.NewClientWith(t, cfg)
+	_, err := c.Run(context.Background(), echo, []string{"k"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "invalid credentials") {
+		t.Fatalf("expected the server's error, got %v", err)
+	}
+	if strings.Contains(err.Error(), pw) {
+		t.Fatalf("the returned error contains the password: %v", err)
+	}
+	if err := c.Set(context.Background(), "k", "v", time.Minute); err == nil || strings.Contains(err.Error(), pw) {
+		t.Fatalf("Set's error: %v", err)
+	}
+	if _, err := c.Get(context.Background(), "k"); err == nil || strings.Contains(err.Error(), pw) {
+		t.Fatalf("Get's error: %v", err)
+	}
+	if strings.Contains(logs.String(), pw) {
+		t.Fatalf("the log contains the password:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "redis unavailable") {
+		t.Fatalf("the outage should have been logged:\n%s", logs.String())
+	}
+}

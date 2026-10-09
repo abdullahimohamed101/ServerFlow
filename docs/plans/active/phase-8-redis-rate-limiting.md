@@ -251,3 +251,41 @@ All of D1-D16 were implemented as approved. Differences and additions, in the or
   "Redis tests must run, not skip" step mirrors the PostgreSQL one.
 - **Benchmark:** the harness binary cannot authenticate (it sends fake `sk-bench-*` keys), so the measurement offers the harness's own
   `multi-tenant` plan in-process to three gateways (`TestBenchmarkRateLimits`, opt-in). The harness is not modified.
+
+### Mutation check (38 mutants of the algorithm, failure paths and secrets handling, plus 3 added)
+
+Method: copy the tree to /tmp, apply one textual mutation, run the owning packages against the password-protected Redis. First pass: 29
+killed, 7 survived, 2 did not compile. Survivors and what was done:
+
+- `retry-after min 1 dropped` (api): a test now checks `Retry-After` is never below 1 for 0 and negative waits. Killed.
+- `password not scrubbed` (redis client): a test with a server that echoes the password in its error asserts the password is absent from the
+  returned errors (`Run`, `Set`, `Get`) and from the log; a gateway-level test asserts it is absent from the response, log and `/metrics`. Killed.
+- `negative elapsed not clamped`, `stamp may move back`: new tests drive Redis's frozen test clock backwards and forwards and compare
+  script and model (a step back neither creates nor destroys tokens; the stamp does not move back, so the return credits one second, not the
+  minute the step spanned). Killed.
+- `release not once`: a test counts Redis commands for five `Release` calls (exactly one). Killed. `recovery never logged` (a compiling
+  variant) is killed by the outage-log tests.
+- `renew revives (no XX)` is an **equivalent mutant**: the script checks `ZSCORE` first and skips ids that are not held or have expired,
+  so `XX` is defence in depth. A stronger mutant that removes both the check and `XX` is killed (`renew without existence check or XX`), and
+  the new test that renews an expired lease and then admits proves a ghost lease cannot block a tenant.
+- `bucket boundary < to <=` is an **equivalent mutant**: when the level equals what the request needs, the wait computed is 0 and only a
+  wait greater than 0 refuses, so `<` and `<=` give the same answers. The mutant that forces the equal case to wait (`<=` with a wait of at
+  least one tick) is killed. New tests pin the exact edge against Redis for requests, tokens and the model cap: a drained bucket one
+  millisecond short of one request refuses with a 1 ms wait, and exactly at the refill admits and drains to zero.
+- `refill window clamp removed` is an **equivalent mutant** in behaviour: the level is clamped to the bucket's capacity right afterwards, so
+  a longer elapsed time gives the same result; the clamp only keeps the intermediate product below 2^53. The new test that idles 10 hours
+  asserts the bucket holds exactly its capacity.
+
+All other mutants (boundary in the pure model, refill doubled, ceiling rounding, oversized-cost clamp, all-or-nothing, concurrency
+boundary, lease purge, lease renewal expiry, lease storage, model bucket charge, longest-wait selection, quota-0 skip, release forgetting the
+lease, leaked leases on refusal/error, closed vs open, lease cap, per-model cap on unlisted models, backoff arming, single probe, outage
+logged once, detached context, password printing, transport guard, estimate rounding, key escaping, release on exit, bypass counter, limit
+label) were killed in the first pass.
+
+### Clock finding
+
+Docker Desktop's Redis container clock fell 14-45 s behind the host while the Mac slept and jumped forward afterwards (found by sampling
+`redis-cli TIME` against the host clock every 150 ms). A bucket cannot tell a forward step from idleness, so the aggressive tenant in the
+first benchmark runs was admitted 1052-1922 times against a bound of 800. With the Mac kept awake (`caffeinate`) and the offset stable the same run
+admitted exactly 800. The step-back handling (no tokens removed, stamp never moves back) is exact; a forward step can still credit up to one
+burst per bucket. Production Redis on an NTP-synchronised host does not behave like this, but a failover to a host with a wrong clock would.

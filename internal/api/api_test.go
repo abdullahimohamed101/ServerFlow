@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -254,5 +255,28 @@ func TestParseChatRequestAcceptsLegacyFunctionRole(t *testing.T) {
 	body := `{"model":"qwen-7b","messages":[{"role":"user","content":"hi"},{"role":"function","name":"f","content":"result"}]}`
 	if _, err := ParseChatRequest([]byte(body), testLimits); err != nil {
 		t.Fatalf("the legacy function role is still valid OpenAI: %v", err)
+	}
+}
+
+func TestRateLimitErrorsAlwaysAdviseAtLeastOneSecond(t *testing.T) {
+	for _, after := range []int{-5, 0, 1, 30} {
+		want := max(1, after)
+		for _, e := range []*Error{ErrRateLimited("requests", after), ErrRateLimitUnavailable(after)} {
+			if e.RetryAfter != want {
+				t.Fatalf("%s with %d: RetryAfter %d, want %d", e.Code, after, e.RetryAfter, want)
+			}
+			rec := httptest.NewRecorder()
+			WriteError(rec, e)
+			if got := rec.Header().Get("Retry-After"); got != strconv.Itoa(want) {
+				t.Fatalf("%s with %d: header %q, want %d (never 0)", e.Code, after, got, want)
+			}
+		}
+	}
+	e := ErrRateLimited("tokens", 3)
+	if e.HTTPStatus != 429 || e.Code != "RATE_LIMITED" || !strings.Contains(string(e.Body()), "rate_limit_error") || !strings.Contains(e.Message, "tokens") {
+		t.Fatalf("%+v %s", e, e.Body())
+	}
+	if u := ErrRateLimitUnavailable(2); u.HTTPStatus != 503 || u.Code != "RATE_LIMIT_UNAVAILABLE" {
+		t.Fatalf("%+v", u)
 	}
 }

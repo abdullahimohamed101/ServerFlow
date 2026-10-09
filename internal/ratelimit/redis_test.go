@@ -148,6 +148,23 @@ func TestConcurrencyBoundaryReleaseAndExpiryAgainstRedis(t *testing.T) {
 	}
 }
 
+func TestReleaseSendsExactlyOneCommandHoweverOftenItIsCalled(t *testing.T) {
+	l, _ := newTestLimiter(t, Config{})
+	tn := redistest.Unique("t")
+	d := allow(t, l, tenantReq(tn, Limits{MaxConcurrent: 2}, 1))
+	before := l.c.Commands()
+	for i := 0; i < 5; i++ {
+		d.Release()
+	}
+	drain(l)
+	if n := l.c.Commands() - before; n != 1 {
+		t.Fatalf("five calls to Release sent %d commands, want 1", n)
+	}
+	if len(l.releaseQ) != 0 {
+		t.Fatal("a duplicate release was queued")
+	}
+}
+
 func TestLeaseRenewalKeepsALongRequestsSlot(t *testing.T) {
 	l, clk := newTestLimiter(t, Config{LeaseTTL: 30 * time.Second})
 	tn := redistest.Unique("t")
@@ -874,3 +891,148 @@ func TestNewRedisValidation(t *testing.T) {
 }
 
 func newTextLogger(w *syncBuf) *slog.Logger { return slog.New(slog.NewTextHandler(w, nil)) }
+
+// ---- clock edges against real Redis (frozen clock): the script must agree with the model ----
+
+// both runs one request through the limiter (script) and the model at the clock's current time and fails if
+// they disagree.
+func both(t *testing.T, l *RedisLimiter, clk *fakeClock, m *Model, tn string, lim Limits, cost int) Decision {
+	t.Helper()
+	want := m.Allow(clk.Now().UnixMilli(), ModelRequest{TenantID: tn, Model: "m", Cost: cost, Limits: lim})
+	got := allow(t, l, tenantReq(tn, lim, cost))
+	if got.Allowed != want.Allowed || got.Limit != want.Limit || got.RetryAfter.Milliseconds() != want.RetryMs {
+		t.Fatalf("at %d: script %+v, model %+v", clk.Now().UnixMilli(), got, want)
+	}
+	return got
+}
+
+func TestExactEdgeOfEveryBucketAgainstRedis(t *testing.T) {
+	// A bucket that holds exactly what the request needs admits it and drains to zero; one millisecond earlier
+	// (a few scaled units short) it refuses and says how long to wait.
+	model := redistest.Unique("model")
+	l, clk := newTestLimiter(t, Config{ModelRequestsPerMinute: map[string]int{model: 600}})
+	for _, tc := range []struct {
+		name string
+		lim  Limits
+		mod  string
+		cost int
+		edge time.Duration // time to refill exactly one request's worth after draining
+	}{
+		{"requests", Limits{RequestsPerMinute: 600}, "", 1, 100 * time.Millisecond},
+		{"tokens", Limits{TokensPerMinute: 600}, "", 10, 1000 * time.Millisecond},
+		{"model", Limits{}, model, 1, 100 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tn := redistest.Unique("t")
+			req := func(cost int) Request { return Request{TenantID: tn, Model: tc.mod, Cost: cost, Limits: tc.lim} }
+			if tc.name == "model" {
+				tn = ""
+			}
+			// Drain completely: 600 requests' worth.
+			spent := 0
+			for {
+				d, err := l.Allow(context.Background(), req(tc.cost))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !d.Allowed {
+					break
+				}
+				spent += tc.cost
+				if spent > 100000 {
+					t.Fatal("never drained")
+				}
+			}
+			want := 600
+			if tc.name == "tokens" {
+				want = 600 // tokens
+			}
+			if spent != want {
+				t.Fatalf("a full bucket admitted %d, want exactly %d", spent, want)
+			}
+			clk.Advance(tc.edge - time.Millisecond)
+			d, _ := l.Allow(context.Background(), req(tc.cost))
+			if d.Allowed || d.RetryAfter != time.Millisecond {
+				t.Fatalf("one millisecond short of one request: %+v", d)
+			}
+			clk.Advance(time.Millisecond)
+			d, _ = l.Allow(context.Background(), req(tc.cost))
+			if !d.Allowed {
+				t.Fatalf("a bucket holding exactly what the request needs must admit it: %+v", d)
+			}
+			d, _ = l.Allow(context.Background(), req(tc.cost))
+			if d.Allowed {
+				t.Fatal("the bucket should be empty again")
+			}
+		})
+	}
+}
+
+func TestClockStepsAgainstRedisMatchTheModel(t *testing.T) {
+	l, clk := newTestLimiter(t, Config{})
+	m := NewModel(Params{BurstSeconds: 60, LeaseTTLMs: DefaultLeaseTTL.Milliseconds()})
+	tn := redistest.Unique("t")
+	lim := Limits{RequestsPerMinute: 60} // 1 token per second
+	count := func(max int) int {
+		n := 0
+		for both(t, l, clk, m, tn, lim, 1).Allowed {
+			n++
+			if n > max {
+				t.Fatal("unbounded")
+			}
+		}
+		return n
+	}
+	for i := 0; i < 30; i++ { // level 30
+		both(t, l, clk, m, tn, lim, 1)
+	}
+	// (b) The clock steps back a minute: no tokens are created or destroyed.
+	clk.Advance(-60 * time.Second)
+	if n := 0; true {
+		for i := 0; i < 5; i++ { // admitted while behind, level 25
+			if both(t, l, clk, m, tn, lim, 1).Allowed {
+				n++
+			}
+		}
+		if n != 5 {
+			t.Fatalf("a backwards step destroyed tokens: only %d of 5 admitted", n)
+		}
+	}
+	// (c) The stamp did not move back: when the clock returns 1 s after the last real update the refill is that
+	// one second (one token: level 26), not the minute the step spanned (which would refill the bucket).
+	clk.Advance(61 * time.Second)
+	if n := count(100); n != 26 {
+		t.Fatalf("after a step back and forward the bucket held %d, want 26 (25 + one second of refill)", n)
+	}
+	// (a) Idleness far beyond the window credits exactly one full bucket.
+	clk.Advance(10 * time.Hour)
+	if n := count(1000); n != 60 {
+		t.Fatalf("after 10 idle hours the bucket held %d, want exactly its capacity of 60", n)
+	}
+}
+
+func TestExpiredAndReleasedLeasesAreNotRevivedByRenewal(t *testing.T) {
+	l, clk := newTestLimiter(t, Config{LeaseTTL: 30 * time.Second})
+	tn := redistest.Unique("t")
+	lim := Limits{MaxConcurrent: 1}
+	d := allow(t, l, tenantReq(tn, lim, 1))
+	if !d.Allowed {
+		t.Fatal("refused")
+	}
+	clk.Advance(31 * time.Second) // the lease expired in Redis; this gateway still tracks it and renews it
+	l.renewAll(context.Background())
+	// A ghost lease would block this admission for another 30 s.
+	x := allow(t, l, tenantReq(tn, lim, 1))
+	if !x.Allowed {
+		t.Fatal("renewing an expired lease brought it back and blocked the tenant")
+	}
+	x.Release()
+	drain(l)
+	// The same through the script directly, for an id that was released.
+	if _, err := l.c.Run(context.Background(), renewScript, []string{keyConcurrency(tn)}, clk.Now().UnixMilli(), int64(30000), "no-such-lease"); err != nil {
+		t.Fatal(err)
+	}
+	if y := allow(t, l, tenantReq(tn, lim, 1)); !y.Allowed {
+		t.Fatal("renewing an unknown lease created a ghost")
+	}
+}

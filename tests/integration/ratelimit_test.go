@@ -572,3 +572,31 @@ func TestKeysAndPasswordsNeverReachTheLogs(t *testing.T) {
 		t.Fatalf("a rate limited request must log tenant and limit:\n%s", logs)
 	}
 }
+
+// A Redis that is up but echoes the password in its errors: through the whole gateway the password must reach
+// no response body, no log line and no metric.
+func TestPasswordEchoedByRedisReachesNoResponseLogOrMetric(t *testing.T) {
+	pw := redistest.Config(t).Password
+	fake := redistest.NewFakeServer(t, "-ERR WRONGPASS invalid username-password pair for "+pw)
+	c := newCluster(t, clusterOpts{n: 1, redisAddr: fake.Addr(), cfg: ratelimit.Config{OnFailure: ratelimit.FailClosed}})
+	g := c.gws[0]
+	key := c.keys.add(redistest.Unique("ten"), nil, 10, 0, 0)
+	code, h, body := g.chat(key, model)
+	if code != 503 || h.Get("Retry-After") == "" {
+		t.Fatalf("%d %v %s", code, h, body)
+	}
+	resp, err := httpc.Get(g.url + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	for what, text := range map[string]string{"response": body, "log": g.log.String(), "metrics": string(metrics)} {
+		if strings.Contains(text, pw) {
+			t.Fatalf("the Redis password reached the %s:\n%s", what, text)
+		}
+	}
+	if !strings.Contains(g.log.String(), "redis unavailable") {
+		t.Fatal("the outage should be logged")
+	}
+}
