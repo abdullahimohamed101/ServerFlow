@@ -48,6 +48,9 @@ func TestValidateRedisAndRateLimit(t *testing.T) {
 		"huge burst":             func(c *Config) { c.RateLimit.BurstSeconds = 3601 },
 		"short lease":            func(c *Config) { c.RateLimit.LeaseTTL = 5 * time.Second },
 		"huge lease":             func(c *Config) { c.RateLimit.LeaseTTL = 2 * time.Hour },
+		"zero pool size":         func(c *Config) { c.Redis.PoolSize = 0 },
+		"negative pool size":     func(c *Config) { c.Redis.PoolSize = -1 },
+		"huge pool size":         func(c *Config) { c.Redis.PoolSize = 1001 },
 		"lease below 3 timeouts": func(c *Config) { c.Redis.Timeout = 5 * time.Second; c.RateLimit.LeaseTTL = 12 * time.Second },
 		"zero local leases":      func(c *Config) { c.RateLimit.MaxLocalLeases = 0 },
 		"huge local leases":      func(c *Config) { c.RateLimit.MaxLocalLeases = 100_000_000 },
@@ -66,7 +69,7 @@ func TestValidateRedisAndRateLimit(t *testing.T) {
 		"required with nothing to enforce": func(c *Config) { c.RateLimit.Mode = RateLimitRequired },
 	}
 	usesRedis := map[string]bool{}
-	for _, n := range []string{"empty address", "no port", "bad scheme", "negative db", "huge db", "zero timeout", "huge timeout", "tiny backoff", "huge backoff", "bad failure mode", "empty failure mode", "zero metadata ttl", "huge metadata ttl", "lease below 3 timeouts"} {
+	for _, n := range []string{"empty address", "no port", "bad scheme", "negative db", "huge db", "zero timeout", "huge timeout", "tiny backoff", "huge backoff", "bad failure mode", "empty failure mode", "zero metadata ttl", "huge metadata ttl", "zero pool size", "negative pool size", "huge pool size", "lease below 3 timeouts"} {
 		usesRedis[n] = true
 	}
 	for name, mut := range cases {
