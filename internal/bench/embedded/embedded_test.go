@@ -135,6 +135,9 @@ func TestTheGatewaySeesEveryWorkerTheMomentStartReturns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if c.Settled() < 5*RegistryRefresh {
+			t.Fatalf("Start returned after settling only %v: the gateway needs several snapshots to know every worker", c.Settled())
+		}
 		for i := 0; i < 3; i++ {
 			resp, err := http.Post(c.GatewayURL+"/v1/chat/completions", "application/json",
 				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":2}`))

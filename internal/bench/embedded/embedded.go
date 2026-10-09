@@ -197,10 +197,15 @@ type Cluster struct {
 	Token   string
 	Workers []WorkerSpec
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	cp     *client.Client
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	cp      *client.Client
+	settled time.Duration
 }
+
+// Settled is how long Start waited, after the control plane listed every worker, for the gateway
+// to take several snapshots of it.
+func (c *Cluster) Settled() time.Duration { return c.settled }
 
 // ControlPlane returns a client for the cluster's control plane.
 func (c *Cluster) ControlPlane() *client.Client { return c.cp }
@@ -307,11 +312,13 @@ func (c *Cluster) waitReady(ctx context.Context, models []string) error {
 			// requests found a single worker, which was at capacity, and got 503 NO_CAPACITY
 			// (hundreds of them in the first 250ms of a run). Let the gateway take several
 			// snapshots first.
+			began := time.Now()
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("cluster not ready: %w", ctx.Err())
 			case <-time.After(settle):
 			}
+			c.settled = time.Since(began)
 			return nil
 		}
 		select {
