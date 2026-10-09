@@ -133,6 +133,10 @@ Implemented on branch `chore/lifecycle-observer-and-config-split`. Order followe
   constant block is listed first instead of last, because go doc orders blocks by file name and `auth.go` sorts before `gateway.go`. The code lines of the split files are, as a sorted
   multiset, identical to the old `config.go` apart from package/import lines.
 
+- Phase 8 rate-limit overhead benchmark (`SERVERFLOW_BENCH_RATELIMIT=1 go test -run TestBenchmarkRateLimits ./tests/integration`, one run each, local Redis in Colima), master vs branch:
+  no tenant p50/p95 331/918 us vs 327/888 us; tenant with no quotas 312/696 us vs 287/668 us; tenant with three quotas 815/1422 us vs 745/1128 us; Redis round trip added
+  504/726 us vs 458/460 us. The branch is not slower; the differences are within the spread of single runs.
+
 **Deviations and additions**
 
 - Commit grouping: the interface, the metrics observer and the call-site changes are one commit (they cannot build separately); tests and docs are separate commits.
