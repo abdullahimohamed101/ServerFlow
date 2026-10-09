@@ -194,7 +194,7 @@ func (w *Workload) Digest(n int) string {
 	h := sha256.New()
 	for i := range n {
 		r := w.Request(i)
-		fmt.Fprintf(h, "%d|%s|%s|%s|%d|%d|%t\n", r.Seq, r.Model, r.Tenant, r.Class, r.InputTokens, r.MaxTokens, r.Stream)
+		_, _ = fmt.Fprintf(h, "%d|%s|%s|%s|%d|%d|%t\n", r.Seq, r.Model, r.Tenant, r.Class, r.InputTokens, r.MaxTokens, r.Stream)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

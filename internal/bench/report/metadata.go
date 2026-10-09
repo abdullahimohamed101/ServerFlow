@@ -130,9 +130,10 @@ func Git(ctx context.Context, dir string) GitState {
 					st.Commit = s.Value
 				}
 			case "vcs.modified":
-				if s.Value == "true" {
+				switch s.Value {
+				case "true":
 					st.Tree = "dirty"
-				} else if s.Value == "false" {
+				case "false":
 					st.Tree = "clean"
 				}
 			}

@@ -208,9 +208,10 @@ func profile(m Metadata) string {
 // Write prints the comparison as a table. It states deltas and whether the runs are
 // comparable; it does not declare a winner.
 func (c Comparison) Write(w io.Writer) error {
-	fmt.Fprintf(w, "Comparing %s (A) with %s (B). Deltas are B relative to A; positive means B is higher, not better.\n\n", c.A, c.B)
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "METRIC\tA\tB\tDELTA\tCHANGE\tSPREAD")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Comparing %s (A) with %s (B). Deltas are B relative to A; positive means B is higher, not better.\n\n", c.A, c.B)
+	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "METRIC\tA\tB\tDELTA\tCHANGE\tSPREAD")
 	for _, d := range c.Deltas {
 		change := "n/a"
 		switch {
@@ -223,29 +224,31 @@ func (c Comparison) Write(w io.Writer) error {
 		if d.Abs != nil {
 			abs = fmt.Sprintf("%+.4g %s", *d.Abs, d.Unit)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.Label, num(d.A), num(d.B), abs, change, d.Spread)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.Label, num(d.A), num(d.B), abs, change, d.Spread)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	fmt.Fprintln(w)
-	if len(c.Differences) == 0 {
-		fmt.Fprintln(w, "Metadata: the runs differ in nothing that is recorded.")
-		return nil
-	}
-	if c.Unfair() {
-		fmt.Fprintln(w, "WARNING: these runs differ in more than the scheduler, so the deltas may not be a fair comparison:")
-	} else {
-		fmt.Fprintln(w, "Metadata that differs (expected for this comparison):")
-	}
-	for _, d := range c.Differences {
-		mark := "  "
-		if !d.Expected {
-			mark = "! "
+	b.WriteString("\n")
+	switch {
+	case len(c.Differences) == 0:
+		b.WriteString("Metadata: the runs differ in nothing that is recorded.\n")
+	default:
+		if c.Unfair() {
+			b.WriteString("WARNING: these runs differ in more than the scheduler, so the deltas may not be a fair comparison:\n")
+		} else {
+			b.WriteString("Metadata that differs (expected for this comparison):\n")
 		}
-		fmt.Fprintf(w, "%s%s: %s -> %s\n", mark, d.Field, d.A, d.B)
+		for _, d := range c.Differences {
+			mark := "  "
+			if !d.Expected {
+				mark = "! "
+			}
+			fmt.Fprintf(&b, "%s%s: %s -> %s\n", mark, d.Field, d.A, d.B)
+		}
 	}
-	return nil
+	_, err := io.WriteString(w, b.String())
+	return err
 }
 
 func num(p *float64) string {

@@ -40,7 +40,8 @@ func TestTheSameWorkloadAndSeedPlanTheSameRequests(t *testing.T) {
 		if w.Request(300) != a[300] || w.Request(3) != a[3] || w.Request(300) != a[300] {
 			t.Fatalf("%s: a request must be a pure function of its index", name)
 		}
-		if mk(t, name, 7).Digest(500) != mk(t, name, 7).Digest(500) {
+		d1, d2 := mk(t, name, 7).Digest(500), mk(t, name, 7).Digest(500)
+		if d1 != d2 {
 			t.Fatalf("%s: digest unstable", name)
 		}
 	}
@@ -260,7 +261,8 @@ func TestPromptSizeAndBody(t *testing.T) {
 	if Prompt(10, 1) == Prompt(10, 2) {
 		t.Fatal("prompts should differ between requests")
 	}
-	if Prompt(10, 5) != Prompt(10, 5) {
+	p1, p2 := Prompt(10, 5), Prompt(10, 5)
+	if p1 != p2 {
 		t.Fatal("prompt must be deterministic")
 	}
 	body, err := ChatBody(Request{Seq: 4, Model: "m", InputTokens: 5, MaxTokens: 77, Stream: true})

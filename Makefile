@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster bench bench-compare
 
 fmt:
 	gofmt -w .
@@ -59,3 +59,14 @@ dev-cluster:
 	done; \
 	SERVERFLOW_GATEWAY_WORKER_SOURCE=registry SERVERFLOW_SCHEDULER_STRATEGY=$${STRATEGY:-round-robin} bin/gateway & \
 	wait
+
+# Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
+#   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 100 --duration 60s --workload mixed --seed 1"
+#   make bench-compare A=run_001 B=run_002
+# Without BENCH_ARGS it runs the defaults: an embedded cluster, round-robin, 16 clients, 30s, mixed.
+bench:
+	go run ./cmd/benchmark run $(BENCH_ARGS)
+
+bench-compare:
+	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "usage: make bench-compare A=run_001 B=run_002"; exit 2; fi
+	go run ./cmd/benchmark compare $(A) $(B)

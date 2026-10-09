@@ -1,0 +1,254 @@
+// Package runner turns validated options into benchmark runs: it boots or finds the
+// target, drives the workload, samples the workers, and writes the results. Flag parsing
+// and every safety check live here so they can be tested; cmd/benchmark only wires them to
+// the command line.
+package runner
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"serverflow/internal/bench/driver"
+	"serverflow/internal/bench/embedded"
+	"serverflow/internal/bench/workload"
+	"serverflow/internal/config"
+	"serverflow/internal/scheduler"
+)
+
+// Defaults and caps. The caps stop a typo from flooding the machine or the target; flags
+// raise them deliberately.
+const (
+	DefaultMaxConcurrency = 2000
+	DefaultMaxRate        = 10000.0
+	DefaultConcurrency    = 16
+	MaxDuration           = 2 * time.Hour
+	MaxWarmup             = 10 * time.Minute
+	MaxRepeat             = 20
+	// MaxPlanDigest is how many requests the plan digest covers.
+	MaxPlanDigest = 1000
+)
+
+var (
+	modelPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+	schedulerPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+)
+
+// Options is everything a run needs. Zero values are not defaults: ParseRun fills those.
+type Options struct {
+	// TargetURL is a running gateway; empty means boot an embedded cluster.
+	TargetURL string
+	// ControlPlaneURL and ControlPlaneToken let the sampler read a remote target's workers.
+	ControlPlaneURL   string
+	ControlPlaneToken string
+	AllowRemote       bool
+
+	Scheduler string
+	// Workers is the embedded worker count; for a remote target it is the count the user
+	// declares for the metadata (0 for unknown).
+	Workers        int
+	Profile        string
+	MockTPS        float64
+	MockTTFT       time.Duration
+	MockConcurrent int
+	MockQueue      int
+	GPUType        string
+
+	Workload    string
+	Seed        int64
+	Model       string
+	Secondary   string
+	StreamRatio float64
+
+	Concurrency int
+	Rate        float64
+	MaxInFlight int
+	Duration    time.Duration
+	Warmup      time.Duration
+	Repeat      int
+
+	RequestTimeout time.Duration
+	DrainTimeout   time.Duration
+	SampleInterval time.Duration
+
+	MaxConcurrency int
+	MaxRate        float64
+	MaxRequests    int
+
+	OutDir       string
+	SaveRequests bool
+}
+
+// Embedded reports whether the run boots its own cluster.
+func (o Options) Embedded() bool { return o.TargetURL == "" }
+
+// Mode is the load mode the options select.
+func (o Options) Mode() driver.Mode {
+	if o.Rate > 0 {
+		return driver.Open
+	}
+	return driver.Closed
+}
+
+// EmbeddedConfig is the embedded cluster the options describe, serving models.
+func (o Options) EmbeddedConfig(models []string) embedded.Config {
+	return embedded.Config{Scheduler: o.Scheduler, Workers: o.Workers, Profile: o.Profile, Models: models,
+		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue}
+}
+
+// Models returns the workload's model pair.
+func (o Options) Models() workload.Models {
+	return workload.Models{Primary: o.Model, Secondary: o.Secondary}
+}
+
+// Validate refuses unsafe or inconsistent options with an error that says what to change.
+func (o Options) Validate() error {
+	if err := o.validateTarget(); err != nil {
+		return err
+	}
+	if err := o.validateLoad(); err != nil {
+		return err
+	}
+	if o.Repeat < 1 || o.Repeat > MaxRepeat {
+		return fmt.Errorf("--repeat must be between 1 and %d, got %d", MaxRepeat, o.Repeat)
+	}
+	if o.SampleInterval < 50*time.Millisecond || o.SampleInterval > 10*time.Second {
+		return fmt.Errorf("--sample-interval must be between 50ms and 10s, got %v", o.SampleInterval)
+	}
+	if o.RequestTimeout <= 0 || o.DrainTimeout <= 0 {
+		return errors.New("--request-timeout and --drain-timeout must be positive")
+	}
+	if o.OutDir == "" {
+		return errors.New("--out must not be empty")
+	}
+	if o.MaxRequests < 1 {
+		return fmt.Errorf("--max-requests must be at least 1, got %d", o.MaxRequests)
+	}
+	return nil
+}
+
+func (o Options) validateTarget() error {
+	if !schedulerPattern.MatchString(o.Scheduler) {
+		return fmt.Errorf("--scheduler %q is not a valid name", o.Scheduler)
+	}
+	if o.Embedded() {
+		if o.ControlPlaneURL != "" {
+			return errors.New("--control-plane applies to --target only; an embedded cluster has its own")
+		}
+		if !contains(scheduler.Strategies(), o.Scheduler) {
+			return fmt.Errorf("--scheduler %q is not a known strategy (choose one of: %s)", o.Scheduler, strings.Join(scheduler.Strategies(), ", "))
+		}
+		if o.Workers < 1 || o.Workers > embedded.MaxWorkers {
+			return fmt.Errorf("--workers must be between 1 and %d, got %d", embedded.MaxWorkers, o.Workers)
+		}
+		if !(o.MockTPS > 0) || o.MockTTFT <= 0 || o.MockConcurrent < 1 || o.MockQueue < 1 {
+			return errors.New("--mock-tps, --mock-ttft, --mock-concurrency and --mock-queue must all be positive")
+		}
+		if o.Profile != embedded.Identical && o.Profile != embedded.Heterogeneous {
+			return fmt.Errorf("--worker-profile %q is not valid (choose %s or %s)", o.Profile, embedded.Identical, embedded.Heterogeneous)
+		}
+	} else {
+		if err := o.checkHost("--target", o.TargetURL); err != nil {
+			return err
+		}
+		if o.ControlPlaneURL != "" {
+			if err := o.checkHost("--control-plane", o.ControlPlaneURL); err != nil {
+				return err
+			}
+		}
+		if o.Workers < 0 || o.Workers > 100000 {
+			return fmt.Errorf("--workers must be 0 (unknown) or a positive count, got %d", o.Workers)
+		}
+	}
+	return nil
+}
+
+// checkHost requires an http(s) URL without credentials, on loopback unless remote targets
+// were explicitly allowed.
+func (o Options) checkHost(flag, raw string) error {
+	u, err := url.Parse(raw)
+	// The URL may carry credentials, so error messages never echo it.
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("%s must be an http:// or https:// URL with a host", flag)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s must not contain credentials", flag)
+	}
+	if !config.IsLoopbackHost(u.Hostname()) && !o.AllowRemote {
+		return fmt.Errorf("%s host %q is not loopback: load tests can hurt a shared or production system; "+
+			"pass --allow-remote only if you own the target and it is meant to take this load", flag, u.Hostname())
+	}
+	return nil
+}
+
+func (o Options) validateLoad() error {
+	if o.MaxConcurrency < 1 || o.MaxRate <= 0 || math.IsNaN(o.MaxRate) {
+		return errors.New("--max-concurrency and --max-rate must be positive")
+	}
+	if !modelPattern.MatchString(o.Model) {
+		return fmt.Errorf("--model %q is not a valid model name", o.Model)
+	}
+	if o.Workload == workload.HotModel && !modelPattern.MatchString(o.Secondary) {
+		return fmt.Errorf("--secondary-model %q is not a valid model name", o.Secondary)
+	}
+	wl, err := workload.New(workload.Spec{Name: o.Workload, Seed: o.Seed, Models: o.Models(), StreamRatio: o.StreamRatio})
+	if err != nil {
+		return err
+	}
+	if o.Embedded() {
+		if _, err := embedded.Plan(o.EmbeddedConfig(wl.ModelNames())); err != nil {
+			return fmt.Errorf("embedded cluster: %w", err)
+		}
+	}
+	if o.Duration <= 0 || o.Duration > MaxDuration {
+		return fmt.Errorf("--duration must be between 1ns and %v, got %v", MaxDuration, o.Duration)
+	}
+	if o.Warmup < 0 || o.Warmup > MaxWarmup {
+		return fmt.Errorf("--warmup must be between 0 and %v, got %v", MaxWarmup, o.Warmup)
+	}
+	if o.Workload == workload.Burst && o.Rate == 0 {
+		return errors.New("the burst workload changes the arrival rate, so it needs open-loop mode: use --rate instead of --concurrency")
+	}
+	if o.Concurrency > 0 && o.Rate > 0 {
+		return errors.New("--concurrency (closed loop) and --rate (open loop) are mutually exclusive: choose one")
+	}
+	if o.Rate == 0 && o.Concurrency == 0 {
+		return errors.New("choose a load: --concurrency N (closed loop) or --rate R (open loop)")
+	}
+	if o.Concurrency < 0 || o.Rate < 0 || math.IsNaN(o.Rate) || math.IsInf(o.Rate, 0) {
+		return errors.New("--concurrency and --rate must not be negative")
+	}
+	if o.Concurrency > o.MaxConcurrency {
+		return fmt.Errorf("--concurrency %d is above the cap of %d; raise it with --max-concurrency if you mean it", o.Concurrency, o.MaxConcurrency)
+	}
+	if o.Rate == 0 {
+		return nil
+	}
+	peak := o.Rate
+	if o.Workload == workload.Burst {
+		peak *= workload.BurstFactor
+	}
+	if peak > o.MaxRate {
+		return fmt.Errorf("the peak rate %g/s is above the cap of %g/s (the burst workload peaks at %dx --rate); raise it with --max-rate if you mean it", peak, o.MaxRate, workload.BurstFactor)
+	}
+	if o.MaxInFlight < 1 || o.MaxInFlight > o.MaxConcurrency {
+		return fmt.Errorf("--max-inflight must be between 1 and %d, got %d", o.MaxConcurrency, o.MaxInFlight)
+	}
+	if n := workload.TotalArrivals(workload.Segments(o.Workload, o.Rate, o.Warmup, o.Duration)); n > float64(o.MaxRequests) {
+		return fmt.Errorf("the schedule offers %.0f requests, above --max-requests %d (it bounds memory); shorten the run or raise the cap", n, o.MaxRequests)
+	}
+	return nil
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}

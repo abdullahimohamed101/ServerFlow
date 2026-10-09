@@ -32,17 +32,6 @@ func okJSON(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello world"}}],"usage":{"prompt_tokens":11,"completion_tokens":22}}`))
 }
 
-func okStream(w http.ResponseWriter, chunks int) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	fl := w.(http.Flusher)
-	for i := 0; i < chunks; i++ {
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"t%d \"}}]}\n\n", i)
-		fl.Flush()
-	}
-	fmt.Fprint(w, "data: [DONE]\n\n")
-	fl.Flush()
-}
-
 func serve(t *testing.T, h http.HandlerFunc) string {
 	t.Helper()
 	ts := httptest.NewServer(h)
@@ -176,13 +165,13 @@ func TestStreamTimeToFirstContentChunk(t *testing.T) {
 		fl := w.(http.Flusher)
 		w.WriteHeader(200)
 		// An initial chunk with the role and no content, as vLLM and the mock worker send, must not count.
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n")
 		fl.Flush()
 		time.Sleep(firstContentAfter)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a \"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a \"}}]}\n\n")
 		fl.Flush()
 		time.Sleep(50 * time.Millisecond)
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"b \"}}]}\n\ndata: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"b \"}}]}\n\ndata: [DONE]\n\n")
 	})
 	cfg := closedCfg(url, wl(t, workload.UniformShort, 1), 1, 0, 10*time.Millisecond)
 	out, err := Run(context.Background(), cfg)
@@ -197,7 +186,7 @@ func TestStreamTimeToFirstContentChunk(t *testing.T) {
 	if ttft < firstContentAfter {
 		t.Fatalf("TTFT %v is earlier than the first content chunk (%v): the role chunk was counted", ttft, firstContentAfter)
 	}
-	if !(r.Started <= r.FirstByte && r.FirstByte < r.Done) || r.Done-r.FirstByte < 40*time.Millisecond {
+	if r.Started > r.FirstByte || r.FirstByte >= r.Done || r.Done-r.FirstByte < 40*time.Millisecond {
 		t.Fatalf("first byte must precede the end of the stream: %+v", r)
 	}
 	if r.OutputTokens != 2 || r.UsageReported {
@@ -215,10 +204,10 @@ func TestResponseFailuresAreClassified(t *testing.T) {
 	}{
 		"503": {0, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }, 503, ""},
 		"stream without DONE": {1, func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
 		}, 200, ErrStreamIncomplete},
 		"stream error event": {1, func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"error\":{\"message\":\"x\"}}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"error\":{\"message\":\"x\"}}\n\n")
 		}, 200, ErrStreamError},
 		"not json":           {0, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>")) }, 200, ErrBadBody},
 		"dropped connection": {0, func(w http.ResponseWriter, r *http.Request) { panic(http.ErrAbortHandler) }, 0, ErrTransport},
