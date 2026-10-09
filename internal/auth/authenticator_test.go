@@ -22,6 +22,10 @@ type fakeStore struct {
 	fail    atomic.Bool
 	gate    chan struct{} // when non-nil, LookupKey waits for it to close
 	touched []string
+	// errFor, when set, may return an error for a prefix before the normal lookup.
+	errFor func(prefix string) error
+	// blockUnknown, when non-nil, makes lookups of prefixes with no record wait for it to close.
+	blockUnknown chan struct{}
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{recs: map[string]KeyRecord{}} }
@@ -37,6 +41,22 @@ func (f *fakeStore) LookupKey(ctx context.Context, prefix string) (KeyRecord, er
 	}
 	if f.fail.Load() {
 		return KeyRecord{}, errors.New("connection refused")
+	}
+	f.mu.Lock()
+	errFor, blockUnknown := f.errFor, f.blockUnknown
+	_, known := f.recs[prefix]
+	f.mu.Unlock()
+	if errFor != nil {
+		if err := errFor(prefix); err != nil {
+			return KeyRecord{}, err
+		}
+	}
+	if !known && blockUnknown != nil {
+		select {
+		case <-blockUnknown:
+		case <-ctx.Done():
+			return KeyRecord{}, ctx.Err()
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -328,9 +348,22 @@ func TestMalformedKeysNeverTouchStoreOrCache(t *testing.T) {
 	}
 }
 
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestSingleflight(t *testing.T) {
 	a, st, _, _ := setup(t, Config{})
 	st.gate = make(chan struct{})
+	var waiting atomic.Int64
+	a.onWait = func() { waiting.Add(1) }
 	key, _ := st.add(1)
 	const n = 100
 	var wg sync.WaitGroup
@@ -343,12 +376,8 @@ func TestSingleflight(t *testing.T) {
 			errs <- err
 		}()
 	}
-	// Let everyone pile up behind the single lookup.
-	deadline := time.Now().Add(5 * time.Second)
-	for st.lookups.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(50 * time.Millisecond)
+	// Everyone but the leader must be parked behind the single lookup before it is released.
+	waitUntil(t, "all callers to join the lookup", func() bool { return waiting.Load() == n-1 && st.lookups.Load() == 1 })
 	close(st.gate)
 	wg.Wait()
 	close(errs)
@@ -362,25 +391,180 @@ func TestSingleflight(t *testing.T) {
 	}
 }
 
+// A caller that missed the cache just before another caller's lookup finished must find that
+// result, not start a second lookup.
+func TestFetchRechecksTheCacheBeforeStartingALookup(t *testing.T) {
+	a, st, _, _ := setup(t, Config{})
+	key, prefix := st.add(1)
+	if _, err := a.Authenticate(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	for _, refresh := range []bool{false, true} {
+		rec, err := a.fetch(context.Background(), prefix, refresh)
+		if err != nil || rec.KeyID != "key_1" {
+			t.Fatalf("refresh=%v: %v", refresh, err)
+		}
+	}
+	unknown, _, _ := GenerateKey()
+	up, _, _ := ParseKey(unknown)
+	_, _ = a.Authenticate(context.Background(), unknown)
+	if _, err := a.fetch(context.Background(), up, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("negative entry not re-checked: %v", err)
+	}
+	if n := st.lookups.Load(); n != 2 {
+		t.Fatalf("%d lookups, want 2 (one per distinct key)", n)
+	}
+}
+
 func TestLeaderCancelDoesNotFailOthers(t *testing.T) {
 	a, st, _, _ := setup(t, Config{})
 	st.gate = make(chan struct{})
+	joined := make(chan struct{}, 1)
+	a.onWait = func() { joined <- struct{}{} }
 	key, _ := st.add(1)
 	ctx, cancel := context.WithCancel(context.Background())
 	leader := make(chan error, 1)
 	go func() { _, err := a.Authenticate(ctx, key); leader <- err }()
-	for st.lookups.Load() < 1 {
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, "the leader's lookup", func() bool { return st.lookups.Load() == 1 })
 	other := make(chan error, 1)
 	go func() { _, err := a.Authenticate(context.Background(), key); other <- err }()
-	time.Sleep(20 * time.Millisecond)
+	<-joined
 	cancel() // the first client gives up while the lookup is in flight
 	close(st.gate)
 	if err := <-other; err != nil {
 		t.Fatalf("another client's request failed because the first gave up: %v", err)
 	}
 	<-leader
+}
+
+// An unauthenticated flood of distinct random keys must neither starve the refresh of cached
+// keys (so a revocation is still noticed within cache_ttl) nor reach the database beyond the cap.
+func TestFloodCannotHideARevocationAndIsShedWithoutTouchingTheStore(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{MaxLookups: 8, CacheTTL: 30 * time.Second}) // 6 slots for new keys, 2 reserved
+	cached, cp := st.add(1)
+	if _, err := a.Authenticate(context.Background(), cached); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	st.blockUnknown = make(chan struct{})
+	st.mu.Unlock()
+	base := st.lookups.Load() // 1
+
+	const flood = 40
+	var wg sync.WaitGroup
+	results := make(chan error, flood)
+	for i := 0; i < flood; i++ {
+		k, _, _ := GenerateKey()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.Authenticate(context.Background(), k)
+			results <- err
+		}()
+	}
+	// Six lookups occupy the new-key slots; the other 34 are shed at once.
+	waitUntil(t, "the flood to fill the new-key slots and the rest to be shed", func() bool { return st.lookups.Load() == base+6 && len(results) == flood-6 })
+	if n := st.lookups.Load(); n != base+6 {
+		t.Fatalf("the store saw %d lookups from the flood, cap is 6", n-base)
+	}
+	for i := 0; i < flood-6; i++ {
+		if err := <-results; !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("shed request: %v", err)
+		}
+	}
+
+	// A valid key the cache has never seen is shed while the new-key slots are taken (documented).
+	fresh, _ := st.add(2)
+	if _, err := a.Authenticate(context.Background(), fresh); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("uncached key while the flood holds every new-key slot: %v", err)
+	}
+	if st.lookups.Load() != base+6 {
+		t.Fatal("a shed request reached the store")
+	}
+
+	// The revocation of the cached key is still seen at cache_ttl, through the reserved slots.
+	st.update(cp, func(r *KeyRecord) { r.KeyStatus = KeyRevoked })
+	clk.advance(30 * time.Second)
+	if _, err := a.Authenticate(context.Background(), cached); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("revocation hidden by the flood: %v", err)
+	}
+
+	// Shedding did not arm the global backoff: once the flood drains, the valid key works at once.
+	close(st.blockUnknown)
+	wg.Wait()
+	if _, err := a.Authenticate(context.Background(), fresh); err != nil {
+		t.Fatalf("after the flood drained: %v", err)
+	}
+}
+
+func TestBusyStoreIsNotAnOutage(t *testing.T) {
+	a, st, clk, _ := setup(t, Config{CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
+	cached, _ := st.add(1)
+	other, _ := st.add(2)
+	if _, err := a.Authenticate(context.Background(), cached); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	st.errFor = func(string) error { return fmt.Errorf("%w: no connection available", ErrBusy) }
+	st.mu.Unlock()
+	clk.advance(time.Minute)
+	// A cached key is still served within the grace (documented), an uncached one is unavailable...
+	if _, err := a.Authenticate(context.Background(), cached); err != nil {
+		t.Fatalf("stale key under a busy store: %v", err)
+	}
+	before := st.lookups.Load()
+	if _, err := a.Authenticate(context.Background(), other); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("uncached key under a busy store: %v", err)
+	}
+	// ...but a busy store arms no global backoff: the next request still asks the store.
+	st.mu.Lock()
+	st.errFor = nil
+	st.mu.Unlock()
+	if _, err := a.Authenticate(context.Background(), other); err != nil {
+		t.Fatalf("a busy store must not start a backoff: %v", err)
+	}
+	if st.lookups.Load() != before+2 {
+		t.Fatalf("lookups %d, want %d", st.lookups.Load(), before+2)
+	}
+}
+
+func TestUnreadableRecordIsPerKeyNotAnOutage(t *testing.T) {
+	a, st, clk, logs := setup(t, Config{CacheTTL: 30 * time.Second, StaleGrace: 5 * time.Minute})
+	good, gp := st.add(1)
+	other, _ := st.add(2)
+	if _, err := a.Authenticate(context.Background(), good); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	st.errFor = func(prefix string) error {
+		if prefix == gp {
+			return fmt.Errorf("%w: scan failed", ErrBadRecord)
+		}
+		return nil
+	}
+	st.mu.Unlock()
+	clk.advance(time.Minute) // past the TTL, inside the grace
+	// The stale copy of the broken key is NOT served in place of the unreadable row.
+	if _, err := a.Authenticate(context.Background(), good); !errors.Is(err, ErrBadRecord) {
+		t.Fatalf("unreadable record: %v", err)
+	}
+	// Other keys are unaffected and no backoff was armed.
+	before := st.lookups.Load()
+	if _, err := a.Authenticate(context.Background(), other); err != nil {
+		t.Fatalf("another key during one key's fault: %v", err)
+	}
+	if st.lookups.Load() != before+1 {
+		t.Fatal("the other key was not looked up normally")
+	}
+	if strings.Contains(logs.String(), "key store unavailable") {
+		t.Fatalf("a data fault was reported as an outage:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "could not read") {
+		t.Fatalf("the fault was not logged:\n%s", logs.String())
+	}
+	if _, neg := a.CacheSizes(); neg != 0 {
+		t.Fatal("an unreadable record must not be cached as unknown")
+	}
 }
 
 func TestOutageStaleGraceAndRecovery(t *testing.T) {

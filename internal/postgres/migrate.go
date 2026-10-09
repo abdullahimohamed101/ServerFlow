@@ -7,12 +7,42 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"serverflow/migrations"
 )
 
 // migrateLockKey is the advisory lock that serialises migrators ("SFLW" + "MIGR").
 const migrateLockKey int64 = 0x53464c574d494752
+
+// migrateLockWait is how long a migrator waits for another one to finish before giving up. A var
+// so tests can shorten it.
+var migrateLockWait = 60 * time.Second
+
+// takeMigrateLock takes the session advisory lock, polling so that a migrator that hangs while
+// holding it cannot wedge every other one forever. Session-level advisory locks need a connection
+// that stays the same between statements, so a transaction-pooling proxy (PgBouncer) cannot be
+// placed between the migrator and the database.
+func takeMigrateLock(ctx context.Context, conn *pgxpool.Conn) error {
+	deadline := time.Now().Add(migrateLockWait)
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrateLockKey).Scan(&got); err != nil {
+			return fmt.Errorf("migrate: take the migration lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("migrate: another migration has held the lock for over %v; wait for it to finish or find and stop it (SELECT * FROM pg_locks WHERE locktype = 'advisory')", migrateLockWait)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("migrate: waiting for the migration lock: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
 
 // MigrationStatus describes one embedded migration against the database.
 type MigrationStatus struct {
@@ -42,8 +72,8 @@ func (s *Store) migrateUp(ctx context.Context, all []migrations.Migration) ([]mi
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
-		return nil, fmt.Errorf("migrate: take the migration lock: %w", err)
+	if err := takeMigrateLock(ctx, conn); err != nil {
+		return nil, err
 	}
 	defer func() {
 		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

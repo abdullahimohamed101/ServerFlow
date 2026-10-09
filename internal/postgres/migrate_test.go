@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"serverflow/migrations"
 )
@@ -137,6 +138,34 @@ func TestConcurrentMigrateUpIsSerialised(t *testing.T) {
 	}
 }
 
+func TestMigrateGivesUpWhenAnotherMigratorHoldsTheLock(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	holder, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
+		t.Fatal(err)
+	}
+	old := migrateLockWait
+	migrateLockWait = 300 * time.Millisecond
+	defer func() { migrateLockWait = old }()
+	start := time.Now()
+	_, err = s.MigrateUp(ctx)
+	if err == nil || !strings.Contains(err.Error(), "another migration has held the lock") || time.Since(start) > 5*time.Second {
+		t.Fatalf("a held lock must produce a clear timeout, got %v after %v", err, time.Since(start))
+	}
+	// Released, the migrator proceeds.
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock($1)`, migrateLockKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MigrateUp(ctx); err != nil {
+		t.Fatalf("after the lock was released: %v", err)
+	}
+}
+
 func TestSchemaConstraints(t *testing.T) {
 	s := newMigratedStore(t)
 	ctx := context.Background()
@@ -147,22 +176,23 @@ func TestSchemaConstraints(t *testing.T) {
 	}
 	hash := make([]byte, 32)
 	bad := map[string]error{
-		"tenant status":    exec(`INSERT INTO tenants (id, name, status) VALUES ('ten_2', 'b', 'deleted')`),
-		"negative rpm":     exec(`INSERT INTO tenants (id, name, requests_per_minute) VALUES ('ten_3', 'c', -1)`),
-		"negative tpm":     exec(`INSERT INTO tenants (id, name, tokens_per_minute) VALUES ('ten_4', 'd', -1)`),
-		"negative conc":    exec(`INSERT INTO tenants (id, name, max_concurrent_requests) VALUES ('ten_5', 'e', -1)`),
-		"priority range":   exec(`INSERT INTO tenants (id, name, priority) VALUES ('ten_6', 'f', 3)`),
-		"duplicate name":   exec(`INSERT INTO tenants (id, name) VALUES ('ten_7', 'acme')`),
-		"name format":      exec(`INSERT INTO tenants (id, name) VALUES ('ten_8', 'a b')`),
-		"name looks an id": exec(`INSERT INTO tenants (id, name) VALUES ('ten_9', 'ten_1')`),
-		"key status":       exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash, status) VALUES ('key_1', 'ten_1', 'abcdef01', $1, 'weird')`, hash),
-		"key prefix":       exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_2', 'ten_1', 'ABCDEF01', $1)`, hash),
-		"key hash length":  exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_3', 'ten_1', 'abcdef02', $1)`, hash[:5]),
-		"key orphan":       exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_4', 'ten_nope', 'abcdef03', $1)`, hash),
-		"revoked w/o time": exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash, status) VALUES ('key_5', 'ten_1', 'abcdef04', $1, 'revoked')`, hash),
-		"model status":     exec(`INSERT INTO models (name, status) VALUES ('m', 'x')`),
-		"model max tokens": exec(`INSERT INTO models (name, max_tokens_limit) VALUES ('m2', 0)`),
-		"bench workers":    exec(`INSERT INTO benchmark_runs (id, model, worker_count, schema_version, result) VALUES ('b', 'm', -1, 1, '{}')`),
+		"tenant status":                 exec(`INSERT INTO tenants (id, name, status) VALUES ('ten_2', 'b', 'deleted')`),
+		"negative rpm":                  exec(`INSERT INTO tenants (id, name, requests_per_minute) VALUES ('ten_3', 'c', -1)`),
+		"negative tpm":                  exec(`INSERT INTO tenants (id, name, tokens_per_minute) VALUES ('ten_4', 'd', -1)`),
+		"negative conc":                 exec(`INSERT INTO tenants (id, name, max_concurrent_requests) VALUES ('ten_5', 'e', -1)`),
+		"priority range":                exec(`INSERT INTO tenants (id, name, priority) VALUES ('ten_6', 'f', 3)`),
+		"duplicate name":                exec(`INSERT INTO tenants (id, name) VALUES ('ten_7', 'acme')`),
+		"name format":                   exec(`INSERT INTO tenants (id, name) VALUES ('ten_8', 'a b')`),
+		"name looks an id":              exec(`INSERT INTO tenants (id, name) VALUES ('ten_9', 'ten_1')`),
+		"key status":                    exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash, status) VALUES ('key_1', 'ten_1', 'abcdef01', $1, 'weird')`, hash),
+		"key prefix":                    exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_2', 'ten_1', 'ABCDEF01', $1)`, hash),
+		"key hash length":               exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_3', 'ten_1', 'abcdef02', $1)`, hash[:5]),
+		"key orphan":                    exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash) VALUES ('key_4', 'ten_nope', 'abcdef03', $1)`, hash),
+		"revoked w/o time":              exec(`INSERT INTO api_keys (id, tenant_id, prefix, secret_hash, status) VALUES ('key_5', 'ten_1', 'abcdef04', $1, 'revoked')`, hash),
+		"model status":                  exec(`INSERT INTO models (name, status) VALUES ('m', 'x')`),
+		"model max tokens":              exec(`INSERT INTO models (name, max_tokens_limit) VALUES ('m2', 0)`),
+		"null model name in allow-list": exec(`INSERT INTO tenants (id, name, allowed_models) VALUES ('ten_n', 'nn', ARRAY['a', NULL])`),
+		"bench workers":                 exec(`INSERT INTO benchmark_runs (id, model, worker_count, schema_version, result) VALUES ('b', 'm', -1, 1, '{}')`),
 	}
 	for name, err := range bad {
 		if err == nil {

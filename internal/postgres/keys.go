@@ -91,21 +91,43 @@ func (s *Store) RevokeKey(ctx context.Context, ref string) (k APIKey, wasActive 
 }
 
 // LookupKey implements auth.KeyStore. An unknown or malformed prefix is auth.ErrNotFound without
-// touching the database.
+// touching the database. Failures are classified for the authenticator:
+//   - auth.ErrBusy: no connection became free before the deadline (pool saturation);
+//   - auth.ErrBadRecord: the key's row was found but could not be read (a per-key data fault);
+//   - anything else: the database could not be reached or failed (an outage).
 func (s *Store) LookupKey(ctx context.Context, prefix string) (auth.KeyRecord, error) {
 	if !auth.ValidPrefix(prefix) {
 		return auth.KeyRecord{}, auth.ErrNotFound
 	}
-	var r auth.KeyRecord
-	err := s.pool.QueryRow(ctx, `SELECT k.id, k.tenant_id, k.prefix, k.secret_hash, k.status, k.expires_at,
-			t.status, t.allowed_models, t.requests_per_minute, t.tokens_per_minute, t.max_concurrent_requests, t.priority
-		FROM api_keys k JOIN tenants t ON t.id = k.tenant_id WHERE k.prefix = $1`, prefix).
-		Scan(&r.KeyID, &r.TenantID, &r.Prefix, &r.SecretHash, &r.KeyStatus, &r.ExpiresAt,
-			&r.Policy.Status, &r.Policy.AllowedModels, &r.Policy.RequestsPerMinute, &r.Policy.TokensPerMinute, &r.Policy.MaxConcurrent, &r.Policy.Priority)
+	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		if mapErr(err) == ErrNotFound {
-			return auth.KeyRecord{}, auth.ErrNotFound
+		if ctx.Err() != nil {
+			return auth.KeyRecord{}, fmt.Errorf("%w: no connection became available", auth.ErrBusy)
 		}
+		return auth.KeyRecord{}, err
+	}
+	defer conn.Release()
+	rows, err := conn.Query(ctx, `SELECT k.id, k.tenant_id, k.prefix, k.secret_hash, k.status, k.expires_at,
+			t.status, t.allowed_models, t.requests_per_minute, t.tokens_per_minute, t.max_concurrent_requests, t.priority
+		FROM api_keys k JOIN tenants t ON t.id = k.tenant_id WHERE k.prefix = $1`, prefix)
+	if err != nil {
+		return auth.KeyRecord{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return auth.KeyRecord{}, err // the connection failed mid-read: an outage
+		}
+		return auth.KeyRecord{}, auth.ErrNotFound
+	}
+	var r auth.KeyRecord
+	if err := rows.Scan(&r.KeyID, &r.TenantID, &r.Prefix, &r.SecretHash, &r.KeyStatus, &r.ExpiresAt,
+		&r.Policy.Status, &r.Policy.AllowedModels, &r.Policy.RequestsPerMinute, &r.Policy.TokensPerMinute, &r.Policy.MaxConcurrent, &r.Policy.Priority); err != nil {
+		// The row arrived but would not decode (for example a NULL element in allowed_models).
+		return auth.KeyRecord{}, fmt.Errorf("%w: %v", auth.ErrBadRecord, err)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return auth.KeyRecord{}, err
 	}
 	return r, nil

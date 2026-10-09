@@ -23,6 +23,12 @@ var (
 	ErrRevoked     = errors.New("auth: API key revoked")
 	ErrSuspended   = errors.New("auth: tenant suspended")
 	ErrUnavailable = errors.New("auth: key store unavailable")
+	// ErrBadRecord is returned by Authenticate (and by a KeyStore) when one key's row exists but could
+	// not be read. It concerns that key only; it is not an outage.
+	ErrBadRecord = errors.New("auth: key record could not be read")
+	// ErrBusy is returned by a KeyStore that could not take the query now (for instance no free
+	// connection before the deadline). It is not evidence that the database is down.
+	ErrBusy = errors.New("auth: key store busy")
 	// ErrNotFound is what a KeyStore returns for a prefix that has no key.
 	ErrNotFound = errors.New("auth: key not found")
 )

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"serverflow/internal/auth"
+	"serverflow/internal/postgres/postgrestest"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -364,4 +365,54 @@ func TestInjectionStringsAreInert(t *testing.T) {
 	if m.Notes != `'; DROP TABLE models; --` {
 		t.Fatalf("notes mangled: %q", m.Notes)
 	}
+}
+
+func TestLookupKeyClassifiesFailures(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("unreadable row is a per-key data fault", func(t *testing.T) {
+		s := newMigratedStore(t)
+		if _, err := s.pool.Exec(ctx, `ALTER TABLE tenants DROP CONSTRAINT tenants_allowed_models_no_null_elements`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.pool.Exec(ctx, `INSERT INTO tenants (id, name, allowed_models) VALUES ('ten_bad', 'bad', ARRAY['a', NULL])`); err != nil {
+			t.Fatal(err)
+		}
+		_, prefix, hash := auth.GenerateKey()
+		if _, err := s.CreateKey(ctx, "bad", "", nil, prefix, hash); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.LookupKey(ctx, prefix)
+		if !errors.Is(err, auth.ErrBadRecord) || errors.Is(err, auth.ErrNotFound) {
+			t.Fatalf("a row that will not decode must be ErrBadRecord, got %v", err)
+		}
+	})
+
+	t.Run("a saturated pool is busy, not an outage", func(t *testing.T) {
+		dsn := postgrestest.NewDSN(t)
+		s, err := Open(ctx, Config{DSN: dsn, MaxConns: 1, ConnectTimeout: 5 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		held, err := s.pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Release()
+		c, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		if _, err := s.LookupKey(c, "abcdef01"); !errors.Is(err, auth.ErrBusy) {
+			t.Fatalf("pool saturation must be ErrBusy, got %v", err)
+		}
+	})
+
+	t.Run("a closed pool is an outage", func(t *testing.T) {
+		s := newMigratedStore(t)
+		s.pool.Close()
+		_, err := s.LookupKey(ctx, "abcdef01")
+		if err == nil || errors.Is(err, auth.ErrBusy) || errors.Is(err, auth.ErrBadRecord) || errors.Is(err, auth.ErrNotFound) {
+			t.Fatalf("an unusable pool must be a plain failure, got %v", err)
+		}
+	})
 }

@@ -24,6 +24,10 @@ type Config struct {
 	StaleGrace time.Duration
 	// LookupTimeout bounds one store lookup.
 	LookupTimeout time.Duration
+	// MaxLookups caps concurrent store lookups. Keep it below the connection pool size so lookups
+	// can never take every connection. A quarter (at least one) is reserved for refreshing keys
+	// that are already cached; the rest also serves keys not seen before. Default 8.
+	MaxLookups int
 	// Now is the clock; nil means time.Now. Tests inject a fake.
 	Now func() time.Time
 	// Logger receives outage and recovery messages (never keys); nil discards them.
@@ -32,7 +36,7 @@ type Config struct {
 
 // DefaultConfig returns the documented defaults.
 func DefaultConfig() Config {
-	return Config{CacheTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, CacheSize: 10000, StaleGrace: 5 * time.Minute, LookupTimeout: 3 * time.Second}
+	return Config{CacheTTL: 30 * time.Second, NegativeTTL: 5 * time.Second, CacheSize: 10000, StaleGrace: 5 * time.Minute, LookupTimeout: 3 * time.Second, MaxLookups: 8}
 }
 
 // touchEvery is the least time between last_used_at writes for one key.
@@ -63,6 +67,12 @@ type Authenticator struct {
 	outage    bool      // guarded by mu: true between the first failed lookup and the next success
 	downUntil time.Time // guarded by mu: after a failed lookup, the store is not asked again until then
 	touches   chan touchReq
+
+	reserve         int       // lookup slots kept for refreshing cached keys
+	inflightRefresh int       // guarded by mu
+	inflightNew     int       // guarded by mu
+	lastWarn        time.Time // guarded by mu
+	onWait          func()    // test hook: called when a caller joins an in-flight lookup
 }
 
 type posEntry struct {
@@ -100,6 +110,9 @@ func New(store KeyStore, cfg Config) *Authenticator {
 	if cfg.LookupTimeout <= 0 {
 		cfg.LookupTimeout = d.LookupTimeout
 	}
+	if cfg.MaxLookups < 2 {
+		cfg.MaxLookups = d.MaxLookups // at least one slot for new keys and one reserved for refreshes
+	}
 	a := &Authenticator{
 		store:   store,
 		cfg:     cfg,
@@ -109,6 +122,7 @@ func New(store KeyStore, cfg Config) *Authenticator {
 		neg:     newLRU[time.Time](cfg.CacheSize),
 		flights: map[string]*flight{},
 		touches: make(chan touchReq, 256),
+		reserve: max(1, cfg.MaxLookups/4),
 	}
 	if a.log == nil {
 		a.log = slog.New(slog.DiscardHandler)
@@ -187,68 +201,104 @@ func (a *Authenticator) Authenticate(ctx context.Context, bearer string) (*Princ
 	return &Principal{TenantID: rec.TenantID, KeyID: rec.KeyID, Policy: rec.Policy}, nil
 }
 
-// record returns the key's record from the cache or the store, or ErrNotFound / ErrUnavailable.
+// record returns the key's record from the cache or the store, or ErrNotFound, ErrUnavailable or
+// ErrBadRecord.
 func (a *Authenticator) record(ctx context.Context, prefix string) (KeyRecord, error) {
 	now := a.now()
-	var stale *posEntry
 
 	a.mu.Lock()
-	if e, ok := a.pos.get(prefix); ok {
-		age := now.Sub(e.fetched)
-		switch {
-		case age < a.cfg.CacheTTL && age >= 0:
-			rec := e.rec
-			a.mu.Unlock()
-			return rec, nil
-		case age < a.cfg.CacheTTL+a.cfg.StaleGrace && age >= 0:
-			stale = e
-		default:
-			a.pos.remove(prefix)
-		}
-	}
-	if stale == nil {
-		if at, ok := a.neg.get(prefix); ok {
-			if age := now.Sub(at); age < a.cfg.NegativeTTL && age >= 0 {
-				a.mu.Unlock()
-				return KeyRecord{}, ErrNotFound
-			}
-			a.neg.remove(prefix)
-		}
-	}
+	rec, err, hit, stale := a.cachedLocked(prefix, now)
 	down := now.Before(a.downUntil)
 	a.mu.Unlock()
+	if hit {
+		return rec, err
+	}
 
-	var rec KeyRecord
-	var err error
 	if down {
 		err = fmt.Errorf("%w: the key store failed moments ago", ErrUnavailable)
 	} else {
-		rec, err = a.fetch(ctx, prefix)
+		// A key already in the cache is being refreshed; anything else is new to this process.
+		rec, err = a.fetch(ctx, prefix, stale != nil)
 	}
 	switch {
-	case err == nil, errors.Is(err, ErrNotFound):
+	case err == nil, errors.Is(err, ErrNotFound), errors.Is(err, ErrBadRecord):
+		// A record the store could not read says nothing about the store being down, so a stale
+		// copy of that one key is not served in its place.
 		return rec, err
 	case stale != nil:
-		// The store is down but this key was verified recently enough: keep serving it.
+		// The store is down or too busy but this key was verified recently enough: keep serving it.
 		return stale.rec, nil
 	default:
 		return KeyRecord{}, err
 	}
 }
 
+// cachedLocked answers from the caches. hit means the answer (a record, or ErrNotFound for a
+// remembered unknown prefix) is fresh. Otherwise stale is the expired-but-within-grace entry, if
+// any. Caller holds a.mu.
+func (a *Authenticator) cachedLocked(prefix string, now time.Time) (rec KeyRecord, err error, hit bool, stale *posEntry) {
+	if e, ok := a.pos.get(prefix); ok {
+		age := now.Sub(e.fetched)
+		switch {
+		case age < a.cfg.CacheTTL && age >= 0:
+			return e.rec, nil, true, nil
+		case age < a.cfg.CacheTTL+a.cfg.StaleGrace && age >= 0:
+			return KeyRecord{}, nil, false, e
+		default:
+			a.pos.remove(prefix)
+		}
+	}
+	if at, ok := a.neg.get(prefix); ok {
+		if age := now.Sub(at); age < a.cfg.NegativeTTL && age >= 0 {
+			return KeyRecord{}, ErrNotFound, true, nil
+		}
+		a.neg.remove(prefix)
+	}
+	return KeyRecord{}, nil, false, nil
+}
+
+// errShed is what a request gets when lookup capacity is exhausted. The store was not asked.
+var errShed = fmt.Errorf("%w: lookup capacity exhausted", ErrUnavailable)
+
 // fetch asks the store, sharing one lookup among concurrent callers for the same prefix, and
 // updates the caches. The lookup is detached from any one caller's context so that a client
 // that gives up does not fail the others waiting on the same answer.
-func (a *Authenticator) fetch(ctx context.Context, prefix string) (KeyRecord, error) {
+//
+// The caches are checked again under the lock before a lookup is started: another caller may
+// have finished one between this caller's miss and now, and without the re-check the two would
+// both query the store.
+//
+// At most maxLookups run at once, below the connection pool size, so the pool is never entirely
+// taken by lookups. Lookups for keys not in the cache (which an unauthenticated client can create
+// at will with random keys) may use only maxLookups-reserve of those slots; the rest are kept for
+// refreshing cached keys, so a flood cannot stop a revocation from being noticed. Over the limit a
+// request is shed without touching the store.
+func (a *Authenticator) fetch(ctx context.Context, prefix string, refresh bool) (KeyRecord, error) {
 	a.mu.Lock()
+	if rec, err, hit, _ := a.cachedLocked(prefix, a.now()); hit {
+		a.mu.Unlock()
+		return rec, err
+	}
 	if f, ok := a.flights[prefix]; ok {
 		a.mu.Unlock()
+		if a.onWait != nil {
+			a.onWait()
+		}
 		select {
 		case <-f.done:
 			return f.rec, f.err
 		case <-ctx.Done():
 			return KeyRecord{}, fmt.Errorf("%w: %v", ErrUnavailable, ctx.Err())
 		}
+	}
+	if a.inflightRefresh+a.inflightNew >= a.cfg.MaxLookups || (!refresh && a.inflightNew >= a.cfg.MaxLookups-a.reserve) {
+		a.mu.Unlock()
+		return KeyRecord{}, errShed
+	}
+	if refresh {
+		a.inflightRefresh++
+	} else {
+		a.inflightNew++
 	}
 	f := &flight{done: make(chan struct{})}
 	a.flights[prefix] = f
@@ -261,6 +311,11 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string) (KeyRecord, er
 	now := a.now()
 	a.mu.Lock()
 	delete(a.flights, prefix)
+	if refresh {
+		a.inflightRefresh--
+	} else {
+		a.inflightNew--
+	}
 	switch {
 	case err == nil:
 		var last time.Time
@@ -277,6 +332,19 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string) (KeyRecord, er
 		rec, err = KeyRecord{}, ErrNotFound
 		a.recovered()
 		a.downUntil = time.Time{}
+	case errors.Is(err, ErrBadRecord):
+		// The store answered, but this one key's row could not be read. That is a fault of one key,
+		// not an outage: no global backoff, no stale copy, and nothing is cached.
+		a.warnLimited("auth key store returned a record it could not read; that key is refused", err)
+		rec, err = KeyRecord{}, ErrBadRecord
+		a.recovered()
+		a.downUntil = time.Time{}
+	case errors.Is(err, ErrBusy):
+		// The pool or the database could not take the query now (for instance because it is
+		// saturated). Not evidence of an outage, so no backoff, which an attacker could otherwise
+		// arm by saturating the pool.
+		a.warnLimited("auth key store is busy; some keys cannot be verified right now", err)
+		rec, err = KeyRecord{}, fmt.Errorf("%w: the key store is busy", ErrUnavailable)
 	default:
 		a.failed(err)
 		a.downUntil = now.Add(outageBackoff)
@@ -286,6 +354,16 @@ func (a *Authenticator) fetch(ctx context.Context, prefix string) (KeyRecord, er
 	a.mu.Unlock()
 	close(f.done)
 	return rec, err
+}
+
+// warnLimited logs at most one warning every ten seconds. Caller holds a.mu.
+func (a *Authenticator) warnLimited(msg string, err error) {
+	now := a.now()
+	if now.Sub(a.lastWarn) < 10*time.Second && !a.lastWarn.IsZero() {
+		return
+	}
+	a.lastWarn = now
+	a.log.Warn(msg, "component", "auth", "error", err.Error())
 }
 
 // failed notes a store failure, logging only the first of an outage. Caller holds a.mu.
