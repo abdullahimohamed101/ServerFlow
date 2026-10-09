@@ -19,16 +19,16 @@ utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
 (Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
 
-As of Phase 6, the foundation (configuration, structured logging, CI), the
-gateway MVP, a configurable mock worker, the worker registry, and a scheduler
-framework exist. The gateway proxies OpenAI-compatible requests, including
+As of Phase 7 the repository contains the foundation (configuration,
+structured logging, CI), the gateway MVP, a configurable mock worker, the
+worker registry, a scheduler framework, and a benchmark harness. The gateway proxies OpenAI-compatible requests, including
 streaming, either to a single statically configured upstream (the default) or,
 in registry mode, to the worker a configured scheduler picks from the control
 plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
 tracks their state and health. A request that fails before any output is retried on a different
 worker, up to `gateway.max_attempts` (default 2; ADR-012). There is no circuit breaker, API-key authentication, or
-rate limiting yet.
+rate limiting yet. A benchmark harness drives reproducible load against it (below).
 
 ## Major Components
 
@@ -65,6 +65,15 @@ See ADR-011 and `docs/architecture/scheduling.md`. Weighted and latency-aware
 strategies are Phase 14.
 
 
+
+### Benchmark Harness
+Purpose: reproducible load tests and run-to-run comparison, without claiming a scheduler is better
+(spec section 14). Location: `cmd/benchmark` + `internal/bench` (`workload`, `driver`, `collect`,
+`embedded`, `report`, `runner`). Owns: seeded workloads, closed and open loop load, measurement
+arithmetic, an in-process simulated cluster, the result schema (`benchmark/runs/run_NNN`) and the
+comparison. It only talks to a gateway (and optionally a control plane) over HTTP and imports no
+gateway internals except to boot the embedded cluster. Status: implemented (Phase 7). See ADR-013 and
+`docs/benchmarks/phase-7-harness.md`.
 
 ### Worker Agent
 Purpose: register worker, report heartbeats/metrics. It sits beside the
@@ -147,7 +156,7 @@ cmd/*  →  internal/*  →  pkg/protocol
 - **Integration tests**: gateway + Redis + Postgres + mock workers.
 - **End-to-end tests**: full gateway → worker → (mock) vLLM path with
   OpenAI-compatible client.
-- **Load tests**: benchmark harness (`cmd/benchmark`).
+- **Load tests**: benchmark harness (`cmd/benchmark`; `make bench`).
 - **Chaos tests**: fault injection (`tests/chaos`, `make chaos-*`).
 
 Commands:

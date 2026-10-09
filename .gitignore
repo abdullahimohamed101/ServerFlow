@@ -33,5 +33,6 @@ Thumbs.db
 docker-compose.override.yml
 
 # Benchmark artifacts
+benchmark/runs/
 benchmark/reports/*.json
 benchmark/reports/*.html
