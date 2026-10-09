@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -72,8 +73,16 @@ func TestTheBenchmarkBinaryRunsComparesAndRefusesBadInput(t *testing.T) {
 	if strings.Contains(out, "WARNING") {
 		t.Errorf("only the scheduler differs, so the comparison is fair:\n%s", out)
 	}
-	if code, out, _ := bench(t, "compare", "--dir", dir, "run_001", "run_001"); code != 0 || strings.Contains(out, "+10") {
+	if code, out, _ := bench(t, "compare", "--dir", dir, "run_001", "run_001"); code != 0 {
 		t.Errorf("self-comparison: %d\n%s", code, out)
+	} else if nonzero := regexp.MustCompile(`[+-]\d+\.\d+%`).FindAllString(out, -1); len(nonzero) == 0 {
+		t.Errorf("no CHANGE column found:\n%s", out)
+	} else {
+		for _, ch := range nonzero {
+			if ch != "+0.00%" && ch != "-0.00%" {
+				t.Errorf("a run compared with itself must change by zero, got %s:\n%s", ch, out)
+			}
+		}
 	}
 	if code, out, _ := bench(t, "list", "--dir", dir); code != 0 || !strings.Contains(out, "run_002") || !strings.Contains(out, "least-active") {
 		t.Errorf("list: %d\n%s", code, out)
@@ -88,6 +97,7 @@ func TestTheBenchmarkBinaryRunsComparesAndRefusesBadInput(t *testing.T) {
 		"unknown sched":   {[]string{"run", "--out", dir, "--scheduler", "magic"}, "known strategy"},
 		"both loads":      {[]string{"run", "--out", dir, "--concurrency", "2", "--rate", "2"}, "mutually exclusive"},
 		"remote refused":  {[]string{"run", "--out", dir, "--target", "http://example.com:8080"}, "--allow-remote"},
+		"overload":        {[]string{"run", "--out", dir, "--workers", "2", "--concurrency", "100"}, "request slots"},
 		"cap":             {[]string{"run", "--out", dir, "--concurrency", "99999"}, "cap"},
 		"missing compare": {[]string{"compare", "--dir", dir, "run_001", "run_099"}, "not found"},
 	} {
