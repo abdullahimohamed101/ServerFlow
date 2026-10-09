@@ -41,7 +41,7 @@ func main() {
 
 	// With auth.mode=required the gateway must be able to verify keys, so a database that is
 	// unreachable or not migrated is a startup failure, not a surprise at the first request.
-	var authn *auth.Authenticator
+	var opts []gateway.Option
 	if cfg.Auth.Mode == config.AuthModeRequired {
 		store, err := openAuthStore(ctx, cfg)
 		if err != nil {
@@ -49,12 +49,19 @@ func main() {
 			os.Exit(1)
 		}
 		defer store.Close()
-		authn = auth.New(store, auth.Config{
+		authn := auth.New(store, auth.Config{
 			CacheTTL: cfg.Auth.CacheTTL, NegativeTTL: cfg.Auth.NegativeTTL, CacheSize: cfg.Auth.CacheSize,
 			StaleGrace: cfg.Auth.StaleGrace, Logger: logger,
+			// Lookups may use all but two pool connections, so the pool is never entirely theirs.
+			MaxLookups: max(2, cfg.Postgres.MaxConns-2),
 		})
+		opts = append(opts, gateway.WithAuthenticator(authn))
 		logger.Info("api key authentication required", "component", "gateway", "cache_ttl", cfg.Auth.CacheTTL.String(),
 			"negative_ttl", cfg.Auth.NegativeTTL.String(), "cache_size", cfg.Auth.CacheSize, "stale_grace", cfg.Auth.StaleGrace.String())
+	}
+
+	if cfg.Auth.Mode == config.AuthModeOff {
+		logger.Info("api key authentication is OFF: /v1 is open to any caller that can reach this port", "component", "gateway", "auth_mode", cfg.Auth.Mode)
 	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Gateway.Port))
@@ -65,7 +72,7 @@ func main() {
 
 	var srv *gateway.Server
 	if cfg.Gateway.WorkerSource == config.WorkerSourceRegistry {
-		if srv, err = gateway.NewRegistry(cfg, logger); err != nil {
+		if srv, err = gateway.NewRegistry(cfg, logger, opts...); err != nil {
 			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
 			os.Exit(1)
 		}
@@ -74,13 +81,14 @@ func main() {
 			"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
 			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(), "auth", cfg.ControlPlane.Token != "")
 	} else {
-		srv = gateway.New(cfg.Gateway, logger)
+		srv = gateway.New(cfg.Gateway, logger, opts...)
 		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
 			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models)
 	}
 
-	if authn != nil {
-		srv.SetAuthenticator(authn)
+	if (cfg.Auth.Mode == config.AuthModeRequired) != srv.AuthRequired() {
+		fmt.Fprintln(os.Stderr, "gateway: authentication wiring does not match auth.mode; refusing to start")
+		os.Exit(1)
 	}
 
 	if err := srv.Serve(ctx, ln); err != nil {

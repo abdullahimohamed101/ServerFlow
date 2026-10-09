@@ -44,6 +44,8 @@ type Server struct {
 	handler    http.Handler
 	// authn, when set, requires an API key on /v1 requests (auth.mode=required).
 	authn *auth.Authenticator
+	// authRequired is true once authentication was asked for, even if authn is (wrongly) nil.
+	authRequired bool
 	// bodyReadTimeout bounds how long a client may take to send its request body.
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
@@ -51,8 +53,12 @@ type Server struct {
 }
 
 // New builds a Server that forwards to the upstream described by cfg.
-func New(cfg config.GatewayConfig, log *slog.Logger) *Server {
-	return newWithUpstream(cfg, log, newHTTPUpstream(cfg.UpstreamURL, cfg.ReadinessPath, cfg.UpstreamHeaderTimeout))
+func New(cfg config.GatewayConfig, log *slog.Logger, opts ...Option) *Server {
+	s := newWithUpstream(cfg, log, newHTTPUpstream(cfg.UpstreamURL, cfg.ReadinessPath, cfg.UpstreamHeaderTimeout))
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *Server {
@@ -83,6 +89,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // streams) finish, up to the configured shutdown timeout, after which
 // remaining connections are closed. It returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	if s.authRequired && s.authn == nil {
+		return errors.New("gateway: authentication is required but no authenticator was provided")
+	}
 	srv := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -126,7 +135,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // configured scheduler picks from the control plane's registry, which the
 // server polls in the background while it serves. It fails when the scheduler
 // strategy or worker networks are unusable.
-func NewRegistry(cfg config.Config, log *slog.Logger) (*Server, error) {
+func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, error) {
 	if len(cfg.Gateway.WorkerNetworks) == 0 {
 		// Registration is the trust boundary: any worker that may register can name an
 		// internal address (loopback and private ranges are allowed by default).
@@ -138,7 +147,14 @@ func NewRegistry(cfg config.Config, log *slog.Logger) (*Server, error) {
 			"component", "gateway")
 	}
 	cp := client.New(cfg.Gateway.ControlPlaneURL, cfg.ControlPlane.Token, nil)
-	return newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+	s, err := newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter time.Duration, src workerLister, log *slog.Logger) (*Server, error) {

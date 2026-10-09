@@ -28,6 +28,8 @@ type authStore struct {
 	recs    map[string]auth.KeyRecord
 	lookups atomic.Int64
 	down    atomic.Bool
+	bad     atomic.Bool // LookupKey reports an unreadable record
+	clock   *testClock
 }
 
 func newAuthStore() *authStore { return &authStore{recs: map[string]auth.KeyRecord{}} }
@@ -36,6 +38,9 @@ func (s *authStore) LookupKey(_ context.Context, prefix string) (auth.KeyRecord,
 	s.lookups.Add(1)
 	if s.down.Load() {
 		return auth.KeyRecord{}, errors.New("connection refused")
+	}
+	if s.bad.Load() {
+		return auth.KeyRecord{}, auth.ErrBadRecord
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -70,10 +75,11 @@ type authEnv struct {
 	gw     *Server
 	worker *fakeWorker // registry mode only
 	sched  *captureSched
+	clock  *testClock // static mode: the authenticator's clock
 }
 
-func newAuthenticator(store *authStore, logs *lockedBuffer) *auth.Authenticator {
-	return auth.New(store, auth.Config{CacheTTL: time.Minute, NegativeTTL: 30 * time.Second, StaleGrace: 5 * time.Minute, CacheSize: 100,
+func newAuthenticator(store *authStore, logs *lockedBuffer, clk *testClock) *auth.Authenticator {
+	return auth.New(store, auth.Config{Now: clk.Now, CacheTTL: time.Minute, NegativeTTL: 30 * time.Second, StaleGrace: 5 * time.Minute, CacheSize: 100,
 		Logger: slog.New(slog.NewJSONHandler(logs, nil))})
 }
 
@@ -98,10 +104,11 @@ func newStaticAuthEnv(t *testing.T) *authEnv {
 	cfg.Models = []string{"qwen-7b", "llama-8b"}
 	logs := &lockedBuffer{}
 	store := newAuthStore()
-	gw := New(cfg, slog.New(slog.NewJSONHandler(logs, nil)))
-	gw.SetAuthenticator(newAuthenticator(store, logs))
+	clk := &testClock{t: time.Now()}
+	store.clock = clk
+	gw := New(cfg, slog.New(slog.NewJSONHandler(logs, nil)), WithAuthenticator(newAuthenticator(store, logs, clk)))
 	url, c := serve(t, gw)
-	return &authEnv{url: url, store: store, logs: logs, client: c, gw: gw}
+	return &authEnv{url: url, store: store, logs: logs, client: c, gw: gw, clock: clk}
 }
 
 // captureSched wraps a scheduler and records the requests it is asked about.
@@ -139,7 +146,7 @@ func newRegistryAuthEnv(t *testing.T) *authEnv {
 	cs := &captureSched{Scheduler: gw.router.sched}
 	gw.router.sched = cs
 	store := newAuthStore()
-	gw.SetAuthenticator(newAuthenticator(store, logs))
+	gw.SetAuthenticator(newAuthenticator(store, logs, &testClock{t: time.Now()}))
 	url, c := serve(t, gw)
 	return &authEnv{url: url, store: store, logs: logs, client: c, gw: gw, worker: w1, sched: cs}
 }
@@ -387,7 +394,7 @@ func TestAuthUnavailableWhenStoreDownAndKeyUncached(t *testing.T) {
 	}
 	// Recovery needs no restart.
 	e.store.down.Store(false)
-	time.Sleep(auth.OutageBackoff + 100*time.Millisecond)
+	e.clock.Advance(auth.OutageBackoff + time.Millisecond) // past the backoff; no wall-clock wait
 	if resp, _ := e.chat(t, uncached, "qwen-7b"); resp.StatusCode != 200 {
 		t.Fatalf("after recovery: %d", resp.StatusCode)
 	}
@@ -546,5 +553,61 @@ func TestRejectionHappensBeforeTheBodyIsRead(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != 401 {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestRequiredButNotWiredFailsClosed(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "{}") }))
+	t.Cleanup(up.Close)
+	logs := &lockedBuffer{}
+	gw := New(testConfig(up.URL), slog.New(slog.NewJSONHandler(logs, nil)), WithAuthenticator(nil))
+	if !gw.AuthRequired() {
+		t.Fatal("WithAuthenticator(nil) must still mean authentication is required")
+	}
+	url, c := serve(t, gw)
+	resp, err := c.Post(url+chatCompletionsPath, "application/json", strings.NewReader(chatBody("qwen-7b")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 500 {
+		t.Fatalf("a gateway that needs authentication and has none must not serve: %d", resp.StatusCode)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	if err := gw.Serve(context.Background(), ln); err == nil || !strings.Contains(err.Error(), "no authenticator") {
+		t.Fatalf("Serve must refuse: %v", err)
+	}
+	// And the default really is open.
+	if New(testConfig(up.URL), slog.New(slog.NewJSONHandler(logs, nil))).AuthRequired() {
+		t.Fatal("authentication must be off by default")
+	}
+}
+
+func TestUnreadableKeyRecordIsA500ForThatKeyOnly(t *testing.T) {
+	e := newStaticAuthEnv(t)
+	good := e.store.add("a", nil)
+	e.store.bad.Store(true)
+	resp, body := e.chat(t, good, "qwen-7b")
+	if resp.StatusCode != 500 || !strings.Contains(body, "INTERNAL_ERROR") || strings.Contains(body, "UNAUTHORIZED") {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	found := false
+	for _, l := range e.logs.logLines(t) {
+		if l["msg"] == "request" && l["auth_failure"] == "fault" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the fault was not logged with its reason")
+	}
+	// It was not an outage: no global backoff, so the next key is looked up at once.
+	e.store.bad.Store(false)
+	other := e.store.add("b", nil)
+	if resp, _ := e.chat(t, other, "qwen-7b"); resp.StatusCode != 200 {
+		t.Fatalf("another key after one key's data fault: %d", resp.StatusCode)
 	}
 }

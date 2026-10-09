@@ -9,10 +9,24 @@ import (
 	"serverflow/internal/auth"
 )
 
-// SetAuthenticator turns on client authentication: every /v1 request must then carry a valid API
-// key as "Authorization: Bearer <key>". /healthz, /readyz and /metrics stay open. Without it (the
-// default, auth.mode=off) the gateway behaves exactly as before. Call it before Serve.
-func (s *Server) SetAuthenticator(a *auth.Authenticator) { s.authn = a }
+// Option configures a Server at construction.
+type Option func(*Server)
+
+// WithAuthenticator turns on client authentication: every /v1 request must then carry a valid API
+// key as "Authorization: Bearer <key>". /healthz, /readyz and /metrics stay open. Without the
+// option (the default, auth.mode=off) the gateway behaves exactly as before.
+//
+// Passing a nil authenticator does not turn authentication off: the server then refuses to Serve
+// and answers every /v1 request with an error, so a wiring mistake cannot leave the API open.
+func WithAuthenticator(a *auth.Authenticator) Option {
+	return func(s *Server) { s.authn, s.authRequired = a, true }
+}
+
+// SetAuthenticator is WithAuthenticator for a Server that already exists. Call it before Serve.
+func (s *Server) SetAuthenticator(a *auth.Authenticator) { WithAuthenticator(a)(s) }
+
+// AuthRequired reports whether /v1 requires an API key.
+func (s *Server) AuthRequired() bool { return s.authRequired }
 
 // Authentication failure reasons, for logs and the rejection counter. They never reach a client:
 // the response for every 401 is identical.
@@ -23,6 +37,7 @@ const (
 	rejectExpired     = "expired"
 	rejectSuspended   = "suspended"
 	rejectUnavailable = "unavailable"
+	rejectFault       = "fault"
 )
 
 // authenticate guards a /v1 handler. With no authenticator configured it is a pass-through.
@@ -30,11 +45,15 @@ const (
 // cannot make the gateway read, parse or buffer anything it sends.
 func (s *Server) authenticate(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authn == nil {
+		if !s.authRequired {
 			next(w, r)
 			return
 		}
 		info := infoFrom(r.Context())
+		if s.authn == nil { // required but not wired: fail closed
+			s.reject(w, info, api.ErrInternal(), rejectFault)
+			return
+		}
 		bearer, ok := bearerToken(r)
 		if !ok {
 			s.reject(w, info, api.ErrUnauthorized(), rejectMissing)
@@ -45,6 +64,10 @@ func (s *Server) authenticate(next http.HandlerFunc) http.Handler {
 		case err == nil:
 			info.tenantID, info.apiKeyID, info.principal = p.TenantID, p.KeyID, p
 			next(w, r)
+		case errors.Is(err, auth.ErrBadRecord):
+			// One key's database row is unreadable: an operator problem, not the client's, and not an
+			// outage. Say so plainly without saying anything about the key.
+			s.reject(w, info, api.ErrInternal(), rejectFault)
 		case errors.Is(err, auth.ErrUnavailable):
 			s.reject(w, info, api.ErrAuthUnavailable(), rejectUnavailable)
 		case errors.Is(err, auth.ErrSuspended):

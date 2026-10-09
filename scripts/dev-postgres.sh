@@ -4,6 +4,7 @@
 # (no unix socket), and trusts connections from localhost for one dedicated test
 # superuser. It is NOT a place for real data and must never be exposed to a network.
 #
+# Set DEV_POSTGRES_PORT to use another port (e.g. when several worktrees run one each).
 #   scripts/dev-postgres.sh start|stop|status|reset|dsn
 #
 # Tests use the DSN it prints: export SERVERFLOW_TEST_POSTGRES_DSN="$(scripts/dev-postgres.sh dsn)"
@@ -14,7 +15,7 @@ export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 data="$root/.data/postgres"
 log="$root/.data/postgres.log"
-port=55432
+port="${DEV_POSTGRES_PORT:-55432}"
 user=sf_test
 db=serverflow_test
 dsn="postgres://$user@127.0.0.1:$port/$db?sslmode=disable"
@@ -53,7 +54,7 @@ CONF
   if running; then
     echo "dev-postgres: already running"
   else
-    "$(find_bin pg_ctl)" -D "$data" -l "$log" -w start >/dev/null
+    "$(find_bin pg_ctl)" -D "$data" -l "$log" -o "-p $port" -w start >/dev/null
     echo "dev-postgres: started on 127.0.0.1:$port"
   fi
   if ! "$(find_bin psql)" -X -q -h 127.0.0.1 -p "$port" -U "$user" -d postgres -tAc "select 1 from pg_database where datname='$db'" | grep -q 1; then
