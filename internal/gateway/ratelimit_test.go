@@ -478,3 +478,36 @@ func grepMetric(s, sub string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// Content the parsed messages do not carry (image parts, tool call arguments, the tools list) must still be charged.
+func TestBodyContentOutsideTheMessageTextIsCharged(t *testing.T) {
+	lim := &fakeLimiter{}
+	env := newLimitEnv(t, okUpstream, lim)
+	key := env.store.add("acme", nil, quotas(1000, 1_000_000, 5))
+	big := strings.Repeat("A", 500_000)
+	bodies := map[string]string{
+		"plain text 500 KB": `{"model":"qwen-7b","max_tokens":10,"messages":[{"role":"user","content":"` + big + `"}]}`,
+		"tools field":       `{"model":"qwen-7b","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","description":"` + big + `"}}]}`,
+		"image part":        `{"model":"qwen-7b","max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image_url","image_url":{"url":"data:image/png;base64,` + big + `"}}]}]}`,
+		"tool call args":    `{"model":"qwen-7b","max_tokens":10,"messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c","type":"function","function":{"name":"f","arguments":"` + big + `"}}]},{"role":"user","content":"hi"}]}`,
+	}
+	cost := map[string]int{}
+	for name, body := range bodies {
+		before := len(lim.calls())
+		resp, out := env.do(t, http.MethodPost, chatCompletionsPath, body, "Authorization", "Bearer "+key)
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: %d %.200s", name, resp.StatusCode, out)
+		}
+		calls := lim.calls()
+		if len(calls) != before+1 {
+			t.Fatalf("%s: limiter calls %d", name, len(calls))
+		}
+		cost[name] = calls[len(calls)-1].Cost
+	}
+	text := cost["plain text 500 KB"]
+	for name, c := range cost {
+		if c < text*9/10 {
+			t.Errorf("%s was estimated at %d tokens against %d for the same size of plain text", name, c, text)
+		}
+	}
+}

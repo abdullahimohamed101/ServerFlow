@@ -34,6 +34,16 @@ const (
 // non-positive limit contributes nothing. The result is at least 1 and at most MaxCost, and is
 // monotonic: more text or a larger maxTokens never lowers it.
 func EstimateCost(msgs []protocol.Message, prompt string, maxTokens, limit int) int {
+	return EstimateRequestCost(msgs, prompt, 0, maxTokens, limit)
+}
+
+// EstimateRequestCost is EstimateCost for a request whose whole body is known: bodyBytes is the size of the
+// request body as received. The parsed messages carry only the text; image parts, tool call arguments, the tools
+// list and every other field a client can send are not in them, and would otherwise cost nothing (a 500 KB request
+// of tool definitions was estimated at a few dozen tokens). Every byte of the body that is not already counted as
+// message text is therefore charged at the same three bytes per token. That over-charges the JSON framing a little
+// and images a lot (a base64 image is charged by its encoded size), which errs towards charging, the safe direction.
+func EstimateRequestCost(msgs []protocol.Message, prompt string, bodyBytes, maxTokens, limit int) int {
 	var total uint64
 	add := func(n uint64) {
 		total += n
@@ -41,12 +51,18 @@ func EstimateCost(msgs []protocol.Message, prompt string, maxTokens, limit int) 
 			total = MaxCost
 		}
 	}
+	var counted uint64 // bytes of text already charged above
 	for _, m := range msgs {
 		add(perMessageOverhead)
 		add(textTokens(m.Role))
 		add(textTokens(m.Content))
+		counted += uint64(len(m.Role)) + uint64(len(m.Content))
 	}
 	add(textTokens(prompt))
+	counted += uint64(len(prompt))
+	if bodyBytes > 0 && uint64(bodyBytes) > counted {
+		add((uint64(bodyBytes) - counted + charsPerToken - 1) / charsPerToken)
+	}
 	add(replyPriming)
 
 	out := maxTokens

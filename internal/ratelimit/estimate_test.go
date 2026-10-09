@@ -112,3 +112,37 @@ func TestEstimateAssumesThreeCharsPerToken(t *testing.T) {
 		t.Fatalf("input estimated at %d tokens for %d characters", in, len(text))
 	}
 }
+
+func TestBodyBytesNotCountedAsTextAreCharged(t *testing.T) {
+	m := msgs("hello")
+	plain := EstimateRequestCost(m, "", len(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`), 10, 4096)
+	if EstimateCost(m, "", 10, 4096) > plain {
+		t.Fatal("a body can only add to the estimate")
+	}
+	// 500 KB the parsed messages do not carry (tool definitions, image data, tool call arguments) must cost about what 500 KB of text costs.
+	big := EstimateRequestCost(m, "", 500_000, 10, 4096)
+	text := EstimateCost(msgs(strings.Repeat("x", 500_000)), "", 10, 4096)
+	if big < text*9/10 {
+		t.Fatalf("500 KB of uncounted body was estimated at %d tokens against %d for the same size of text", big, text)
+	}
+	// Monotonic in the body size, and a body that is all counted text adds nothing.
+	prev := 0
+	for _, n := range []int{0, 100, 1_000, 100_000, 10_000_000} {
+		c := EstimateRequestCost(m, "", n, 10, 4096)
+		if c < prev {
+			t.Fatalf("estimate fell from %d to %d as the body grew to %d", prev, c, n)
+		}
+		prev = c
+	}
+	txt := strings.Repeat("a", 3000)
+	if a, b := EstimateCost(msgs(txt), "", 10, 4096), EstimateRequestCost(msgs(txt), "", len(txt)+5, 10, 4096); b-a > 5 {
+		t.Fatalf("text already counted was charged twice: %d vs %d", a, b)
+	}
+}
+
+func TestPromptIsCharged(t *testing.T) {
+	prompt := strings.Repeat("a", 3000)
+	if got, base := EstimateCost(nil, prompt, 10, 4096), EstimateCost(nil, "", 10, 4096); got-base < 1000 {
+		t.Fatalf("a 3000 byte prompt added only %d tokens", got-base)
+	}
+}

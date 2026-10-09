@@ -121,7 +121,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// After parsing (the token cost needs the body) and the model checks, before any worker is touched.
 		// The slot is given back on every way out of this function: a normal return, an error, a client that
 		// left, and a panic.
-		release, ok := s.admit(w, r, info, ratelimit.EstimateCost(ireq.Messages, ireq.Prompt, ireq.MaxTokens, s.cfg.MaxTokensLimit), ireq.Model)
+		release, ok := s.admit(w, r, info, ratelimit.EstimateRequestCost(ireq.Messages, ireq.Prompt, len(body), ireq.MaxTokens, s.cfg.MaxTokensLimit), ireq.Model)
 		if !ok {
 			return
 		}
