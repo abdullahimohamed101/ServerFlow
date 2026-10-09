@@ -74,6 +74,16 @@ func TestMigrateRefusesChecksumDrift(t *testing.T) {
 	}
 }
 
+func TestMigrateRefusesAMismatchedMigrationName(t *testing.T) {
+	s := newMigratedStore(t)
+	if _, err := s.pool.Exec(context.Background(), `UPDATE schema_migrations SET name = 'something_else' WHERE version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MigrateUp(context.Background()); err == nil || !strings.Contains(err.Error(), "something_else") {
+		t.Fatalf("a recorded name that differs from the file must be refused: %v", err)
+	}
+}
+
 func TestMigrateRefusesDatabaseNewerThanBinary(t *testing.T) {
 	s := newMigratedStore(t)
 	all, _ := migrations.All()

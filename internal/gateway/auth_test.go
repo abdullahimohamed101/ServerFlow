@@ -28,11 +28,23 @@ type authStore struct {
 	recs    map[string]auth.KeyRecord
 	lookups atomic.Int64
 	down    atomic.Bool
+	touched chan string
 	bad     atomic.Bool // LookupKey reports an unreadable record
 	clock   *testClock
 }
 
-func newAuthStore() *authStore { return &authStore{recs: map[string]auth.KeyRecord{}} }
+func newAuthStore() *authStore {
+	return &authStore{recs: map[string]auth.KeyRecord{}, touched: make(chan string, 16)}
+}
+
+// TouchKey makes authStore an auth.KeyToucher, so last_used_at writes can be observed.
+func (s *authStore) TouchKey(_ context.Context, keyID string, _ time.Time) error {
+	select {
+	case s.touched <- keyID:
+	default:
+	}
+	return nil
+}
 
 func (s *authStore) LookupKey(_ context.Context, prefix string) (auth.KeyRecord, error) {
 	s.lookups.Add(1)
@@ -609,5 +621,41 @@ func TestUnreadableKeyRecordIsA500ForThatKeyOnly(t *testing.T) {
 	other := e.store.add("b", nil)
 	if resp, _ := e.chat(t, other, "qwen-7b"); resp.StatusCode != 200 {
 		t.Fatalf("another key after one key's data fault: %d", resp.StatusCode)
+	}
+}
+
+// Serve must run the authenticator's background writer, or last_used_at is never recorded.
+func TestServeRunsTheAuthenticatorsBackgroundWork(t *testing.T) {
+	e := newStaticAuthEnv(t)
+	key := e.store.add("acme", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- e.gw.Serve(ctx, ln) }()
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	select {
+	case id := <-e.store.touched:
+		if id != "key_acme" {
+			t.Fatalf("touched %q", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("last_used_at was never recorded: Serve did not start the authenticator's writer")
+	}
+	cancel()
+	if err := <-served; err != nil {
+		t.Fatal(err)
 	}
 }

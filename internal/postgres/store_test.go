@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -415,4 +416,65 @@ func TestLookupKeyClassifiesFailures(t *testing.T) {
 			t.Fatalf("an unusable pool must be a plain failure, got %v", err)
 		}
 	})
+}
+
+// Out-of-range numbers are refused by the store with a plain message, not passed to the driver.
+func TestStoreRangeChecks(t *testing.T) {
+	s := newMigratedStore(t)
+	ctx := context.Background()
+	big := maxInt32 + 1
+	if _, err := s.CreateTenant(ctx, TenantInput{Name: "a", RequestsPerMinute: maxInt32, TokensPerMinute: maxInt32, MaxConcurrentRequests: maxInt32, Priority: 2}); err != nil {
+		t.Fatalf("the largest valid values: %v", err)
+	}
+	for name, in := range map[string]TenantInput{
+		"rpm": {Name: "b", RequestsPerMinute: big}, "tpm": {Name: "c", TokensPerMinute: big}, "conc": {Name: "d", MaxConcurrentRequests: big},
+		"prio": {Name: "e", Priority: 3}, "neg": {Name: "f", RequestsPerMinute: -1}, "huge": {Name: "g", RequestsPerMinute: 1 << 62},
+	} {
+		if _, err := s.CreateTenant(ctx, in); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must be between") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, q := range map[string]Quota{
+		"rpm": {RequestsPerMinute: ptr(big)}, "tpm": {TokensPerMinute: ptr(1 << 62)}, "conc": {MaxConcurrentRequests: ptr(-1)}, "prio": {Priority: ptr(3)},
+	} {
+		if _, err := s.SetTenantQuota(ctx, "a", q); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must be between") {
+			t.Errorf("set %s: %v", name, err)
+		}
+	}
+	for name, mx := range map[string]int{"zero": 0, "neg": -5, "big": big, "huge": 1 << 62} {
+		if _, err := s.AddModel(ctx, Model{Name: "m-" + name, MaxTokensLimit: ptr(mx)}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "must be between") {
+			t.Errorf("model max tokens %s: %v", name, err)
+		}
+	}
+	if _, err := s.AddModel(ctx, Model{Name: "edge", MaxTokensLimit: ptr(maxInt32)}); err != nil {
+		t.Fatalf("largest max tokens: %v", err)
+	}
+	r := BenchmarkRun{Model: "m", SchemaVersion: 1, Result: []byte(`{}`)}
+	for name, mut := range map[string]func(*BenchmarkRun){
+		"workers": func(b *BenchmarkRun) { b.WorkerCount = big }, "repeat": func(b *BenchmarkRun) { b.RepeatIndex = big },
+		"schema": func(b *BenchmarkRun) { b.SchemaVersion = big }, "maxtok": func(b *BenchmarkRun) { b.MaxTokens = ptr(big) },
+		"nan": func(b *BenchmarkRun) { b.DurationSeconds = math.NaN() }, "inf": func(b *BenchmarkRun) { b.DurationSeconds = math.Inf(1) },
+		"negdur": func(b *BenchmarkRun) { b.DurationSeconds = -1 }, "ctrl": func(b *BenchmarkRun) { b.GitCommit = "a\x1bb" },
+	} {
+		b := r
+		mut(&b)
+		if _, err := s.CreateBenchmarkRun(ctx, b); !errors.Is(err, ErrInvalid) {
+			t.Errorf("benchmark %s: %v", name, err)
+		}
+	}
+}
+
+func TestSetStatusValidationNamesTheProblem(t *testing.T) {
+	s := newMigratedStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateTenant(ctx, TenantInput{Name: "a", Priority: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// The message is the store's own check, which runs before the database is asked.
+	if _, _, err := s.SetTenantStatus(ctx, "a", "banned"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "status must be") {
+		t.Fatalf("tenant status: %v", err)
+	}
+	if _, _, err := s.SetModelStatus(ctx, "m", "weird"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "status must be") {
+		t.Fatalf("model status: %v", err)
+	}
 }

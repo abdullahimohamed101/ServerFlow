@@ -79,11 +79,12 @@ func main() {
 		// The token itself is never logged.
 		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
 			"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
-			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(), "auth", cfg.ControlPlane.Token != "")
+			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
+			"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
 	} else {
 		srv = gateway.New(cfg.Gateway, logger, opts...)
 		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
-			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models)
+			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
 	}
 
 	if (cfg.Auth.Mode == config.AuthModeRequired) != srv.AuthRequired() {

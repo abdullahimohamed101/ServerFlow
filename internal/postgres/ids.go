@@ -39,17 +39,25 @@ func ValidateTenantName(name string) error {
 	return nil
 }
 
-// ValidateModelName checks a model name: 1-128 printable characters without spaces or control characters.
+// ValidateModelName checks a model name: 1-128 printable characters without spaces or control
+// characters.
 func ValidateModelName(name string) error {
 	if name == "" || len(name) > maxNameLen {
 		return fmt.Errorf("%w: a model name is 1-%d characters", ErrInvalid, maxNameLen)
 	}
 	for _, r := range name {
-		if r == unicode.ReplacementChar || unicode.IsSpace(r) || unicode.IsControl(r) {
+		if unicode.IsSpace(r) || badRune(r) {
 			return fmt.Errorf("%w: a model name may not contain spaces or control characters", ErrInvalid)
 		}
 	}
 	return nil
+}
+
+// badRune reports characters that must never be stored in free text because they can forge terminal
+// output or reorder text: control characters (NUL, ESC, newline, ...), invalid UTF-8 (U+FFFD), format
+// characters (bidirectional overrides, zero-width joiners) and line or paragraph separators.
+func badRune(r rune) bool {
+	return r == unicode.ReplacementChar || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
 }
 
 func validateText(field, s string, max int) error {
@@ -57,9 +65,28 @@ func validateText(field, s string, max int) error {
 		return fmt.Errorf("%w: %s is longer than %d bytes", ErrInvalid, field, max)
 	}
 	for _, r := range s {
-		if r == 0 || r == unicode.ReplacementChar {
-			return fmt.Errorf("%w: %s contains an invalid character", ErrInvalid, field)
+		if badRune(r) {
+			return fmt.Errorf("%w: %s contains a control or invisible formatting character", ErrInvalid, field)
 		}
 	}
 	return nil
+}
+
+// maxInt32 is the largest value of the integer columns.
+const maxInt32 = 1<<31 - 1
+
+// checkRange validates a number before it reaches the database, so an out-of-range value is a clear
+// message and not a driver error.
+func checkRange(field string, v, lo, hi int) error {
+	if v < lo || v > hi {
+		return fmt.Errorf("%w: %s must be between %d and %d", ErrInvalid, field, lo, hi)
+	}
+	return nil
+}
+
+func checkRangePtr(field string, v *int, lo, hi int) error {
+	if v == nil {
+		return nil
+	}
+	return checkRange(field, *v, lo, hi)
 }

@@ -29,7 +29,7 @@ func TestValidateAuth(t *testing.T) {
 		"unknown mode":         func(c *Config) { c.Auth.Mode = "optional" },
 		"empty mode":           func(c *Config) { c.Auth.Mode = "" },
 		"zero cache ttl":       func(c *Config) { c.Auth.CacheTTL = 0 },
-		"huge cache ttl":       func(c *Config) { c.Auth.CacheTTL = 2 * time.Hour },
+		"huge cache ttl":       func(c *Config) { c.Auth.CacheTTL = 2 * time.Hour; c.Auth.StaleGrace = 3 * time.Hour },
 		"zero negative ttl":    func(c *Config) { c.Auth.NegativeTTL = 0 },
 		"negative ttl > ttl":   func(c *Config) { c.Auth.NegativeTTL = c.Auth.CacheTTL + time.Second },
 		"zero cache size":      func(c *Config) { c.Auth.CacheSize = 0 },

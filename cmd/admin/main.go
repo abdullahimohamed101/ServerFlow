@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"serverflow/internal/auth"
 	"serverflow/internal/config"
@@ -58,7 +59,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		_, _ = io.WriteString(errw, usage)
 		return 2
 	}
-	a := &app{out: out, err: errw}
+	a := &app{out: plainWriter{out}, err: plainWriter{errw}}
 	if err := a.dispatch(ctx, cfgPath, args); err != nil {
 		var ue usageError
 		if errors.As(err, &ue) {
@@ -70,6 +71,30 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	}
 	return 0
 }
+
+// plainWriter writes to w with every control or invisible formatting character other than newline
+// and tab replaced by '?', so that nothing stored in the database (names, labels, notes) can send
+// escape sequences to the operator's terminal when listed.
+type plainWriter struct{ w io.Writer }
+
+func (p plainWriter) Write(b []byte) (int, error) {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) || r == unicode.ReplacementChar:
+			return '?'
+		}
+		return r
+	}, string(b))
+	if _, err := io.WriteString(p.w, clean); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+// generateKey is auth.GenerateKey; a variable so a test can force a prefix collision.
+var generateKey = auth.GenerateKey
 
 type usageError string
 
@@ -359,7 +384,7 @@ func (a *app) key(ctx context.Context, sub string, args []string) error {
 		for try := 0; ; try++ {
 			var prefix string
 			var hash []byte
-			plaintext, prefix, hash = auth.GenerateKey()
+			plaintext, prefix, hash = generateKey()
 			k, err = a.st.CreateKey(ctx, *tenant, *label, exp, prefix, hash)
 			if errors.Is(err, postgres.ErrConflict) && try < 5 {
 				continue // a prefix collision: draw another key

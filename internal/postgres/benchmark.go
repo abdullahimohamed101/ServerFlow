@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,6 +52,25 @@ func (s *Store) CreateBenchmarkRun(ctx context.Context, b BenchmarkRun) (Benchma
 	}
 	if b.Model == "" || !json.Valid(b.Result) {
 		return BenchmarkRun{}, fmt.Errorf("%w: a benchmark run needs a model and a JSON result", ErrInvalid)
+	}
+	for _, c := range []struct {
+		name  string
+		v, lo int
+	}{{"worker count", b.WorkerCount, 0}, {"repeat index", b.RepeatIndex, 0}, {"schema version", b.SchemaVersion, 1}} {
+		if err := checkRange(c.name, c.v, c.lo, maxInt32); err != nil {
+			return BenchmarkRun{}, err
+		}
+	}
+	if err := checkRangePtr("max tokens", b.MaxTokens, 1, maxInt32); err != nil {
+		return BenchmarkRun{}, err
+	}
+	if b.DurationSeconds < 0 || math.IsNaN(b.DurationSeconds) || math.IsInf(b.DurationSeconds, 0) {
+		return BenchmarkRun{}, fmt.Errorf("%w: duration must be a finite number of seconds, zero or more", ErrInvalid)
+	}
+	for field, v := range map[string]string{"git commit": b.GitCommit, "gpu type": b.GPUType, "scheduler": b.Scheduler, "concurrency or rate": b.ConcurrencyOrRate, "workload": b.Workload, "model": b.Model} {
+		if err := validateText(field, v, maxNameLen); err != nil {
+			return BenchmarkRun{}, err
+		}
 	}
 	var dist any // a nil interface is SQL NULL; an empty RawMessage would not be
 	if len(b.PromptDistribution) > 0 {

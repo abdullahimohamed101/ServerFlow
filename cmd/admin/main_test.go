@@ -290,3 +290,162 @@ func TestRevokeWithAPastedFullKeyUsesOnlyThePrefixAndWarns(t *testing.T) {
 		t.Fatalf("spurious warning: %q", r.err)
 	}
 }
+
+func assertCleanRefusal(t *testing.T, r result, args []string) {
+	t.Helper()
+	if r.code != 1 || !strings.Contains(r.err, "must be between") {
+		t.Errorf("%v: exit %d, stderr %q; want exit 1 and a range message", args, r.code, r.err)
+	}
+	for _, leak := range []string{"0x", "pgx", "encode", "int4", "OID", "goroutine", "panic"} {
+		if strings.Contains(r.err, leak) {
+			t.Errorf("%v: the error leaks driver internals (%q): %s", args, leak, r.err)
+		}
+	}
+	if r.out != "" {
+		t.Errorf("%v: failed commands print nothing on stdout, got %q", args, r.out)
+	}
+}
+
+func TestNumericFlagsAreRangeCheckedBeforeTheDatabase(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "base")
+	n := 0
+	name := func() string { n++; return "t" + strings.Repeat("x", n) }
+	for _, flag := range []string{"--rpm", "--tpm", "--max-concurrent"} {
+		for _, ok := range []string{"0", "1", "2147483647"} {
+			mustOK(t, "tenant", "create", name(), flag, ok)
+			mustOK(t, "tenant", "set-quota", "base", flag, ok)
+		}
+		for _, bad := range []string{"2147483648", "99999999999", "9223372036854775807", "-1", "-2147483649"} {
+			args := []string{"tenant", "create", name(), flag, bad}
+			assertCleanRefusal(t, admin(t, args...), args)
+			args = []string{"tenant", "set-quota", "base", flag, bad}
+			assertCleanRefusal(t, admin(t, args...), args)
+		}
+	}
+	for _, ok := range []string{"0", "1", "2"} {
+		mustOK(t, "tenant", "create", name(), "--priority", ok)
+		mustOK(t, "tenant", "set-quota", "base", "--priority", ok)
+	}
+	for _, bad := range []string{"3", "-1", "99999999999"} {
+		args := []string{"tenant", "create", name(), "--priority", bad}
+		assertCleanRefusal(t, admin(t, args...), args)
+		args = []string{"tenant", "set-quota", "base", "--priority", bad}
+		assertCleanRefusal(t, admin(t, args...), args)
+	}
+	for _, ok := range []string{"1", "2147483647"} {
+		mustOK(t, "model", "add", "m"+ok, "--max-tokens", ok)
+	}
+	for _, bad := range []string{"0", "-1", "2147483648", "99999999999"} {
+		args := []string{"model", "add", "mbad", "--max-tokens", bad}
+		assertCleanRefusal(t, admin(t, args...), args)
+	}
+	// Nothing half-created by the refusals.
+	if r := mustOK(t, "model", "list"); strings.Contains(r.out, "mbad") {
+		t.Fatal("a refused model was stored")
+	}
+}
+
+func TestExpiryBounds(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "acme")
+	for _, ok := range []string{"1h", "90m", "1d", "3650d"} {
+		mustOK(t, "key", "create", "--tenant", "acme", "--expires", ok)
+	}
+	for expires, want := range map[string]string{
+		"0s": "positive", "0": "positive", "0d": "1 to 3650", "-1h": "positive", "3651d": "1 to 3650", "99999999999d": "1 to 3650",
+		"87601h": "at most 10 years", "9999999999h": "duration",
+	} {
+		r := admin(t, "key", "create", "--tenant", "acme", "--expires", expires)
+		if r.code != 2 || !strings.Contains(r.err, want) || r.out != "" {
+			t.Errorf("--expires %s: exit %d, stdout %q, stderr %q; want exit 2 mentioning %q", expires, r.code, r.out, r.err, want)
+		}
+	}
+}
+
+func TestControlCharactersAreRefused(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "acme")
+	bad := []string{"\x1b[31mred\x1b[0m", "a\x00b", "line1\nline2", "tab\there", "\u202eevil", "zero\u200bwidth", "del\x7f", "c1\u009b"}
+	for _, b := range bad {
+		for _, args := range [][]string{
+			{"tenant", "create", "n" + b}, {"key", "create", "--tenant", "acme", "--label", b}, {"model", "add", "m" + b},
+			{"model", "add", "okname", "--display-name", b}, {"model", "add", "okname", "--notes", b}, {"tenant", "set-models", "acme", "--models", "x," + b},
+		} {
+			r := admin(t, args...)
+			if r.code == 0 {
+				t.Errorf("%q was accepted by %v", b, args[:2])
+			}
+			if strings.ContainsAny(r.out+r.err, "\x1b\x00\x7f") || strings.Contains(r.out+r.err, "\u202e") {
+				t.Errorf("the refusal echoed control characters: %q %q", r.out, r.err)
+			}
+		}
+	}
+	if r := mustOK(t, "model", "list"); strings.TrimSpace(r.out) != "" {
+		t.Errorf("a model was stored: %q", r.out)
+	}
+	// Ordinary unicode text is fine.
+	mustOK(t, "key", "create", "--tenant", "acme", "--label", "Cl\u00e9 de test \u2713")
+}
+
+// Rows written around the application (an older version, a DBA) must still not reach the
+// terminal as escape sequences when listed.
+func TestListingNeverEmitsTerminalEscapes(t *testing.T) {
+	dsn := postgrestest.NewDSN(t)
+	t.Setenv("SERVERFLOW_POSTGRES_DSN", dsn)
+	mustOK(t, "migrate", "up")
+	mustOK(t, "tenant", "create", "acme")
+	mustOK(t, "key", "create", "--tenant", "acme", "--label", "plain")
+	postgrestest.Exec(t, dsn, "UPDATE api_keys SET label = E'\\x1b[2Jowned\\x1b]0;title\\x07'")
+	postgrestest.Exec(t, dsn, "INSERT INTO models (name, display_name, notes) VALUES (E'm\\x1b[31m', E'd\\x1b[1m', 'n')")
+	postgrestest.Exec(t, dsn, "UPDATE tenants SET allowed_models = ARRAY[E'a\\x1b[0m']")
+	for _, args := range [][]string{{"key", "list"}, {"key", "list", "--tenant", "acme"}, {"model", "list"}, {"tenant", "list"}, {"tenant", "show", "acme"}} {
+		r := mustOK(t, args...)
+		if strings.ContainsAny(r.out+r.err, "\x1b\x07\x00") {
+			t.Errorf("%v prints control characters: %q", args, r.out)
+		}
+	}
+}
+
+func TestEmptyModelsListMeansNoModels(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "locked", "--models", "")
+	if r := mustOK(t, "tenant", "show", "locked"); !strings.Contains(r.out, "models:       none") {
+		t.Fatalf("--models \"\" must mean no models, not all: %s", r.out)
+	}
+}
+
+func TestInsecureRemoteDSNIsRefusedByTheCLI(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://app:pw@db.example.com:5432/x?sslmode=disable",
+		"postgres://app:pw@db.example.com:5432/x",
+		"postgres://app:pw@db.example.com:5432/x?sslmode=prefer",
+	} {
+		t.Setenv("SERVERFLOW_POSTGRES_DSN", dsn)
+		r := admin(t, "migrate", "status")
+		if r.code != 1 || !strings.Contains(r.err, "TLS") || strings.Contains(r.err, "pw") || strings.Contains(r.err, "db.example.com") {
+			t.Errorf("%q: exit %d, stderr %q", dsn[len(dsn)-20:], r.code, r.err)
+		}
+	}
+}
+
+func TestKeyCreateRetriesAPrefixCollision(t *testing.T) {
+	setupDB(t)
+	mustOK(t, "tenant", "create", "acme")
+	first := strings.TrimSpace(mustOK(t, "key", "create", "--tenant", "acme").out)
+	old := generateKey
+	defer func() { generateKey = old }()
+	calls := 0
+	generateKey = func() (string, string, []byte) {
+		calls++
+		if calls <= 2 { // the same prefix again, twice
+			_, _, h := old()
+			return "sf_" + first[3:11] + "_x", first[3:11], h
+		}
+		return old()
+	}
+	r := mustOK(t, "key", "create", "--tenant", "acme")
+	if calls != 3 || !keyRe.MatchString(strings.TrimSpace(r.out)) {
+		t.Fatalf("calls=%d out=%q: a prefix collision must be retried with a fresh key", calls, r.out)
+	}
+}

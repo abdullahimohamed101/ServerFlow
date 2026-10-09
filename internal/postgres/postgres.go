@@ -111,7 +111,7 @@ func mapErr(err error) error {
 		switch pe.Code {
 		case "23505": // unique_violation
 			return fmt.Errorf("%w (%s)", ErrConflict, pe.ConstraintName)
-		case "23514", "22001", "22P02", "23502": // check, too long, bad text representation, not null
+		case "23514", "22001", "22P02", "22003", "23502": // check, too long, bad text representation, not null
 			return fmt.Errorf("%w (%s)", ErrInvalid, firstNonEmpty(pe.ConstraintName, pe.ColumnName, pe.Message))
 		case "23503": // foreign_key_violation
 			return ErrNotFound

@@ -103,3 +103,22 @@ func NewDSN(t testing.TB) string {
 	u.Path = "/" + name
 	return u.String()
 }
+
+// Exec runs SQL as the test server's superuser against the database dsn names, for tests that need
+// to plant data the application's own validation would refuse.
+func Exec(t testing.TB, dsn, sql string, args ...any) {
+	t.Helper()
+	if err := checkLoopback(dsn); err != nil {
+		t.Fatalf("refusing to run SQL: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	if _, err := conn.Exec(ctx, sql, args...); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+}

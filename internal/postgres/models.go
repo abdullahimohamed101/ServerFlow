@@ -42,6 +42,9 @@ func (s *Store) AddModel(ctx context.Context, m Model) (Model, error) {
 	if m.Status == "" {
 		m.Status = ModelEnabled
 	}
+	if err := checkRangePtr("max tokens", m.MaxTokensLimit, 1, maxInt32); err != nil {
+		return Model{}, err
+	}
 	if err := validateText("display name", m.DisplayName, maxLabelLen); err != nil {
 		return Model{}, err
 	}

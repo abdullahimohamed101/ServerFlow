@@ -61,6 +61,19 @@ func (s *Store) CreateTenant(ctx context.Context, in TenantInput) (Tenant, error
 	if err := validateModelList(in.AllowedModels); err != nil {
 		return Tenant{}, err
 	}
+	for _, c := range []struct {
+		name string
+		v    int
+		lo   int
+		hi   int
+	}{
+		{"requests per minute", in.RequestsPerMinute, 0, maxInt32}, {"tokens per minute", in.TokensPerMinute, 0, maxInt32},
+		{"max concurrent requests", in.MaxConcurrentRequests, 0, maxInt32}, {"priority", in.Priority, 0, 2},
+	} {
+		if err := checkRange(c.name, c.v, c.lo, c.hi); err != nil {
+			return Tenant{}, err
+		}
+	}
 	return scanTenant(s.pool.QueryRow(ctx, `INSERT INTO tenants (id, name, requests_per_minute, tokens_per_minute, max_concurrent_requests, allowed_models, priority)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+tenantCols,
 		newID("ten_"), in.Name, in.RequestsPerMinute, in.TokensPerMinute, in.MaxConcurrentRequests, in.AllowedModels, in.Priority))
@@ -115,6 +128,18 @@ type Quota struct {
 
 // SetTenantQuota changes the given quota fields of a tenant.
 func (s *Store) SetTenantQuota(ctx context.Context, ref string, q Quota) (Tenant, error) {
+	for _, c := range []struct {
+		name string
+		v    *int
+		hi   int
+	}{
+		{"requests per minute", q.RequestsPerMinute, maxInt32}, {"tokens per minute", q.TokensPerMinute, maxInt32},
+		{"max concurrent requests", q.MaxConcurrentRequests, maxInt32}, {"priority", q.Priority, 2},
+	} {
+		if err := checkRangePtr(c.name, c.v, 0, c.hi); err != nil {
+			return Tenant{}, err
+		}
+	}
 	return scanTenant(s.pool.QueryRow(ctx, `UPDATE tenants SET
 			requests_per_minute     = COALESCE($2, requests_per_minute),
 			tokens_per_minute       = COALESCE($3, tokens_per_minute),
