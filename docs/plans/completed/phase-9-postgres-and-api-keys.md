@@ -360,3 +360,15 @@ Steps 1 and 2 can proceed independently; 3–6 build on them.
   n-pw-return-len (the returned count is not observable through `fmt.Fprintf`'s use); n-maperr-22003 (range checks now run first, so the
   driver code is unreachable from the CLI); n-warn-unlimited (log rate limiting is cosmetic); n-maxlookups-min (the default for values below 2
   is unreachable once configuration requires 4 connections).
+
+## First CI run and what it found
+
+The first CI run on the PR failed three tests, all because the CI `postgres:16` service requires password
+authentication while the local throwaway cluster trusted everyone, so a missing or wrong password was
+invisible locally: two outage tests created database roles with no password, and the gateway process test
+connected as the `postgres` superuser with an invented password. Fixes: `scripts/dev-postgres.sh` now uses SCRAM
+password authentication like CI (existing trust-auth clusters are refused with a notice to `reset`); a
+`postgrestest.CreateRole` helper creates login roles with random passwords and grants; the process test now
+connects as the least-privilege role from `docs/operations/postgres-and-auth.md` (which also checks that
+guide's `GRANT` block works); every CI step was then run locally against the password-authenticated database.
+This is the "CI workflow was never executed" risk listed in the PR coming true; the workflow itself was fine.

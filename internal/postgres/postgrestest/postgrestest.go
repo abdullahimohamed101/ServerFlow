@@ -122,3 +122,40 @@ func Exec(t testing.TB, dsn, sql string, args ...any) {
 		t.Fatalf("exec: %v", err)
 	}
 }
+
+// CreateRole creates a login role with a random password, lets it connect to the database that
+// adminDSN names, runs each grant (SQL in which {role} stands for the new role's name), and returns
+// a DSN for that role. The role is dropped when the test ends.
+//
+// Roles need passwords: CI's server uses password authentication, and a test that connects as a
+// passwordless role passes against a trust-auth server and fails there. attrs is appended to
+// CREATE ROLE, for example "CONNECTION LIMIT 1".
+func CreateRole(t testing.TB, adminDSN, attrs string, grants ...string) string {
+	t.Helper()
+	cfg, err := pgconn.ParseConfig(adminDSN)
+	if err != nil {
+		t.Fatal("not a valid PostgreSQL connection string")
+	}
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	role := "sf_r_" + hex.EncodeToString(b[:6])
+	password := hex.EncodeToString(b[6:]) + "Pw"
+	// role and password are generated from hex digits, so they are safe in these statements.
+	Exec(t, adminDSN, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"' "+attrs)
+	Exec(t, adminDSN, "GRANT CONNECT ON DATABASE "+cfg.Database+" TO "+role)
+	t.Cleanup(func() {
+		Exec(t, adminDSN, "DROP OWNED BY "+role)
+		Exec(t, adminDSN, "DROP ROLE "+role)
+	})
+	for _, g := range grants {
+		Exec(t, adminDSN, strings.ReplaceAll(g, "{role}", role))
+	}
+	u, err := url.Parse(adminDSN)
+	if err != nil {
+		t.Fatal("the test DSN must be a URL")
+	}
+	u.User = url.UserPassword(role, password)
+	return u.String()
+}

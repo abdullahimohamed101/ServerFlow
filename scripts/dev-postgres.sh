@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # A throwaway PostgreSQL for local development and the database tests. It lives in
 # .data/postgres under the repository (gitignored), listens on 127.0.0.1:55432 only
-# (no unix socket), and trusts connections from localhost for one dedicated test
-# superuser. It is NOT a place for real data and must never be exposed to a network.
+# (no unix socket), and requires a password (SCRAM-SHA-256, like the CI service)
+# for one dedicated test superuser. The password is public and fixed, so it is NOT a
+# place for real data and must never be exposed to a network. Password authentication
+# is deliberate: with trust auth, tests that forget a password pass locally and fail
+# in CI (this happened once).
 #
 # Set DEV_POSTGRES_PORT to use another port (e.g. when several worktrees run one each).
 #   scripts/dev-postgres.sh start|stop|status|reset|dsn
@@ -18,7 +21,9 @@ log="$root/.data/postgres.log"
 port="${DEV_POSTGRES_PORT:-55432}"
 user=sf_test
 db=serverflow_test
-dsn="postgres://$user@127.0.0.1:$port/$db?sslmode=disable"
+password=postgres
+dsn="postgres://$user:$password@127.0.0.1:$port/$db?sslmode=disable"
+export PGPASSWORD="$password" # for the psql and createdb calls below
 
 find_bin() {
   local name="$1" d
@@ -36,10 +41,13 @@ start() {
   mkdir -p "$root/.data"
   if [ ! -f "$data/PG_VERSION" ]; then
     echo "dev-postgres: creating a throwaway cluster in .data/postgres"
-    "$(find_bin initdb)" -D "$data" -U "$user" --auth-local=trust --auth-host=trust -E UTF8 --no-instructions >/dev/null
+    pwfile="$(mktemp)"
+    printf '%s\n' "$password" > "$pwfile"
+    "$(find_bin initdb)" -D "$data" -U "$user" --auth-local=scram-sha-256 --auth-host=scram-sha-256 --pwfile="$pwfile" -E UTF8 --no-instructions >/dev/null
+    rm -f "$pwfile"
     # Only IPv4 loopback may connect; the server also listens on nothing else.
     cat > "$data/pg_hba.conf" <<HBA
-host all all 127.0.0.1/32 trust
+host all all 127.0.0.1/32 scram-sha-256
 HBA
     cat >> "$data/postgresql.conf" <<CONF
 listen_addresses = '127.0.0.1'
@@ -51,6 +59,10 @@ full_page_writes = off
 max_connections = 200
 CONF
   fi
+  if grep -q "trust" "$data/pg_hba.conf" 2>/dev/null; then
+    echo "dev-postgres: this cluster was created with trust authentication; run: $0 reset" >&2
+    exit 1
+  fi
   if running; then
     echo "dev-postgres: already running"
   else
@@ -60,7 +72,7 @@ CONF
   if ! "$(find_bin psql)" -X -q -h 127.0.0.1 -p "$port" -U "$user" -d postgres -tAc "select 1 from pg_database where datname='$db'" | grep -q 1; then
     "$(find_bin createdb)" -h 127.0.0.1 -p "$port" -U "$user" "$db"
   fi
-  echo "dev-postgres: DSN (throwaway, no password): $dsn"
+  echo "dev-postgres: DSN (throwaway, password auth like CI): $dsn"
 }
 
 case "${1:-}" in

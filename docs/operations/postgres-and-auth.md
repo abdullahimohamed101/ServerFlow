@@ -117,4 +117,4 @@ GRANT SELECT ON api_keys, tenants, schema_migrations TO serverflow_gateway;
 GRANT UPDATE (last_used_at) ON api_keys TO serverflow_gateway;
 ```
 
-`scripts/dev-postgres.sh` creates a trust-auth cluster for local use only.
+`scripts/dev-postgres.sh` creates a throwaway cluster for local use only. It uses password (SCRAM) authentication with a fixed, public test password, like the CI service, so a connection that omits or mistypes a password fails locally exactly as it does in CI.

@@ -150,4 +150,4 @@ priority and carries them, nothing more.
 - Tenant names are case sensitive; quota fields are plain integers without upper bounds; `expires_at` is
   not constrained to be after `created_at`; `Authorization: Bearer` must have exactly one space. These
   were reviewed and left as they are.
-- `scripts/dev-postgres.sh` is trust-auth on loopback for local use only.
+- `scripts/dev-postgres.sh` is a throwaway loopback cluster for local use only. It uses SCRAM password authentication with a fixed, public password so local runs behave like the CI service (an earlier trust-auth version let three tests that omitted a password pass locally and fail in CI).

@@ -81,7 +81,7 @@ func (p *dbProxy) cut() {
 
 func (p *dbProxy) restore(t *testing.T) { p.listen(t, p.addr) }
 
-// withPassword returns dsn with a password added, which the trust-auth test server ignores.
+// withHostAndPassword returns dsn pointed at hostport with the given password for its user.
 func withHostAndPassword(t *testing.T, dsn, hostport, password string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
@@ -153,10 +153,20 @@ func TestProcessAuthEndToEnd(t *testing.T) {
 	admDSN := postgrestest.NewDSN(t)
 	u, _ := url.Parse(admDSN)
 	proxy := newDBProxy(t, u.Host)
-	const password = "pr0cess-t3st-pw"
-	gwDSN := withHostAndPassword(t, admDSN, proxy.addr, password)
 
 	mustAdmin(t, admDSN, "migrate", "up")
+	// The gateway connects as the least-privilege role the operations guide describes (SELECT on
+	// api_keys, tenants and schema_migrations, UPDATE of last_used_at), with a real password, as it
+	// must against any password-authenticated server.
+	roleDSN := postgrestest.CreateRole(t, admDSN, "",
+		"GRANT SELECT ON api_keys, tenants, schema_migrations TO {role}",
+		"GRANT UPDATE (last_used_at) ON api_keys TO {role}")
+	ru, err := url.Parse(roleDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	password, _ := ru.User.Password()
+	gwDSN := withHostAndPassword(t, roleDSN, proxy.addr, password)
 	mustAdmin(t, admDSN, "tenant", "create", "acme", "--models", model)
 	mustAdmin(t, admDSN, "tenant", "create", "restricted", "--models", "some-other-model")
 	mustAdmin(t, admDSN, "tenant", "create", "frozen")

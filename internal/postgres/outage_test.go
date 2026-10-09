@@ -2,8 +2,6 @@ package postgres
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -147,28 +145,13 @@ func TestBlackholedDatabaseIsAnOutageAndLaterKeysFailFast(t *testing.T) {
 	}
 }
 
-func randomRole() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return "sf_r_" + hex.EncodeToString(b[:])
-}
-
 // A server that has run out of connection slots (SQLSTATE 53300) is busy, not an outage, so it does not
 // start a backoff or flap the unavailable/recovered log.
 func TestTooManyConnectionsIsBusyNotAnOutage(t *testing.T) {
 	admin := postgrestest.NewDSN(t)
 	ctx := context.Background()
-	role := randomRole()
-	postgrestest.Exec(t, admin, "CREATE ROLE "+role+" LOGIN CONNECTION LIMIT 1")
-	postgrestest.Exec(t, admin, "GRANT CONNECT ON DATABASE "+dbName(t, admin)+" TO "+role)
-	t.Cleanup(func() {
-		postgrestest.Exec(t, admin, "DROP OWNED BY "+role)
-		postgrestest.Exec(t, admin, "DROP ROLE "+role)
-	})
-
-	u, _ := url.Parse(admin)
-	u.User = url.User(role)
-	s, err := Open(ctx, Config{DSN: u.String(), MaxConns: 5, ConnectTimeout: 2 * time.Second})
+	roleDSN := postgrestest.CreateRole(t, admin, "CONNECTION LIMIT 1")
+	s, err := Open(ctx, Config{DSN: roleDSN, MaxConns: 5, ConnectTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,14 +168,6 @@ func TestTooManyConnectionsIsBusyNotAnOutage(t *testing.T) {
 	if !errors.Is(err, auth.ErrBusy) {
 		t.Fatalf("too many connections must be busy, got %v", err)
 	}
-}
-
-func dbName(t *testing.T, dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u.Path[1:]
 }
 
 // If the query fails while its rows are being read, that is a failure and never "no such key": a
@@ -216,21 +191,10 @@ func TestFailureWhileReadingRowsIsNotKeyNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A non-superuser role subject to a row-level policy that raises an error when a row is evaluated.
-	role := randomRole()
-	db := dbName(t, admin)
-	postgrestest.Exec(t, admin, "CREATE ROLE "+role+" LOGIN")
-	postgrestest.Exec(t, admin, "GRANT CONNECT ON DATABASE "+db+" TO "+role)
-	postgrestest.Exec(t, admin, "GRANT SELECT ON api_keys, tenants TO "+role)
 	postgrestest.Exec(t, admin, "ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY")
 	postgrestest.Exec(t, admin, "CREATE POLICY boom ON api_keys FOR SELECT USING (1 / (length(prefix) - 8) = 0)")
-	t.Cleanup(func() {
-		postgrestest.Exec(t, admin, "DROP OWNED BY "+role)
-		postgrestest.Exec(t, admin, "DROP ROLE "+role)
-	})
-
-	u, _ := url.Parse(admin)
-	u.User = url.User(role)
-	ro, err := Open(ctx, Config{DSN: u.String(), MaxConns: 2})
+	roleDSN := postgrestest.CreateRole(t, admin, "", "GRANT SELECT ON api_keys, tenants TO {role}")
+	ro, err := Open(ctx, Config{DSN: roleDSN, MaxConns: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
