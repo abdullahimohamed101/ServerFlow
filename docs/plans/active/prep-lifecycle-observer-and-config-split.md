@@ -1,6 +1,6 @@
 # Prep: request-lifecycle observer seam and per-feature config files
 
-Status: Proposed (awaiting approval of the decisions below)
+Status: Approved (all defaults, including the amendments A1-A4 below)
 Owner: coding agent
 Depends on: Phases 8 and 9 merged (they are)
 Purpose: let Phases 10 (Prometheus), 11 (OpenTelemetry) and 12 (Kafka) be built in parallel without editing the same lines, and without sprinkling three kinds of instrumentation through the request path.
@@ -41,12 +41,18 @@ No behaviour change. Every existing test passes unmodified (tests that reach int
   | `AttemptEnded(ctx, AttemptEnd)` | an attempt finished | attempt ID, worker ID, outcome, duration, whether a retry follows, failure class |
   | `RequestCompleted(ctx, Completion)` | final status decided (success, error, client closed) | status, error code, duration, attempts, TTFT, bytes if known |
 
+  **Amendments after planning Phases 10-12 (A1-A4, approved):**
+  - **A1.** `RequestStarted` and `AttemptStarted` return a `context.Context`; the gateway uses the returned context for the rest of that request (or attempt) and, for an attempt, for the upstream call. This lets a tracing observer put its span in the context (Phase 11) so trace headers can be propagated. Observers that do not need it return the context they were given. `multiObserver` threads the context through the observers in order.
+  - **A2.** Attempt events (`AttemptStarted`, `FirstToken`, `AttemptEnded`) also fire in static (non-registry) mode, with one attempt per request and an empty worker ID. `FirstToken` and `AttemptEnded` receive the attempt context.
+  - **A3.** Event fields the metrics, tracing and events observers need, added now so later phases do not reopen the interface: `RequestStart{ID, Method, Path, Time, TraceHeaders}` where `TraceHeaders` carries only `traceparent` and `tracestate`, each length-capped at 512 bytes and otherwise unvalidated; `Admission{..., RateLimitDuration}`; `Rejection{Kind, Reason, Status, DecisionDuration}` where kind `capacity` carries the reason; `AttemptStart{AttemptID, Number, WorkerID, Model, Strategy, SelectDuration, SinceRequestStart, WorkerState}`; `AttemptEnd{..., Class, WillRetry, NextWorkerUnavailable}`; `Completion{Status, ErrorCode, Duration, Attempts, TTFT}`. Token counts are NOT added here (Phase 12 adds them with the proxy-path change that produces them).
+  - **A4.** ADR numbers: this prep takes ADR-016; Phase 10 ADR-017; Phase 11 ADR-018; Phase 12 ADR-019.
+
   Rationale: these seven are exactly the points the spec's lifecycle (§6) and Kafka event list (§20: received, routed, first_token, completed, failed) and trace span list (§28: gateway.receive, rate_limit, scheduler.select, worker.forward, inference, first_token, completion) need. `ctx` is the request context so a tracing observer can find its span.
-- **D2. Fan-out through a `multiObserver` built once at server construction.** Observers are held in a slice; each call is a loop of direct method calls. No reflection, no channels, no allocation on the hot path beyond the value structs (passed by value). A nil/absent observer list is a no-op, not a nil check at every call site.
+- **D2. Fan-out through a `multiObserver` built once at server construction.** Observers are held in a slice; each call is a loop of direct method calls. No reflection, no channels, no allocation on the hot path beyond the value structs (passed by value; contexts are the only reference that crosses the seam). A nil/absent observer list is a no-op, not a nil check at every call site.
 - **D3. Observers must not block and must not panic the request.** The contract is documented on the interface: methods return quickly (anything slow, such as Kafka, buffers internally), and `multiObserver` recovers a panicking observer, logs once per observer per minute, and continues with the others. A dedicated test pins this.
 - **D4. Metrics is the first observer, behaviour-preserving.** The existing `metrics` type implements `Observer`; the existing `observe*` call sites are replaced by `Observer` calls, and the Prometheus instruments stay where they are. The gauge `inference_requests_active` is driven by `RequestStarted`/`RequestCompleted`. Series names, labels and buckets do not change; a test compares the `/metrics` series set before and after.
 - **D5. Logging stays as it is.** `logRequest` is not an observer in this phase (structured logs are the contract of every earlier phase and tests assert on them). It may become one later.
-- **D6. Observers are registered with a functional option** (`gateway.WithObserver(o)`) on `New`/`NewFromConfig`/`NewRegistry`, the same style as the existing `Option`s. Metrics is always registered first.
+- **D6. Observers are registered with a functional option** (`gateway.WithObserver(o)`) on `New`/`NewFromConfig`/`NewRegistry`, the same style as the existing `Option`s. Metrics is always registered first. With A1 the option list is applied in order and each observer sees the context returned by the ones before it.
 - **D7. Config split by feature, mechanically.** `config.go` keeps `Config`, `Default()`, and `Validate()` (which calls the per-feature validators); each feature moves with its struct, defaults helper and validator into `gateway.go`, `scheduler.go`, `worker.go`, `controlplane.go`, `admission.go`, `redis.go`, `ratelimit.go`, `postgres.go`, `auth.go`, `log.go` (the exact set follows the existing structs). Exported identifiers, `String()`/`LogValue()` redaction methods and error text are untouched. `config_test.go` (694 lines) is split the same way only where a test clearly belongs to one feature; no assertion changes.
 - **D8. New sections are reserved, not added.** The split leaves an obvious place (`metrics.go`, `tracing.go`, `events.go`) but adds none; Phases 10-12 each add theirs.
 
@@ -55,10 +61,10 @@ No behaviour change. Every existing test passes unmodified (tests that reach int
 ```go
 // internal/gateway/observer.go
 type Observer interface {
-    RequestStarted(ctx context.Context, e RequestStart)
+    RequestStarted(ctx context.Context, e RequestStart) context.Context
     RequestAdmitted(ctx context.Context, e Admission)
     RequestRejected(ctx context.Context, e Rejection)
-    AttemptStarted(ctx context.Context, e AttemptStart)
+    AttemptStarted(ctx context.Context, e AttemptStart) context.Context
     FirstToken(ctx context.Context, e FirstToken)
     AttemptEnded(ctx context.Context, e AttemptEnd)
     RequestCompleted(ctx context.Context, e Completion)
