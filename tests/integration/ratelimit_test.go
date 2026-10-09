@@ -205,6 +205,7 @@ func TestThreeGatewaysShareOneTokenQuota(t *testing.T) {
 	key := c.keys.add(tenant, nil, 0, 1000, 0)
 	var ok atomic.Int64
 	var wg sync.WaitGroup
+	start := time.Now()
 	for i := 0; i < 150; i++ {
 		wg.Add(1)
 		g := c.gws[i%3]
@@ -216,10 +217,14 @@ func TestThreeGatewaysShareOneTokenQuota(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	elapsed := time.Since(start)
 	cost := ratelimit.EstimateCost([]protocol.Message{{Role: "user", Content: "hi"}}, "", 10, 4096)
 	want := int64(1000 / cost)
-	if ok.Load() < want || ok.Load() > want+3 {
-		t.Fatalf("admitted %d requests of cost %d against 1000 tokens (want about %d)", ok.Load(), cost, want)
+	// Real Redis time keeps refilling while the load runs (1000 tokens a minute), so the upper bound follows the
+	// measured duration instead of a fixed count that depends on how fast the machine is.
+	refilled := int64(elapsed.Seconds()*1000/60/float64(cost)) + 2
+	if ok.Load() < want || ok.Load() > want+refilled {
+		t.Fatalf("admitted %d requests of cost %d against 1000 tokens in %v (want %d to %d)", ok.Load(), cost, elapsed, want, want+refilled)
 	}
 }
 
@@ -232,6 +237,7 @@ func TestAggressiveTenantIsLimitedAndNormalTenantsAreNot(t *testing.T) {
 	}
 	var aggOK, aggLimited, normOK, normRejected atomic.Int64
 	var wg sync.WaitGroup
+	start := time.Now()
 	for i := 0; i < 800; i++ {
 		wg.Add(1)
 		g := c.gws[i%3]
@@ -260,8 +266,10 @@ func TestAggressiveTenantIsLimitedAndNormalTenantsAreNot(t *testing.T) {
 		}
 	}
 	wg.Wait()
-	if aggOK.Load() < 60 || aggOK.Load() > 70 || aggLimited.Load() < 700 {
-		t.Fatalf("aggressive tenant: %d admitted, %d limited (quota 60)", aggOK.Load(), aggLimited.Load())
+	elapsed := time.Since(start)
+	maxAgg := int64(60) + int64(elapsed.Seconds()) + 2 // the bucket plus one token a second refilled during the run
+	if aggOK.Load() < 60 || aggOK.Load() > maxAgg || aggLimited.Load() < 800-maxAgg-150 {
+		t.Fatalf("aggressive tenant: %d admitted, %d limited in %v (quota 60, at most %d expected)", aggOK.Load(), aggLimited.Load(), elapsed, maxAgg)
 	}
 	if normRejected.Load() != 0 || normOK.Load() != 150 {
 		t.Fatalf("normal tenants: %d ok, %d rejected", normOK.Load(), normRejected.Load())
@@ -269,7 +277,11 @@ func TestAggressiveTenantIsLimitedAndNormalTenantsAreNot(t *testing.T) {
 }
 
 func TestRetryAfterIsHonestAcrossGateways(t *testing.T) {
-	c := newCluster(t, clusterOpts{n: 2})
+	// A frozen clock (the limiter's test clock replaces Redis TIME), so how fast the machine runs the 60 requests cannot matter.
+	var now atomic.Int64
+	now.Store(time.Now().UnixMilli())
+	clock := func() time.Time { return time.UnixMilli(now.Load()) }
+	c := newCluster(t, clusterOpts{n: 2, cfg: ratelimit.Config{Clock: clock}})
 	key := c.keys.add(redistest.Unique("ten"), nil, 60, 0, 0) // a bucket of 60 that refills one per second
 	for i := 0; i < 60; i++ {
 		if code, _, _ := c.gws[i%2].chat(key, model); code != 200 {
@@ -283,7 +295,11 @@ func TestRetryAfterIsHonestAcrossGateways(t *testing.T) {
 	if !strings.Contains(body, "RATE_LIMITED") || strings.Contains(body, "ten-") {
 		t.Fatalf("body %s", body)
 	}
-	time.Sleep(1100 * time.Millisecond) // a client that waits the advertised second succeeds
+	now.Add(999) // just short of the advertised second: still refused
+	if code, _, _ := c.gws[1].chat(key, model); code != 429 {
+		t.Fatalf("999 ms after: %d", code)
+	}
+	now.Add(1) // a client that waits the advertised second succeeds
 	if code, _, _ := c.gws[1].chat(key, model); code != 200 {
 		t.Fatalf("after waiting Retry-After: %d", code)
 	}

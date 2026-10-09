@@ -442,17 +442,19 @@ func TestRealRedisClockDrivesRefill(t *testing.T) {
 	}
 	tn := redistest.Unique("t")
 	lim := Limits{RequestsPerMinute: 60}
+	start := time.Now()
 	n := 0
 	for allow(t, l, tenantReq(tn, lim, 1)).Allowed {
 		n++
-		if n > 100 {
+		if n > 1000 {
 			t.Fatal("unbounded")
 		}
 	}
-	if n != 60 && n != 61 { // a token may refill while the loop runs
-		t.Fatalf("burst admitted %d, want 60", n)
+	// The burst is 60; tokens refill while the loop runs, so the upper bound follows the measured duration.
+	if max := 60 + int(time.Since(start).Seconds()) + 2; n < 60 || n > max {
+		t.Fatalf("burst admitted %d, want between 60 and %d", n, max)
 	}
-	time.Sleep(1300 * time.Millisecond)
+	time.Sleep(1300 * time.Millisecond) // at least one token must have refilled by now, however slow the machine
 	if !allow(t, l, tenantReq(tn, lim, 1)).Allowed {
 		t.Fatal("no token refilled after 1.3 s")
 	}
