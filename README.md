@@ -9,14 +9,15 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3, 4, 5 and 6 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4, 5 and 6 are complete and Phase 7 is in review. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
 > and death (`docs/architecture/worker-lifecycle.md`). With
 > `gateway.worker_source: registry` the gateway chooses a worker per request with
 > a configurable scheduler (`docs/architecture/scheduling.md`) and retries a
-> request that fails before any output on a different worker (ADR-012). Phase 1 is deferred
+> request that fails before any output on a different worker (ADR-012). A benchmark harness (`cmd/benchmark`, Phase 7) runs reproducible load tests and compares
+> runs (ADR-013). Phase 1 is deferred
 > until a GPU is available. See `docs/plans/completed/` for finished plans and
 > `docs/plans/active/` for the current one.
 
@@ -66,6 +67,16 @@ curl -s localhost:9090/v1/workers     # who is registered, their state and healt
 curl -s 'localhost:9090/v1/workers?model=mock-model&eligible=true'
 ```
 
+Run a load test and compare two schedulers (an embedded simulated cluster; results in `benchmark/runs/`):
+
+```bash
+make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 100 --duration 60s --workload mixed --seed 1"
+make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 100 --duration 60s --workload mixed --seed 1"
+make bench-compare A=run_001 B=run_002
+```
+
+See `docs/benchmarks/phase-7-harness.md` for how to read the output.
+
 On Windows (no `make`), use the existing quality gate:
 
 ```powershell
@@ -83,7 +94,7 @@ On Windows (no `make`), use the existing quality gate:
 | 4 | Worker registry | Complete |
 | 5 | Scheduler framework | Complete |
 | 6 | Multi-worker routing | Complete |
-| 7 | Baseline benchmark harness | Not started |
+| 7 | Baseline benchmark harness | In review |
 | 8 | Redis integration | Not started |
 | 9 | PostgreSQL | Not started |
 | 10 | Prometheus + Grafana | Not started |
