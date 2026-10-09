@@ -201,3 +201,21 @@ func TestRedisSettingsAreOnlyCheckedWhenRedisIsUsed(t *testing.T) {
 		t.Fatal("rate_limit.mode=required uses Redis, so a malformed redis.address must be refused")
 	}
 }
+
+// master accepted any redis.address (nothing used it); a host-only address such as "redis" must not stop a gateway that
+// has rate limiting and request metadata off.
+func TestHostOnlyRedisAddressIsAcceptedWhileRedisIsUnused(t *testing.T) {
+	t.Setenv("SERVERFLOW_REDIS_ADDRESS", "redis")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("a host-only redis.address with rate limiting off: %v", err)
+	}
+	if cfg.Redis.Address != "redis" {
+		t.Fatal(cfg.Redis.Address)
+	}
+	t.Setenv("SERVERFLOW_RATE_LIMIT_MODE", "required")
+	t.Setenv("SERVERFLOW_RATE_LIMIT_MODEL_REQUESTS_PER_MINUTE", "m=5")
+	if _, err := Load(""); err == nil {
+		t.Fatal("with rate limiting required, host:port is needed")
+	}
+}
