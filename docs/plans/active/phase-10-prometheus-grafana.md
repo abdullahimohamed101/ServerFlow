@@ -181,3 +181,5 @@ func Serve(ctx context.Context, cfg config.MetricsConfig, g prometheus.Gatherer,
 7. Local stack compose, Makefile targets, `scripts/promtool.sh`, quality mode and CI job; run everything locally that can run; list what could not.
 8. Manual live run on the user's Mac with evidence; overhead numbers; ADR-017, operations doc, ARCHITECTURE, README.
 9. Independent verifier, fix round, narrower second verification, PR; stop for approval.
+
+**Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
