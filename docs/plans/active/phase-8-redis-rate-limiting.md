@@ -305,3 +305,37 @@ normal runs. Not changed here. In one unloaded `go test ./...` run `TestProcessG
 After a clock step back, a bucket whose stamp is ahead of the clock refills nothing until the clock catches up or the key expires (at most
 twice the burst window), and `Retry-After` can then be too short. Shutdown behaviour (renewals and release workers stop when shutdown begins;
 releases are flushed by `Close(5s)`; a stream that outlives `lease_ttl` during a drain loses its lease) is documented in the operations guide.
+
+### Security review round (independent review findings)
+
+Each item was reproduced first, fixed with a test that fails without the fix, and committed separately.
+
+- **P1-1 client-controlled model name on the Redis wire.** `keyModel(r.Model)` was built and sent as KEYS[4] on every limited request, even
+  when the model had no cap, with no length check (escaping triples a name), so a 1 MiB model name in registry mode (`AnyModel`) made every
+  limited call send about 2.3 MB, tripped the 50 ms timeout and armed the global backoff for all tenants. Now an uncapped model sends the
+  constant placeholder `rl:model:{}` (nothing of the client's name is escaped, measured or sent), and a model name longer than
+  `protocol.MaxModelLen` is MODEL_NOT_FOUND at parse time. Tests: 20 limited calls with a 1 MiB name send under 40 KB to Redis through
+  the test proxy's byte counter (45 MB without the fix) and arm no backoff; the 404 path; a normal and a capped model still work.
+- **P2-1 estimate is not an upper bound.** No body rewrite. Documented as a known limitation (ADR-015, operations guide); comments no longer
+  say "the worst the gateway would allow"; the larger of `max_tokens` and `max_completion_tokens` is charged.
+- **P2-2 dense text.** Three characters per token (still approximate and typically low for the densest text).
+- **P2-3 pool exhaustion is not an outage.** `redis.pool_size` (default 64, 1-1000); `goredis.ErrPoolTimeout` becomes `redis.ErrBusy`: no
+  backoff, no outage log, 503 when closed, bypass when open. Real read/dial timeouts still arm the backoff. Tests with a saturated 1-connection pool.
+- **P2-4 dev-redis.sh** names the container `serverflow-test-redis-<port>`; status/stop/reset touch only that port's container and ping
+  checks the published port (verified with two instances).
+- **P2-5 invisible leases and drops.** `rate_limit_local_leases` and `rate_limit_dropped_releases_total` are exported; the post-outage lease
+  window and the asynchronous-release race are documented.
+- **P2-6** no-refund and the unauthenticated gap are documented (ADR-015, operations guide).
+- **P3** `MaxRetries` is now disabled in the driver (test: a server that drops the connection sees exactly one script command); a
+  malformed `redis.*` is only refused when something uses Redis (test); the backward-clock and shutdown behaviour is documented; the
+  real-clock tests use the frozen clock or bounds derived from measured duration; plan D12 is corrected; dev-redis.sh says its fixed password is
+  public and bound to loopback.
+- **Existing flaky tests.** `TestAClientWhoLeavesStopsTheRetries`: the gateway learns of a disconnect asynchronously, and the test released
+  the slow worker's 503 right after the client cancelled, so under load the 503 could arrive first and be retried. The worker never read the
+  request body, so net/http never watched its connection and no disconnect event existed to wait for; the worker now reads the body and the test
+  waits for the cancellation of the first attempt before releasing it. 50 runs under `-race` and 20 busy processes pass (the same loop failed on
+  master). `TestProcessGatewayRetriesAroundAFlakyWorker`: the cluster uses a 200 ms heartbeat and a 500 ms suspect timeout, so a half-second
+  stall of a loaded machine makes every worker suspect and the gateway correctly answers NO_CAPACITY with `eligible_workers: 0`. That is a test
+  assumption, not a product bug; the test now waits for the workers to report again and repeats the request (at most five blips, logged).
+- **Environment note.** `go test ./...` on this Mac opens thousands of loopback connections; with a second test run in parallel the ephemeral
+  ports were exhausted (`can't assign requested address`, about 9,000 sockets in TIME_WAIT) and unrelated tests failed until they drained.

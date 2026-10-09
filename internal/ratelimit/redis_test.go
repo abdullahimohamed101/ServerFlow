@@ -1046,7 +1046,8 @@ func TestHugeUncappedModelNameSendsOnlySmallCommandsAndArmsNoBackoff(t *testing.
 	proxy := redistest.NewProxy(t, rc.Address)
 	rc.Address, rc.Timeout = proxy.Addr(), 50*time.Millisecond
 	c := redistest.NewClientWith(t, rc)
-	l, err := NewRedis(c, Config{ModelRequestsPerMinute: map[string]int{"capped-model": 5}})
+	cappedModel := redistest.Unique("capped") // the cap is global per name, so each run needs its own
+	l, err := NewRedis(c, Config{ModelRequestsPerMinute: map[string]int{cappedModel: 5}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,14 +1078,14 @@ func TestHugeUncappedModelNameSendsOnlySmallCommandsAndArmsNoBackoff(t *testing.
 	}
 	// A model that is capped still gets its real key, so its cap applies.
 	n := 0
-	for allow(t, l, Request{TenantID: tn, Model: "capped-model", Cost: 1, Limits: Limits{RequestsPerMinute: 1000}}).Allowed {
+	for allow(t, l, Request{TenantID: tn, Model: cappedModel, Cost: 1, Limits: Limits{RequestsPerMinute: 1000}}).Allowed {
 		n++
 		if n > 50 {
 			t.Fatal("cap not applied")
 		}
 	}
-	if n < 1 || n > 5 {
-		t.Fatalf("capped model admitted %d, want at most its cap of 5", n)
+	if n != 5 {
+		t.Fatalf("capped model admitted %d, want exactly its cap of 5", n)
 	}
 }
 
