@@ -1,6 +1,6 @@
 # Prep: request-lifecycle observer seam and per-feature config files
 
-Status: Approved (all defaults, including the amendments A1-A4 below)
+Status: Completed 2026-10-09 (decisions D1-D8 and amendments A1-A4 implemented; see Implementation Notes for deviations)
 Owner: coding agent
 Depends on: Phases 8 and 9 merged (they are)
 Purpose: let Phases 10 (Prometheus), 11 (OpenTelemetry) and 12 (Kafka) be built in parallel without editing the same lines, and without sprinkling three kinds of instrumentation through the request path.
@@ -114,3 +114,38 @@ The middleware and handlers build the event structs at the places they already u
 4. Make `metrics` an `Observer`; replace direct calls one site at a time, running tests after each; commit per site group (middleware, auth, rate limit, attempts).
 5. Add `WithObserver`; recording-observer sequence tests (acceptance 3).
 6. Docs and ADR-016; overhead numbers; full gate; independent verification; fix round; PR.
+
+## Implementation Notes
+
+Implemented on branch `chore/lifecycle-observer-and-config-split`. Order followed the steps above.
+
+**Evidence**
+
+- Golden `/metrics` series test (`internal/gateway/metrics_golden_test.go`, `testdata/metrics_series_{static,registry}.golden`) was generated from the unchanged
+  master code and committed first; it passes unchanged after the refactor. It compares name, type, help, label names and histogram buckets (Go runtime and
+  process collectors excluded: they vary by host), driving success, streaming, unknown model, auth refusal, rate-limit refusal, bypass, unavailable, and in
+  registry mode a retry on a second worker.
+- Allocations per in-process request (`BenchmarkObserverRequest`, `-benchmem`, count 5, Apple M5 Pro): non-streaming 101 allocs/op before and after
+  (27,958 B to 28,057 B), streaming 108 before and after (28,144 B to 28,243 B); ns/op 6.1-6.5 us before, 6.1-6.4 us after (inside run-to-run spread);
+  two extra no-op observers: still 101 allocs/op. `TestGatewayOverhead` p95 overhead: non-stream 536 us before / 461 us after, stream TTFT 500 us before / 459 us after
+  (budget 25 ms).
+- `go doc -all ./internal/config` before and after (`/tmp/config-doc-before.txt`, `-after.txt`): the same lines; the only difference is that the `AuthModeOff/AuthModeRequired`
+  constant block is listed first instead of last, because go doc orders blocks by file name and `auth.go` sorts before `gateway.go`. The code lines of the split files are, as a sorted
+  multiset, identical to the old `config.go` apart from package/import lines.
+
+**Deviations and additions**
+
+- Commit grouping: the interface, the metrics observer and the call-site changes are one commit (they cannot build separately); tests and docs are separate commits.
+- Event fields beyond A3: `RequestID` on every event, `TenantID` on `Admission`/`Rejection`/`Completion`, `Admission.RateLimitChecked`/`RateLimitBypassed` (so metrics keeps
+  `rate_limit_decision_seconds` and `rate_limit_bypassed_total` exactly), and `Completion.Handled` (so an authentication refusal, which `RequestCompleted` also reports, is not counted
+  in `inference_requests_total` as before). Rejection kind `internal` was added for the fail-closed wiring errors (limiter or authenticator required but not wired).
+- `RequestStarted` fires before authentication (so an auth refusal is observable); consequently `inference_requests_active` counts a request that is about to fail authentication for
+  the instant it takes to refuse it. Nothing else observable changed.
+- `RequestAdmitted` fires after the rate limit in both modes. In registry mode the model is only confirmed by routing, so an unknown model there produces started, admitted, rejected(model);
+  `Admission.Model` is then the client's unconfirmed string, and `Completion.Model` stays empty (it is the metrics label).
+- A retry's `AttemptStarted` precedes the previous attempt's `AttemptEnded` (ADR-012 finds the next worker before letting go of the failed response). The tests pin that order.
+- Static-mode `AttemptEnded` is emitted from a deferred function that re-panics a handler panic unchanged after recording the attempt as failed. The metrics observer ignores attempt events
+  with an empty worker ID, keeping `inference_attempts_total` a registry-mode series.
+- Known gap (pre-existing, not changed): a panic raised inside the upstream call in registry mode skips `AttemptEnded` (and the worker slot release), because the attempt's cleanup is registered after the send loop.
+- Config test split: `gateway_test.go` now holds the gateway, registry-source and retry tests; the rest of `config_test.go` stays (they exercise several features); the auth, Redis and rate-limit tests already lived in their own files. No assertion changed (34 tests before, 34 after).
+- Verification by an independent read-only verifier and mutation checks (plan "Verification Plan") were not run by the implementing agent; the sequence tests would fail if `FirstToken` were removed, `RequestCompleted` doubled, or the rate-limit rejection skipped (each is asserted in an exact sequence).
