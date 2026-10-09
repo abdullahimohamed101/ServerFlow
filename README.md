@@ -70,12 +70,14 @@ curl -s 'localhost:9090/v1/workers?model=mock-model&eligible=true'
 Run a load test and compare two schedulers (an embedded simulated cluster; results in `benchmark/runs/`):
 
 ```bash
-make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 100 --duration 60s --workload mixed --seed 1"
-make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 100 --duration 60s --workload mixed --seed 1"
+make bench BENCH_ARGS="--scheduler round-robin --workers 4 --worker-profile heterogeneous --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
+make bench BENCH_ARGS="--scheduler least-active --workers 4 --worker-profile heterogeneous --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
 make bench-compare A=run_001 B=run_002
 ```
 
-See `docs/benchmarks/phase-7-harness.md` for how to read the output.
+Use fewer clients than the cluster has slots (workers x `--mock-concurrency`, 8 each by default; the harness refuses
+more unless `--allow-overload`), and `--repeat 3` or more so `compare` can show run-to-run spread. A run in which more than
+5% of requests fail is marked invalid and exits non-zero. See `docs/benchmarks/phase-7-harness.md` for how to read the output.
 
 On Windows (no `make`), use the existing quality gate:
 

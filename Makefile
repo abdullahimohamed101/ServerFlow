@@ -61,9 +61,10 @@ dev-cluster:
 	wait
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
-#   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 100 --duration 60s --workload mixed --seed 1"
+#   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3"
 #   make bench-compare A=run_001 B=run_002
 # Without BENCH_ARGS it runs the defaults: an embedded cluster, round-robin, 16 clients, 30s, mixed.
+# Keep --concurrency below workers x --mock-concurrency (8 each): more is refused unless --allow-overload.
 bench:
 	go run ./cmd/benchmark run $(BENCH_ARGS)
 

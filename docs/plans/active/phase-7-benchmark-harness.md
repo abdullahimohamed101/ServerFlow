@@ -12,7 +12,7 @@ One command runs a reproducible load test against ServerFlow and writes a result
 can compare to a second result:
 
 ```bash
-benchmark run     --scheduler round-robin --workers 4 --concurrency 100 --duration 60s --workload mixed --seed 1
+benchmark run     --scheduler round-robin --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3
 benchmark compare run_001 run_002
 ```
 

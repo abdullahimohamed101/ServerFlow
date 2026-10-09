@@ -1,7 +1,7 @@
 // Command benchmark is the scheduler benchmark harness: it drives a reproducible load
 // test against ServerFlow, persists the result, and compares two results.
 //
-//	benchmark run --scheduler round-robin --workers 4 --concurrency 100 --duration 60s --workload mixed --seed 1
+//	benchmark run --scheduler round-robin --workers 4 --concurrency 24 --duration 60s --workload mixed --seed 1 --repeat 3
 //	benchmark compare run_001 run_002
 //	benchmark list
 //
@@ -33,7 +33,8 @@ Usage:
   benchmark run -h                  all flags of run
 
 Without --target, run boots a simulated cluster (control plane, mock workers, gateway) in
-this process. Choose a load with --concurrency (closed loop) or --rate (open loop).`
+this process. Choose a load with --concurrency (closed loop, at most workers x mock-concurrency)
+or --rate (open loop). A run with more than 5% failed requests is invalid and exits non-zero.`
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
