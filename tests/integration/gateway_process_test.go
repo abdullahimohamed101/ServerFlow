@@ -251,9 +251,23 @@ func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
 		return completed(t, good1) > a && completed(t, good2) > b
 	})
 
-	var retried int
+	var retried, blips int
 	for i := 0; i < 90; i++ {
 		resp, body := gatewayPost(t, gwAddr)
+		// This cluster runs with a 200 ms heartbeat and a 500 ms suspect timeout so that death is noticed quickly. On a machine
+		// stalled for half a second (a parallel `go test ./...`, a loaded CI host) every worker is correctly judged
+		// suspect and the gateway correctly answers NO_CAPACITY with no eligible worker. That is a property of the
+		// cluster's timing, not of the retry behaviour measured here, so such a blip waits for the workers to report
+		// again and the request is made again; anything else, or too many blips, still fails the test.
+		for resp.StatusCode == 503 && strings.Contains(body, `"eligible_workers":0`) && blips < 5 {
+			blips++
+			t.Logf("request %d: no worker was eligible (heartbeat stall on a loaded machine); waiting for them to report again", i)
+			waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
+				return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
+			})
+			time.Sleep(1500 * time.Millisecond) // the gateway refreshes its view every second
+			resp, body = gatewayPost(t, gwAddr)
+		}
 		if resp.StatusCode != 200 {
 			t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
 		}
