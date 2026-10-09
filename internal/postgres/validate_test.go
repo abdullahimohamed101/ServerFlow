@@ -25,7 +25,7 @@ func TestValidateTenantNameRejectsIDLookalikesAndJunk(t *testing.T) {
 }
 
 func TestValidateTextRejectsControlAndInvisibleCharacters(t *testing.T) {
-	for _, bad := range []string{"a\x00b", "\x1b[31m", "x\ny", "x\ty", "\x7f", "\u009b", "‮", "​", " ", " ", "bad\xffutf8", "\ufeff"} {
+	for _, bad := range []string{"a\x00b", "\x1b[31m", "x\ny", "x\ty", "\x7f", "\u009b", "\u202e", "\u200b", "\u2028", "\u2029", "bad\xffutf8", "\ufeff"} {
 		if err := validateText("label", bad, 100); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%q accepted", bad)
 		}
