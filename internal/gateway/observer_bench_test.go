@@ -52,12 +52,16 @@ func BenchmarkObserverRequest(b *testing.B) {
 		name   string
 		stream bool
 		body   string
+		opts   []Option
 	}{
-		{"static_nonstream", false, `{"model":"qwen-7b","messages":[{"role":"user","content":"hello"}]}`},
-		{"static_stream", true, `{"model":"qwen-7b","stream":true,"messages":[{"role":"user","content":"hello"}]}`},
+		{"static_nonstream", false, `{"model":"qwen-7b","messages":[{"role":"user","content":"hello"}]}`, nil},
+		{"static_stream", true, `{"model":"qwen-7b","stream":true,"messages":[{"role":"user","content":"hello"}]}`, nil},
+		// Two more (no-op) observers beyond metrics: the marginal cost of the fan-out itself.
+		{"static_nonstream_two_nop_observers", false, `{"model":"qwen-7b","messages":[{"role":"user","content":"hello"}]}`,
+			[]Option{WithObserver(NopObserver{}), WithObserver(NopObserver{})}},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
-			h := benchServer(tc.stream).Handler()
+			h := benchServer(tc.stream, tc.opts...).Handler()
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
