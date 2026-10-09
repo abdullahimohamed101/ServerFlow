@@ -217,7 +217,7 @@ func TestInvalidOrErroringRunsAreWarnedAboutAboveTheTable(t *testing.T) {
 	if !strings.Contains(out.String(), "run_003 has an error rate of 8.00%") {
 		t.Fatalf("%s", out.String())
 	}
-	if w := Compare(a, a).Warnings; len(w) != 0 {
+	if w := Compare(a, a).Warnings; len(w) != 1 || !strings.Contains(w[0], "same run") { // only the same-run notice, no run-quality warning
 		t.Fatalf("%v", w)
 	}
 }

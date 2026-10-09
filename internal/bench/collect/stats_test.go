@@ -120,3 +120,10 @@ func TestMean(t *testing.T) {
 		t.Fatal("mean of nothing is undefined")
 	}
 }
+
+func TestSummarizeP99IsNotP95(t *testing.T) {
+	d := Summarize(seq(100)) // 1..100: nearest rank gives p50 50, p95 95, p99 99
+	if d.P50 != 50 || d.P95 != 95 || d.P99 != 99 || d.P99 == d.P95 {
+		t.Fatalf("%+v", *d)
+	}
+}

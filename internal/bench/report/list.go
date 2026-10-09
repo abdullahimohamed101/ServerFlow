@@ -23,7 +23,7 @@ func List(w io.Writer, base string) error {
 	for _, id := range ids {
 		r, err := Load(filepath.Join(base, id))
 		if err != nil {
-			_, _ = fmt.Fprintf(tw, "%s\tunreadable: %v\n", id, err)
+			_, _ = fmt.Fprintf(tw, "%s\tunreadable: %s\n", id, Clean(err.Error()))
 			continue
 		}
 		m, s := r.Metadata, r.Summary
@@ -35,7 +35,7 @@ func List(w io.Writer, base string) error {
 		if s.Latency != nil {
 			p95 = fmt.Sprintf("%.0f ms", s.Latency.P95)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%d/%d\n", id, m.Date, m.Workload, m.Scheduler, load,
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.2f\t%s\t%d/%d\t%d/%d\n", id, Clean(m.Date), Clean(m.Workload), Clean(m.Scheduler), load,
 			s.RequestsPerSecond, p95, s.Failed, s.Sent, max(m.Repeat.Index, 1), max(m.Repeat.Of, 1))
 	}
 	return tw.Flush()

@@ -2,12 +2,14 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"serverflow/internal/bench/collect"
 )
@@ -30,6 +32,9 @@ type Result struct {
 	// measured. InvalidReasons say why. A result with valid=false should not be compared as is.
 	Valid          bool     `json:"valid"`
 	InvalidReasons []string `json:"invalid_reasons"`
+	// Warnings are conditions that leave the result valid but change what its numbers mean (for
+	// example a window cut short by --max-requests). They are printed at the top of the report.
+	Warnings []string `json:"warnings"`
 	// StatsMissing names the workers whose completed count could not be used, with the reason;
 	// the request balance is then partial.
 	StatsMissing map[string]string `json:"stats_missing"`
@@ -47,6 +52,9 @@ type Result struct {
 // measured by the wall clock and by the monotonic clock; they differ when the machine slept
 // or the clock was changed, which stalls otherwise unexplained.
 type Timings struct {
+	// PreRun is the time spent before the clock started: listing the workers and reading their
+	// first completed counts. It is not part of the window.
+	PreRun           float64 `json:"prerun_seconds"`
 	Boot             float64 `json:"boot_seconds"`
 	Warmup           float64 `json:"warmup_seconds"`
 	Window           float64 `json:"window_seconds"`
@@ -104,6 +112,10 @@ type Input struct {
 	// MaxErrorRate is the error rate above which the run is invalid; negative disables the check.
 	MaxErrorRate float64
 	Timings      Timings
+	// Truncated says the request cap ended the run early; Window is then the cut window and
+	// PlannedWindow the one that was asked for.
+	Truncated     bool
+	PlannedWindow time.Duration
 }
 
 // Build computes the result of a run. It is pure.
@@ -113,7 +125,7 @@ func Build(in Input) Result {
 		Summary:           collect.SummarizeRecords(in.Records, in.Window),
 		SamplePollsFailed: in.SamplePollsFailed, SamplesDropped: in.SamplesDropped,
 		NotMeasured: map[string]string{}, Notes: append([]string{}, in.Notes...), Timings: in.Timings,
-		InvalidReasons: []string{}, StatsMissing: map[string]string{},
+		InvalidReasons: []string{}, Warnings: []string{}, StatsMissing: map[string]string{},
 		Imbalance: Imbalance{RequestJainByModel: map[string]float64{}},
 	}
 	if r.Summary.Latency == nil {
@@ -188,22 +200,61 @@ func Build(in Input) Result {
 		r.Notes = append(r.Notes, fmt.Sprintf("Request balance is partial: %d of %d workers have no usable completed count (%s).",
 			len(ids), len(targets), strings.Join(ids, ", ")))
 	}
-	r.validate(in.MaxErrorRate)
+	r.validate(in.MaxErrorRate, in)
 	return r
 }
 
-// validate sets Valid and InvalidReasons.
-func (r *Result) validate(maxErrorRate float64) {
+// lateStart is how long after the run began the first request may be sent before the window
+// is considered shortened: the load should start at once, and pre-run work happens before the
+// clock starts.
+func lateStart(in Input) time.Duration {
+	return max(time.Second, (in.Window.End)/20)
+}
+
+// validate sets Valid, InvalidReasons and Warnings. A maxErrorRate of 0 tolerates no failure at
+// all; a negative one disables the check.
+func (r *Result) validate(maxErrorRate float64, in Input) {
 	s := r.Summary
 	if s.Sent == 0 {
-		r.InvalidReasons = append(r.InvalidReasons, "no request was measured (sent 0): the window was empty or the run ended before it opened")
+		r.InvalidReasons = append(r.InvalidReasons, "no request was measured (sent 0): none was due inside the measurement window")
 	}
 	if maxErrorRate >= 0 && s.Sent > 0 && s.ErrorRate > maxErrorRate {
 		r.InvalidReasons = append(r.InvalidReasons, fmt.Sprintf(
 			"error rate %.2f%% (%d of %d requests failed) exceeds %.2f%%: latency, TTFT and balance describe only the %d survivors; the load probably exceeded what the target can take",
 			s.ErrorRate*100, s.Failed, s.Sent, maxErrorRate*100, s.Succeeded))
 	}
+	if first, ok := firstStart(in.Records); ok && first > lateStart(in) {
+		r.InvalidReasons = append(r.InvalidReasons, fmt.Sprintf(
+			"the first request was sent %s after the run began, so the %s window was shortened by about that much and the throughput (divided by the full window) is understated",
+			FormatDuration(first), FormatDuration(in.Window.End-in.Window.Start)))
+	}
+	if in.Truncated {
+		r.Warnings = append(r.Warnings, fmt.Sprintf(
+			"the window was cut from %s to %s by --max-requests: throughput divides by the cut window, and %d of the %d requests counted in it were sent during warm-up",
+			FormatDuration(in.PlannedWindow), FormatDuration(in.Window.End-in.Window.Start), s.WarmupCompletedInWindow, s.CompletedInWindow))
+	}
 	r.Valid = len(r.InvalidReasons) == 0
+}
+
+// firstStart is when the earliest request was actually sent.
+func firstStart(recs []collect.Record) (time.Duration, bool) {
+	if len(recs) == 0 {
+		return 0, false
+	}
+	first := recs[0].Started
+	for _, r := range recs[1:] {
+		first = min(first, r.Started)
+	}
+	return first, true
+}
+
+// FormatDuration prints a duration with a sensible precision: milliseconds below ten seconds,
+// otherwise seconds with one decimal.
+func FormatDuration(d time.Duration) string {
+	if d < 10*time.Second {
+		return fmt.Sprintf("%d ms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1f s", d.Seconds())
 }
 
 func (r *Result) requestImbalance(byModel map[string][]float64, targets int, missing map[string]string) {
@@ -274,10 +325,27 @@ func Write(dir string, r Result, records []collect.Record) error {
 // maxResultBytes bounds a result file that is read.
 const maxResultBytes = 64 << 20
 
-// Load reads a result from a run directory, or from a result.json path.
+// Load reads a result from a run directory, or from a result.json path. It refuses symbolic
+// links and anything that is not a regular file, and no error message contains file content.
 func Load(path string) (Result, error) {
-	if st, err := os.Stat(path); err == nil && st.IsDir() {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return Result{}, err
+	}
+	if st.Mode()&os.ModeSymlink != 0 {
+		return Result{}, fmt.Errorf("%s is a symbolic link: refusing to follow it", path)
+	}
+	if st.IsDir() {
 		path = filepath.Join(path, ResultFile)
+		if st, err = os.Lstat(path); err != nil {
+			return Result{}, err
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return Result{}, fmt.Errorf("%s is a symbolic link: refusing to follow it", path)
+		}
+	}
+	if !st.Mode().IsRegular() {
+		return Result{}, fmt.Errorf("%s is not a regular file", path)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -293,7 +361,17 @@ func Load(path string) (Result, error) {
 	}
 	var r Result
 	if err := json.Unmarshal(b, &r); err != nil {
-		return Result{}, fmt.Errorf("%s: %w", path, err)
+		// Decoder errors can quote the offending bytes, so only positions and field names are kept.
+		var syn *json.SyntaxError
+		var typ *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &syn):
+			return Result{}, fmt.Errorf("%s: not valid JSON (error at byte %d)", path, syn.Offset)
+		case errors.As(err, &typ):
+			return Result{}, fmt.Errorf("%s: does not match the result schema (field %s)", path, Clean(typ.Field))
+		default:
+			return Result{}, fmt.Errorf("%s: could not be decoded", path)
+		}
 	}
 	if r.SchemaVersion != SchemaVersion {
 		return Result{}, fmt.Errorf("%s: schema version %d, this harness reads %d", path, r.SchemaVersion, SchemaVersion)

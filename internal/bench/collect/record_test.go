@@ -151,3 +151,22 @@ func TestOneSlowTailRequestDoesNotMoveTheHeadlineThroughput(t *testing.T) {
 		t.Fatalf("the with-tail figure is the one that collapses: %v vs %v", a.RequestsPerSecondWithTail, b.RequestsPerSecondWithTail)
 	}
 }
+
+func TestInputAndOutputTokenThroughputUseTheSameWindowedNumerator(t *testing.T) {
+	// Request A is measured but finishes in the drain; B is a warm-up request that finishes inside the
+	// window; C is measured and finishes inside. Input tokens 7, 100, 20 and output tokens 3, 50, 9.
+	a := Record{Seq: 0, Intended: sec(5), Started: sec(5), Done: sec(15), Status: 200, InputTokens: 7, OutputTokens: 3}
+	b := Record{Seq: 1, Intended: sec(1), Started: sec(1), Done: sec(3), Status: 200, InputTokens: 100, OutputTokens: 50}
+	c := Record{Seq: 2, Intended: sec(6), Started: sec(6), Done: sec(8), Status: 200, InputTokens: 20, OutputTokens: 9}
+	s := SummarizeRecords([]Record{a, b, c}, Window{Start: sec(2), End: sec(12)})
+	if s.CompletedInWindow != 2 || s.WarmupCompletedInWindow != 1 {
+		t.Fatalf("%+v", s)
+	}
+	if s.InputTokensPerSecond != 12 || s.OutputTokensPerSecond != 5.9 { // (100+20)/10 and (50+9)/10
+		t.Fatalf("input %v output %v", s.InputTokensPerSecond, s.OutputTokensPerSecond)
+	}
+	// With the tail: the two measured successes (A and C) over the 13 s span.
+	if math.Abs(s.InputTokensPerSecondWithTail-27.0/13) > 1e-12 || math.Abs(s.OutputTokensPerSecondWithTail-12.0/13) > 1e-12 {
+		t.Fatalf("%+v", s)
+	}
+}

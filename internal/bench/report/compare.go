@@ -139,7 +139,7 @@ func Compare(a, b Result) Comparison { return CompareGroups(a, b, []Result{a}, [
 func CompareGroups(a, b Result, ga, gb []Result) Comparison {
 	c := Comparison{A: a.RunID, B: b.RunID, NA: len(ga), NB: len(gb), Differences: differences(a.Metadata, b.Metadata)}
 	c.Grouped = len(ga) >= MinRepeats && len(gb) >= MinRepeats
-	c.Warnings = warnings(ga, gb)
+	c.Warnings = append(sameRunWarnings(a, b), warnings(ga, gb)...)
 	for _, h := range headlines {
 		d := Delta{Key: h.key, Label: h.label, Unit: h.unit, Points: h.points, Spread: "insufficient repeats"}
 		if c.Grouped {
@@ -202,6 +202,19 @@ func rangeVerdict(amed, bmed, amin, amax, bmin, bmax float64) string {
 	return "ranges overlap"
 }
 
+// sameRunWarnings says when A and B cannot show a difference because they are the same run or two
+// members of one repeat group (same configuration, so any delta is noise).
+func sameRunWarnings(a, b Result) []string {
+	switch {
+	case a.RunID != "" && a.RunID == b.RunID:
+		return []string{"A and B are the same run: every delta is zero by construction"}
+	case a.Metadata.Repeat.Group != "" && a.Metadata.Repeat.Group == b.Metadata.Repeat.Group:
+		return []string{fmt.Sprintf("%s and %s belong to the same repeat group (one configuration run %d times): any difference below is run-to-run noise, not a comparison of two configurations. Compare a run from each of two groups",
+			a.RunID, b.RunID, a.Metadata.Repeat.Of)}
+	}
+	return nil
+}
+
 // warnings lists runs whose numbers should not be taken at face value.
 func warnings(groups ...[]Result) []string {
 	var out []string
@@ -218,9 +231,9 @@ func warnings(groups ...[]Result) []string {
 				if len(r.InvalidReasons) > 0 {
 					why = strings.Join(r.InvalidReasons, "; ")
 				}
-				out = append(out, fmt.Sprintf("%s is INVALID: %s", r.RunID, why))
+				out = append(out, fmt.Sprintf("%s is INVALID: %s", Clean(r.RunID), Clean(why)))
 			case r.Summary.ErrorRate > MaxValidErrorRate:
-				out = append(out, fmt.Sprintf("%s has an error rate of %.2f%%: its latency, TTFT and balance describe only the requests that succeeded", r.RunID, r.Summary.ErrorRate*100))
+				out = append(out, fmt.Sprintf("%s has an error rate of %.2f%%: its latency, TTFT and balance describe only the requests that succeeded", Clean(r.RunID), r.Summary.ErrorRate*100))
 			}
 		}
 	}
@@ -280,15 +293,15 @@ func profile(m Metadata) string {
 func (c Comparison) Write(w io.Writer) error {
 	var b strings.Builder
 	for _, warn := range c.Warnings {
-		fmt.Fprintf(&b, "WARNING: %s\n", warn)
+		fmt.Fprintf(&b, "WARNING: %s\n", Clean(warn))
 	}
 	if len(c.Warnings) > 0 {
 		b.WriteString("\n")
 	}
 	if c.Grouped {
-		fmt.Fprintf(&b, "Comparing %s (A) with %s (B): medians of %d and %d repeats, with the min-max range of each in brackets. ", c.A, c.B, c.NA, c.NB)
+		fmt.Fprintf(&b, "Comparing %s (A) with %s (B): medians of %d and %d repeats, with the min-max range of each in brackets. ", Clean(c.A), Clean(c.B), c.NA, c.NB)
 	} else {
-		fmt.Fprintf(&b, "Comparing %s (A) with %s (B). ", c.A, c.B)
+		fmt.Fprintf(&b, "Comparing %s (A) with %s (B). ", Clean(c.A), Clean(c.B))
 	}
 	b.WriteString("Throughput is requests that completed inside the measurement window per second of window. Deltas are B relative to A; positive means B is higher, not better.\n\n")
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
@@ -311,7 +324,11 @@ func (c Comparison) Write(w io.Writer) error {
 		return err
 	}
 	if !c.Grouped {
-		fmt.Fprintf(&b, "\nSPREAD: insufficient repeats (it needs at least %d runs on each side, made with --repeat; this compares %d and %d). Two single runs cannot show whether a difference is noise.\n", MinRepeats, c.NA, c.NB)
+		who := "A side with fewer than 3 runs"
+		if c.NA == 1 && c.NB == 1 {
+			who = "Two single runs"
+		}
+		fmt.Fprintf(&b, "\nSPREAD: insufficient repeats (it needs at least %d runs on each side, made with --repeat; this compares %d and %d). %s cannot show whether a difference is noise.\n", MinRepeats, c.NA, c.NB, who)
 	} else {
 		b.WriteString("\nSPREAD compares the min-max ranges of the two groups. It is not a significance test: with 3 runs per side and no real difference the ranges are disjoint about 10% of the time, per metric.\n")
 	}
@@ -329,7 +346,7 @@ func (c Comparison) Write(w io.Writer) error {
 			if !d.Expected {
 				mark = "! "
 			}
-			fmt.Fprintf(&b, "%s%s: %s -> %s\n", mark, d.Field, d.A, d.B)
+			fmt.Fprintf(&b, "%s%s: %s -> %s\n", mark, d.Field, Clean(d.A), Clean(d.B))
 		}
 	}
 	_, err := io.WriteString(w, b.String())

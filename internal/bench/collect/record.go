@@ -99,10 +99,15 @@ type Summary struct {
 	// they were sent: warm-up requests that finish inside it count, requests sent inside it
 	// that finish in the drain do not. It is the numerator of the headline throughput, which
 	// divides by the nominal window, so one slow tail request cannot move it.
-	CompletedInWindow     int     `json:"completed_in_window"`
-	RequestsPerSecond     float64 `json:"requests_per_second"`
-	InputTokensPerSecond  float64 `json:"input_tokens_per_second"`
-	OutputTokensPerSecond float64 `json:"output_tokens_per_second"`
+	CompletedInWindow int `json:"completed_in_window"`
+	// WarmupCompletedInWindow is how many of those were sent during warm-up. They are counted
+	// because the throughput is a steady-state rate: work in flight when the window opens is
+	// matched by work in flight when it closes. It is shown so a reader can see how much of the
+	// figure it is (it matters most when the window is cut short).
+	WarmupCompletedInWindow int     `json:"warmup_completed_in_window"`
+	RequestsPerSecond       float64 `json:"requests_per_second"`
+	InputTokensPerSecond    float64 `json:"input_tokens_per_second"`
+	OutputTokensPerSecond   float64 `json:"output_tokens_per_second"`
 	// The WithTail figures divide the measured (sent inside the window) successes and their
 	// tokens by SpanSeconds, so the drain counts against them. They move with the slowest
 	// request and are reported next to the headline, never instead of it.
@@ -136,6 +141,9 @@ func SummarizeRecords(records []Record, w Window) Summary {
 	for _, r := range records {
 		if r.OK() && w.Contains(r.Done) {
 			s.CompletedInWindow++
+			if r.Intended < w.Start {
+				s.WarmupCompletedInWindow++
+			}
 			winIn += int64(r.InputTokens)
 			winOut += int64(r.OutputTokens)
 		}

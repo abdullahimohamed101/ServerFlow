@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"serverflow/internal/bench/collect"
 )
@@ -13,11 +14,21 @@ import (
 func Markdown(r Result) string {
 	var b strings.Builder
 	m, s := r.Metadata, r.Summary
-	fmt.Fprintf(&b, "# Benchmark %s\n\n", r.RunID)
+	// Strings that come from the file are cleaned before they are printed (see Clean).
+	m.Date, m.Workload, m.Scheduler, m.GitCommit, m.GitTree, m.TargetHost = Clean(m.Date), Clean(m.Workload), Clean(m.Scheduler), Clean(m.GitCommit), Clean(m.GitTree), Clean(m.TargetHost)
+	m.GoVersion, m.Machine, m.PlanDigest, m.GPUType = Clean(m.GoVersion), Clean(m.Machine), Clean(m.PlanDigest), Clean(m.GPUType)
+	fmt.Fprintf(&b, "# Benchmark %s\n\n", Clean(r.RunID))
 	if !r.Valid {
 		b.WriteString("> **WARNING: THIS RUN IS INVALID. Do not compare or quote its numbers as they are.**\n")
 		for _, why := range r.InvalidReasons {
-			fmt.Fprintf(&b, "> - %s\n", why)
+			fmt.Fprintf(&b, "> - %s\n", Clean(why))
+		}
+		b.WriteString("\n")
+	}
+	if len(r.Warnings) > 0 {
+		b.WriteString("> **WARNING: the numbers in this report need care.**\n")
+		for _, w := range r.Warnings {
+			fmt.Fprintf(&b, "> - %s\n", Clean(w))
 		}
 		b.WriteString("\n")
 	}
@@ -49,8 +60,8 @@ func Markdown(r Result) string {
 	}
 
 	b.WriteString("## Throughput\n\n")
-	fmt.Fprintf(&b, "Headline throughput counts the %d requests that completed successfully inside the %.0fs measurement window (whenever they were sent) and divides by the window, so one slow tail request cannot move it.\n\n",
-		s.CompletedInWindow, s.WindowSeconds)
+	fmt.Fprintf(&b, "Headline throughput counts the %d requests that completed successfully inside the %s measurement window (whenever they were sent; %d of them were sent during warm-up) and divides by the window, so one slow tail request cannot move it.\n\n",
+		s.CompletedInWindow, FormatDuration(time.Duration(s.WindowSeconds*float64(time.Second))), s.WarmupCompletedInWindow)
 	fmt.Fprintf(&b, "| Requests/s | Input tokens/s | Output tokens/s |\n| --- | --- | --- |\n| %.2f | %.1f | %.1f |\n\n",
 		s.RequestsPerSecond, s.InputTokensPerSecond, s.OutputTokensPerSecond)
 	fmt.Fprintf(&b, "Throughput including tail: the %d requests sent inside the window divided by the %.2fs until the last of them finished (the drain counts against it, so it follows the slowest request): %.2f requests/s, %.1f input and %.1f output tokens/s.\n\n",
@@ -124,8 +135,8 @@ func Markdown(r Result) string {
 
 	t := r.Timings
 	if t.WallClock > 0 {
-		fmt.Fprintf(&b, "## Timings\n\nBoot %.1fs, warm-up %.1fs, window %.1fs, drain %.1fs, worker stats %.1fs, close %.1fs; %.1fs wall clock, %.1fs monotonic.\n\n",
-			t.Boot, t.Warmup, t.Window, t.Drain, t.Stats, t.Close, t.WallClock, t.MonotonicElapsed)
+		fmt.Fprintf(&b, "## Timings\n\nBefore the clock started %.1fs (worker list and first counts), boot %.1fs, warm-up %.1fs, window %.1fs, drain %.1fs, worker stats %.1fs, close %.1fs; %.1fs wall clock, %.1fs monotonic.\n\n",
+			t.PreRun, t.Boot, t.Warmup, t.Window, t.Drain, t.Stats, t.Close, t.WallClock, t.MonotonicElapsed)
 	}
 	b.WriteString("## How to read this\n\n")
 	b.WriteString("- These are measurements of one run, not a ranking. A different seed, machine, or load can change them; use `--repeat` to see run-to-run spread.\n")
@@ -140,7 +151,7 @@ func Markdown(r Result) string {
 	}
 	b.WriteString("- A balanced distribution (Jain near 1) is not automatically good when workers differ in speed.\n")
 	for _, n := range r.Notes {
-		fmt.Fprintf(&b, "- %s\n", n)
+		fmt.Fprintf(&b, "- %s\n", Clean(n))
 	}
 	return b.String()
 }
