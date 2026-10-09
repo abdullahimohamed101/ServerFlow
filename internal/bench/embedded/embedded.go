@@ -217,9 +217,9 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	var logW io.Writer = io.Discard
-	if cfg.LogWriter != nil {
-		logW = cfg.LogWriter
+	logW := cfg.LogWriter
+	if logW == nil {
+		logW = io.Discard
 	}
 	log := slog.New(slog.NewJSONHandler(logW, nil))
 	runCtx, cancel := context.WithCancel(context.Background())
