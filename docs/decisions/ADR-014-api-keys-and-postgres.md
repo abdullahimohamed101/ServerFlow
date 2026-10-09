@@ -22,8 +22,14 @@ priority and carries them, nothing more.
   secret is high entropy random; stretching (bcrypt/argon2) would add per-request latency for no
   gain. It must never be used for human-chosen secrets, which is why the CLI never accepts a
   supplied key. Hashes are compared with `crypto/subtle`. A key with an unknown prefix runs the same
-  comparison against a dummy hash, and a statistical test checks that unknown-prefix and wrong-secret
-  answers take indistinguishable time.
+  comparison against a dummy hash. Measured limits (do not read more into them): with both answers in
+  the cache, unknown-prefix and wrong-secret responses differ by about 2 microseconds, within noise; a
+  *fresh random* prefix costs about 55 microseconds more, because it is a database lookup. So someone who
+  can time responses can tell whether a prefix exists, and, by watching when the answer changes, the
+  cadence of the caches (an unknown prefix is re-checked after `negative_ttl` = 5 s, a known one after
+  `cache_ttl` = 30 s). Prefixes are public identifiers, not secrets; what must not leak is the 256-bit
+  secret, which is only compared in constant time. The statistical test is a coarse sanity check, not
+  a proof.
 - **What a client can learn.** Every failure to present a working key (absent header, wrong scheme,
   malformed, unknown, wrong secret, revoked, expired) is the same `401 UNAUTHORIZED` body with
   `WWW-Authenticate: Bearer`. Revocation, expiry and suspension are decided only after the secret
@@ -70,7 +76,11 @@ priority and carries them, nothing more.
   `Retry-After` (not 401: it may be valid). The first such request waits for its lookup to fail, which
   can take up to the lookup timeout (3 s) when the database hangs rather than refuses; later requests
   within the backoff are refused immediately. After a failed lookup the store is left alone for one
-  second so a dead or hanging database costs one slow request per second, not one per request. The
+  second. A request for a key that is already cached (past its TTL, inside `stale_grace`) never waits
+  longer than `refresh_wait` (250 ms): it is served from the stale copy while the lookup carries on in the
+  background, and requests that arrive while that lookup runs do not wait at all, so a hanging database (packets
+  dropped, not refused) costs one request a quarter of a second per lookup attempt, not a 3 s stall. A
+  key the gateway has never seen still waits for its lookup, up to the 3 s lookup timeout. The
   outage is logged once and its end once. A revocation made during an outage is not seen until the
   database returns (or the grace ends). Fail-closed was chosen over fail-open: an unauthenticated
   gateway is worse than an unavailable one. `required` mode refuses to start if the database is

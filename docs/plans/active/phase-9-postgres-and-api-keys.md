@@ -1,6 +1,6 @@
 # Phase 9 — PostgreSQL: Tenants, API Keys, Model Configs, Benchmark Metadata
 
-Status: In progress (plan approved with all defaults; implementation under way)
+Status: Implemented, in review (implementation and two rounds of review fixes complete; see Implementation Notes)
 Owner: coding agent
 Depends on: Phase 6 (PR #7). Runs in parallel with Phase 7 (benchmark harness); the two share no code, see "Parallel work".
 Spec: `docs/architecture/serverflow-spec.md` §8, §19, §44–46, §48 (`internal/auth`, `internal/postgres`, `migrations`), §51, §52, §58 Phase 9, §63
@@ -170,7 +170,11 @@ logs, `/v1/models` filter), `internal/api` (three errors), `cmd/gateway` (wire t
    request and attempt logs and the key is in no log line.
 5. Hot path: with a warm cache the database sees no query per request (counted in a test); concurrent first
    requests for one key cause one lookup; random keys cannot grow the cache past `cache_size`; a flood of random
-   keys is answered 401 from the negative cache without a database query per request.
+   keys is answered 401 from the negative cache without a database query per request. Known limits (ADR-014): a
+   flood of *distinct* random keys costs one lookup each, bounded by a cap below the pool size; unknown keys over
+   the cap are shed with 503 (so a valid key the gateway has not cached can be shed too) while a quarter of the cap
+   stays reserved for refreshing cached keys; a request for a cached key past its TTL waits at most `refresh_wait`
+   (250 ms) for the refresh and is otherwise served stale; a front proxy or per-IP limiter is required until Phase 8.
 6. Revocation: after `key revoke`, the key stops working within `cache_ttl` and not before the DB write; an
    expiry crossing is honoured at the next verification.
 7. Outage: database stopped while a key is cached → still served up to `stale_grace`, then `503 AUTH_UNAVAILABLE`;

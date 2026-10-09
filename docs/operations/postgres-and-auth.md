@@ -71,6 +71,9 @@ recovered` once at its end. `auth_rejections_total{status}` counts refusals.
 - Database down, key not cached: 503 with `Retry-After`. The first request waits for its lookup to fail,
   which can take up to the 3 s lookup timeout if the database hangs instead of refusing; requests in
   the following second are refused immediately. The store is retried at most once a second.
+- Database hanging (packets dropped, not refused): a cached key past its TTL waits at most 250 ms
+  (`refresh_wait`) and is served stale while the lookup finishes in the background; requests that arrive
+  meanwhile do not wait. A key the gateway has not seen waits up to the 3 s lookup timeout.
 - Lookup flood (many distinct random keys): at most `pool size - 2` lookups run at once and a quarter of
   them is reserved for refreshing cached keys. Beyond the cap unknown keys get 503 without a database
   query, so a valid key the gateway has not cached may also get 503 while a flood runs; cached keys
@@ -95,5 +98,12 @@ numbered file instead. An older binary refuses a newer database.
 The database holds hashes, not keys, but tenant data is still sensitive: restrict network access,
 use TLS (`sslmode=require` or `verify-full`) and a dedicated least-privilege role (the gateway needs
 SELECT on `api_keys`/`tenants`, UPDATE of `api_keys.last_used_at`, and SELECT on `schema_migrations`
-(its startup check also calls `to_regclass`); the admin CLI needs more).
+(its startup check also calls `to_regclass`); the admin CLI needs more). Without the last grant the
+gateway refuses to start in `required` mode. For example, with a role `serverflow_gateway`:
+
+```sql
+GRANT SELECT ON api_keys, tenants, schema_migrations TO serverflow_gateway;
+GRANT UPDATE (last_used_at) ON api_keys TO serverflow_gateway;
+```
+
 `scripts/dev-postgres.sh` creates a trust-auth cluster for local use only.
