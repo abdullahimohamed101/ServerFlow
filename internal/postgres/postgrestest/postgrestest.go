@@ -8,13 +8,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // EnvDSN names the environment variable holding a superuser DSN for a disposable server.
@@ -31,14 +34,33 @@ func AdminDSN(t testing.TB) string {
 	if dsn == "" {
 		t.Skip(SkipMessage)
 	}
-	u, err := url.Parse(dsn)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
-		t.Fatalf("%s must be a postgres:// URL", EnvDSN)
-	}
-	if h := u.Hostname(); h != "localhost" && !net.ParseIP(h).IsLoopback() {
-		t.Fatalf("%s must point at a loopback host: these tests create and drop databases", EnvDSN)
+	if err := checkLoopback(dsn); err != nil {
+		t.Fatalf("%s: %v", EnvDSN, err)
 	}
 	return dsn
+}
+
+// checkLoopback asks the driver which hosts the DSN resolves to (so a ?host= query parameter, PGHOST
+// and comma-separated hosts are all seen) and refuses any that is not this machine.
+func checkLoopback(dsn string) error {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return errors.New("is not a valid PostgreSQL connection string")
+	}
+	hosts := []string{cfg.Host}
+	for _, fb := range cfg.Fallbacks {
+		hosts = append(hosts, fb.Host)
+	}
+	for _, h := range hosts {
+		if h == "" || strings.HasPrefix(h, "/") || h == "localhost" {
+			continue
+		}
+		if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+			continue
+		}
+		return errors.New("must resolve to loopback hosts only: these tests create and drop databases")
+	}
+	return nil
 }
 
 // NewDSN creates an empty database with a random name on the test server and returns a DSN

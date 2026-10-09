@@ -104,7 +104,7 @@ func (a *app) dispatch(ctx context.Context, cfgPath string, args []string) error
 	if err != nil {
 		return err
 	}
-	if err := cfg.Postgres.ValidatePostgresTransport(); err != nil {
+	if err := postgres.CheckTransport(cfg.Postgres.DSN, cfg.Postgres.AllowInsecureTransport); err != nil {
 		return err
 	}
 	st, err := postgres.Open(ctx, postgres.Config{DSN: cfg.Postgres.DSN, MaxConns: cfg.Postgres.MaxConns, ConnectTimeout: cfg.Postgres.ConnectTimeout})

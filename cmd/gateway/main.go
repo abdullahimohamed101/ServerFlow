@@ -101,7 +101,7 @@ func main() {
 // openAuthStore connects to PostgreSQL for key lookups and checks that the schema is current.
 // Errors never contain the DSN's password.
 func openAuthStore(ctx context.Context, cfg config.Config) (*postgres.Store, error) {
-	if err := cfg.Postgres.ValidatePostgresTransport(); err != nil {
+	if err := postgres.CheckTransport(cfg.Postgres.DSN, cfg.Postgres.AllowInsecureTransport); err != nil {
 		return nil, err
 	}
 	store, err := postgres.Open(ctx, postgres.Config{DSN: cfg.Postgres.DSN, MaxConns: cfg.Postgres.MaxConns, ConnectTimeout: cfg.Postgres.ConnectTimeout})

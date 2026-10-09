@@ -142,8 +142,9 @@ type RedisConfig struct {
 // PostgresConfig configures the durable metadata store. DSN is a secret (it usually holds a
 // password): it is never logged or echoed in an error, and formatting a PostgresConfig prints
 // it redacted. MaxConns bounds the connection pool and ConnectTimeout how long a connection
-// attempt may take. AllowInsecureTransport permits a DSN that disables TLS (sslmode=disable) to
-// a host that is not this machine; leave it off unless a trusted private network carries the traffic.
+// attempt may take. AllowInsecureTransport permits a DSN that does not require TLS (see
+// postgres.CheckTransport) to a host that is not this machine; leave it off unless a trusted private
+// network carries the traffic.
 type PostgresConfig struct {
 	DSN                    string        `yaml:"dsn"`
 	MaxConns               int           `yaml:"max_conns"`
@@ -346,107 +347,6 @@ func (a *AuthConfig) validate() error {
 		return fmt.Errorf("auth.stale_grace must be at least auth.cache_ttl and at most %v", maxAuthStaleGrace)
 	}
 	return nil
-}
-
-// ValidatePostgresTransport checks, for a component that is about to use the database, that the
-// DSN does not turn TLS off (sslmode=disable) for a host other than this machine, unless
-// postgres.allow_insecure_transport is set. Error messages never echo the DSN.
-func (p *PostgresConfig) ValidatePostgresTransport() error {
-	hosts, sslmode, ok := dsnTransport(p.DSN)
-	if !ok {
-		return fmt.Errorf("postgres.dsn could not be parsed; expected postgres://user:password@host:port/database")
-	}
-	if sslmode != "disable" || p.AllowInsecureTransport {
-		return nil
-	}
-	for _, h := range hosts {
-		if h != "" && !strings.HasPrefix(h, "/") && !isLoopbackHost(h) {
-			return fmt.Errorf("postgres.dsn disables TLS (sslmode=disable) for a host that is not this machine; use sslmode=require or verify-full, or set postgres.allow_insecure_transport if a trusted network carries the traffic")
-		}
-	}
-	return nil
-}
-
-// dsnTransport extracts the host list and the sslmode from a URL or keyword/value DSN without
-// returning anything else (the DSN may hold a password).
-func dsnTransport(dsn string) (hosts []string, sslmode string, ok bool) {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		u, err := url.Parse(dsn)
-		if err != nil {
-			return nil, "", false
-		}
-		q := u.Query()
-		sslmode = q.Get("sslmode")
-		host := u.Host
-		if h := q.Get("host"); h != "" {
-			host = h
-		}
-		// A URL may list several hosts: host1:5432,host2:5432.
-		for _, hp := range strings.Split(host, ",") {
-			h := hp
-			if hh, _, err := net.SplitHostPort(hp); err == nil {
-				h = hh
-			}
-			hosts = append(hosts, strings.Trim(h, "[]"))
-		}
-		return hosts, sslmode, true
-	}
-	kv, ok := parseKeywordDSN(dsn)
-	if !ok {
-		return nil, "", false
-	}
-	hosts = append(hosts, strings.Split(kv["host"], ",")...)
-	return hosts, kv["sslmode"], true
-}
-
-// parseKeywordDSN parses "key=value key2='quoted value'" pairs.
-func parseKeywordDSN(s string) (map[string]string, bool) {
-	out := map[string]string{}
-	i := 0
-	for i < len(s) {
-		for i < len(s) && s[i] == ' ' {
-			i++
-		}
-		if i >= len(s) {
-			break
-		}
-		eq := strings.IndexByte(s[i:], '=')
-		if eq <= 0 {
-			return nil, false
-		}
-		key := strings.TrimSpace(s[i : i+eq])
-		i += eq + 1
-		var val strings.Builder
-		if i < len(s) && s[i] == '\'' {
-			i++
-			closed := false
-			for i < len(s) {
-				c := s[i]
-				if c == '\\' && i+1 < len(s) {
-					val.WriteByte(s[i+1])
-					i += 2
-					continue
-				}
-				if c == '\'' {
-					closed = true
-					i++
-					break
-				}
-				val.WriteByte(c)
-				i++
-			}
-			if !closed {
-				return nil, false
-			}
-		} else {
-			for i < len(s) && s[i] != ' ' {
-				val.WriteByte(s[i])
-				i++
-			}
-		}
-		out[key] = val.String()
-	}
-	return out, true
 }
 
 func (w *WorkerConfig) validate() error {

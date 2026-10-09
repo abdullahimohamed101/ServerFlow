@@ -104,13 +104,6 @@ func TestDSNIsNeverEchoedOrPrinted(t *testing.T) {
 		t.Fatalf("validate error: %v", err)
 	}
 	cfg.Postgres.MaxConns = 10
-	if err := cfg.Postgres.ValidatePostgresTransport(); err == nil || strings.Contains(err.Error(), pw) || strings.Contains(err.Error(), "db.internal") {
-		t.Fatalf("transport error: %v", err)
-	}
-	bad := PostgresConfig{DSN: "postgres://app:" + pw + "@%zz/db"}
-	if err := bad.ValidatePostgresTransport(); err == nil || strings.Contains(err.Error(), pw) {
-		t.Fatalf("parse error: %v", err)
-	}
 
 	// Every way of printing the config.
 	var buf strings.Builder
@@ -122,48 +115,6 @@ func TestDSNIsNeverEchoedOrPrinted(t *testing.T) {
 	} {
 		if strings.Contains(s, pw) {
 			t.Fatalf("the DSN password was printed: %s", s)
-		}
-	}
-}
-
-func TestPostgresTransportRule(t *testing.T) {
-	cases := []struct {
-		dsn      string
-		insecure bool
-		ok       bool
-	}{
-		{"postgres://u:p@127.0.0.1:55432/db?sslmode=disable", false, true},
-		{"postgres://u:p@localhost/db?sslmode=disable", false, true},
-		{"postgres://u:p@[::1]:5432/db?sslmode=disable", false, true},
-		{"postgres://u:p@db.example.com/db?sslmode=disable", false, false},
-		{"postgres://u:p@10.0.0.5/db?sslmode=disable", false, false},
-		{"postgres://u:p@db.example.com/db?sslmode=disable", true, true},
-		{"postgres://u:p@db.example.com/db?sslmode=require", false, true},
-		{"postgres://u:p@db.example.com/db?sslmode=verify-full", false, true},
-		{"postgres://u:p@db.example.com/db", false, true},
-		{"postgres://u:p@127.0.0.1:1,db.example.com:2/db?sslmode=disable", false, false},
-		{"postgresql://u:p@db.example.com/db?sslmode=disable", false, false},
-		{"postgres://u:p@/db?host=/var/run/postgresql&sslmode=disable", false, true},
-		{"postgres://u:p@/db?host=db.example.com&sslmode=disable", false, false},
-		{"host=127.0.0.1 user=u password=p dbname=d sslmode=disable", false, true},
-		{"host=db.example.com user=u password='p q' dbname=d sslmode=disable", false, false},
-		{"host=db.example.com user=u password='p q' dbname=d sslmode=require", false, true},
-		{"host=/var/run/postgresql sslmode=disable", false, true},
-	}
-	for _, c := range cases {
-		p := PostgresConfig{DSN: c.dsn, AllowInsecureTransport: c.insecure}
-		err := p.ValidatePostgresTransport()
-		if (err == nil) != c.ok {
-			t.Errorf("%q insecure=%v: ok=%v, err=%v", c.dsn, c.insecure, c.ok, err)
-		}
-	}
-	for _, bad := range []string{"not a dsn", "host=", "postgres://%zz", "user='unterminated"} {
-		p := PostgresConfig{DSN: bad}
-		if bad == "host=" { // empty host is valid keyword syntax and means the local default
-			continue
-		}
-		if err := p.ValidatePostgresTransport(); err == nil {
-			t.Errorf("%q: unparseable DSN accepted", bad)
 		}
 	}
 }
