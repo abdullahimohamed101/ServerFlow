@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -254,5 +255,63 @@ func TestParseChatRequestAcceptsLegacyFunctionRole(t *testing.T) {
 	body := `{"model":"qwen-7b","messages":[{"role":"user","content":"hi"},{"role":"function","name":"f","content":"result"}]}`
 	if _, err := ParseChatRequest([]byte(body), testLimits); err != nil {
 		t.Fatalf("the legacy function role is still valid OpenAI: %v", err)
+	}
+}
+
+func TestRateLimitErrorsAlwaysAdviseAtLeastOneSecond(t *testing.T) {
+	for _, after := range []int{-5, 0, 1, 30} {
+		want := max(1, after)
+		for _, e := range []*Error{ErrRateLimited("requests", after), ErrRateLimitUnavailable(after)} {
+			if e.RetryAfter != want {
+				t.Fatalf("%s with %d: RetryAfter %d, want %d", e.Code, after, e.RetryAfter, want)
+			}
+			rec := httptest.NewRecorder()
+			WriteError(rec, e)
+			if got := rec.Header().Get("Retry-After"); got != strconv.Itoa(want) {
+				t.Fatalf("%s with %d: header %q, want %d (never 0)", e.Code, after, got, want)
+			}
+		}
+	}
+	e := ErrRateLimited("tokens", 3)
+	if e.HTTPStatus != 429 || e.Code != "RATE_LIMITED" || !strings.Contains(string(e.Body()), "rate_limit_error") || !strings.Contains(e.Message, "tokens") {
+		t.Fatalf("%+v %s", e, e.Body())
+	}
+	if u := ErrRateLimitUnavailable(2); u.HTTPStatus != 503 || u.Code != "RATE_LIMIT_UNAVAILABLE" {
+		t.Fatalf("%+v", u)
+	}
+}
+
+func TestOverlongModelNameIsNotFoundEvenWhenAnyModelIsAllowed(t *testing.T) {
+	long := strings.Repeat("m", 1<<20)
+	body := `{"model":"` + long + `","messages":[{"role":"user","content":"hi"}]}`
+	for _, lim := range []Limits{{AnyModel: true, MaxTokensLimit: 100}, {Models: []string{long}, MaxTokensLimit: 100}, {AnyModel: true, MaxTokensLimit: 100, Allowed: func(string) bool { return false }}} {
+		_, err := ParseChatRequest([]byte(body), lim)
+		var e *Error
+		if !errors.As(err, &e) || e.Code != CodeModelNotFound || e.HTTPStatus != 404 || len(e.Message) > 200 {
+			t.Fatalf("got %v", err)
+		}
+	}
+	// A name at the limit still works.
+	ok := strings.Repeat("m", 128)
+	if _, err := ParseChatRequest([]byte(`{"model":"`+ok+`","messages":[{"role":"user","content":"hi"}]}`), Limits{AnyModel: true, MaxTokensLimit: 100}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBothTokenFieldsKeepTheLarger(t *testing.T) {
+	for _, tc := range []struct {
+		fields string
+		want   int
+	}{
+		{`"max_tokens":50,"max_completion_tokens":20`, 50},
+		{`"max_tokens":20,"max_completion_tokens":50`, 50},
+		{`"max_tokens":7`, 7},
+		{`"max_completion_tokens":9`, 9},
+	} {
+		body := `{"model":"qwen-7b","messages":[{"role":"user","content":"hi"}],` + tc.fields + `}`
+		req, err := ParseChatRequest([]byte(body), testLimits)
+		if err != nil || req.MaxTokens != tc.want {
+			t.Fatalf("%s: %v %v", tc.fields, req, err)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres bench bench-compare quality quality-fast
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis bench bench-compare quality quality-fast
 
 fmt:
 	gofmt -w .
@@ -69,6 +69,16 @@ dev-postgres:
 test-postgres:
 	scripts/dev-postgres.sh start >/dev/null
 	SERVERFLOW_TEST_POSTGRES_DSN="$$(scripts/dev-postgres.sh dsn)" go test -race -count=1 ./internal/auth/... ./internal/postgres/... ./internal/gateway/... ./cmd/admin/... ./tests/integration/...
+
+# A throwaway Redis 7 on 127.0.0.1:56379 that requires a password, like CI's (Docker if its daemon runs, else a
+# local redis-server). Stop it with scripts/dev-redis.sh stop.
+dev-redis:
+	scripts/dev-redis.sh start
+
+# The Redis-backed tests, against the throwaway instance (started if needed).
+test-redis:
+	scripts/dev-redis.sh start >/dev/null
+	SERVERFLOW_TEST_REDIS_ADDR="$$(scripts/dev-redis.sh addr)" SERVERFLOW_TEST_REDIS_PASSWORD="$$(scripts/dev-redis.sh password)" go test -race -count=1 ./internal/redis/... ./internal/ratelimit/... ./internal/gateway/... ./tests/integration/...
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
 #   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"

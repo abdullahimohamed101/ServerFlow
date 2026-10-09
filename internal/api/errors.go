@@ -21,6 +21,8 @@ const (
 	CodeUnauthorized      = "UNAUTHORIZED"
 	CodeForbidden         = "FORBIDDEN"
 	CodeAuthUnavailable   = "AUTH_UNAVAILABLE"
+	CodeRateLimited       = "RATE_LIMITED"
+	CodeRateLimitUnavail  = "RATE_LIMIT_UNAVAILABLE"
 )
 
 // Error is a gateway-originated API error. It implements error.
@@ -104,6 +106,34 @@ func ErrAuthUnavailable() *Error {
 	return &Error{Code: CodeAuthUnavailable, HTTPStatus: http.StatusServiceUnavailable, Message: "authentication is temporarily unavailable; retry shortly", RetryAfter: 2}
 }
 
+// ErrRateLimited reports a request over a quota. limit names the quota (requests, tokens, concurrency or
+// model) and nothing else; retryAfter is in seconds and at least 1.
+func ErrRateLimited(limit string, retryAfter int) *Error {
+	return &Error{Code: CodeRateLimited, HTTPStatus: http.StatusTooManyRequests, RetryAfter: max(1, retryAfter),
+		Message: "rate limit exceeded: " + limitText(limit) + "; retry after the time in the Retry-After header"}
+}
+
+func limitText(limit string) string {
+	switch limit {
+	case "requests":
+		return "too many requests per minute"
+	case "tokens":
+		return "too many tokens per minute"
+	case "concurrency":
+		return "too many concurrent requests"
+	case "model":
+		return "too many requests for this model"
+	}
+	return "limit reached"
+}
+
+// ErrRateLimitUnavailable reports that quotas cannot be checked right now (Redis is down and the gateway
+// fails closed). It is not a 429: the caller may be within its quota.
+func ErrRateLimitUnavailable(retryAfter int) *Error {
+	return &Error{Code: CodeRateLimitUnavail, HTTPStatus: http.StatusServiceUnavailable, RetryAfter: max(1, retryAfter),
+		Message: "rate limiting is temporarily unavailable; retry shortly"}
+}
+
 // ErrInternal reports an unexpected gateway failure.
 func ErrInternal() *Error {
 	return &Error{Code: CodeInternalError, HTTPStatus: http.StatusInternalServerError, Message: "internal server error"}
@@ -144,6 +174,9 @@ func WriteError(w http.ResponseWriter, e *Error) {
 func errorType(status int) string {
 	if status >= 500 {
 		return "api_error"
+	}
+	if status == http.StatusTooManyRequests {
+		return "rate_limit_error"
 	}
 	return "invalid_request_error"
 }

@@ -54,6 +54,11 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 	} else if err := json.Unmarshal(raw, &model); err != nil || model == "" {
 		return nil, ErrInvalidRequest("`model` must be a non-empty string")
 	}
+	if len(model) > protocol.MaxModelLen {
+		// No model name this long exists, whatever the source of models. Refusing it here bounds the label,
+		// the log line and every later stage by the name's length (the answer truncates it).
+		return nil, ErrModelNotFound(model)
+	}
 	if lim.Allowed != nil && !lim.Allowed(model) {
 		return nil, ErrModelForbidden(model)
 	}
@@ -80,8 +85,10 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 	}
 
 	// Every token field that is present must be within the limit, not just
-	// the first: the upstream may honor either one. max_completion_tokens
-	// takes precedence, as it does in vLLM.
+	// the first: the upstream may honor either one. When both are present the
+	// larger is kept: vLLM lets max_completion_tokens take precedence, but another
+	// backend may honor max_tokens, and the value is what rate limiting charges for
+	// the reply, so it must not be the smaller of the two.
 	maxTokens := 0
 	for _, name := range []string{"max_tokens", "max_completion_tokens"} {
 		var n *int
@@ -94,7 +101,7 @@ func ParseChatRequest(body []byte, lim Limits) (*protocol.InferenceRequest, erro
 		if *n <= 0 || *n > lim.MaxTokensLimit {
 			return nil, ErrInvalidRequest(fmt.Sprintf("`%s` must be between 1 and %d", name, lim.MaxTokensLimit))
 		}
-		maxTokens = *n
+		maxTokens = max(maxTokens, *n)
 	}
 
 	var temp *float64

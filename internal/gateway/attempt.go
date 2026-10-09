@@ -101,6 +101,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		return
 	}
 	info.model = ireq.Model
+	s.recordWorker(info, run.target.worker.WorkerID, len(info.attempts))
 
 	var tried []string
 	for {
@@ -117,6 +118,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		tried = append(tried, run.target.worker.WorkerID)
 		s.abandonAttempt(run, info, outcomeRetried)
 		run = next
+		s.recordWorker(info, run.target.worker.WorkerID, len(info.attempts))
 	}
 	defer s.finishAttempt(run, info)
 	defer run.idle.Stop()

@@ -178,8 +178,79 @@ func applyEnv(cfg *Config) {
 			cfg.Admission.MaxGlobalRequests = n
 		}
 	}
-	if v, ok := env("REDIS_ADDRESS"); ok {
-		cfg.Redis.Address = v
+	for key, dst := range map[string]*string{
+		"REDIS_ADDRESS":  &cfg.Redis.Address,
+		"REDIS_PASSWORD": &cfg.Redis.Password,
+	} {
+		if v, ok := env(key); ok {
+			*dst = v
+		}
+	}
+	if v, ok := env("REDIS_ON_FAILURE"); ok {
+		cfg.Redis.OnFailure = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok := env("REDIS_POOL_SIZE"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.PoolSize = n
+		}
+	}
+	if v, ok := env("REDIS_DB"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.DB = n
+		}
+	}
+	for key, dst := range map[string]*bool{
+		"REDIS_TLS":                      &cfg.Redis.TLS,
+		"REDIS_REQUEST_METADATA":         &cfg.Redis.RequestMetadata,
+		"REDIS_ALLOW_INSECURE_TRANSPORT": &cfg.Redis.AllowInsecureTransport,
+	} {
+		if v, ok := env(key); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				*dst = b
+			}
+		}
+	}
+	for key, dst := range map[string]*time.Duration{
+		"REDIS_TIMEOUT":              &cfg.Redis.Timeout,
+		"REDIS_BACKOFF":              &cfg.Redis.Backoff,
+		"REDIS_REQUEST_METADATA_TTL": &cfg.Redis.RequestMetadataTTL,
+		"RATE_LIMIT_LEASE_TTL":       &cfg.RateLimit.LeaseTTL,
+	} {
+		if v, ok := env(key); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
+		}
+	}
+	if v, ok := env("RATE_LIMIT_MODE"); ok {
+		cfg.RateLimit.Mode = strings.ToLower(strings.TrimSpace(v))
+	}
+	for key, dst := range map[string]*int{
+		"RATE_LIMIT_BURST_SECONDS":    &cfg.RateLimit.BurstSeconds,
+		"RATE_LIMIT_MAX_LOCAL_LEASES": &cfg.RateLimit.MaxLocalLeases,
+	} {
+		if v, ok := env(key); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				*dst = n
+			}
+		}
+	}
+	if v, ok := env("RATE_LIMIT_MODEL_REQUESTS_PER_MINUTE"); ok {
+		// model=n,model=n ; an entry that is not of that form makes the whole value ignored.
+		caps := map[string]int{}
+		valid := true
+		for _, part := range splitList(v) {
+			name, num, found := strings.Cut(part, "=")
+			n, err := strconv.Atoi(strings.TrimSpace(num))
+			if !found || err != nil {
+				valid = false
+				break
+			}
+			caps[strings.TrimSpace(name)] = n
+		}
+		if valid {
+			cfg.RateLimit.ModelRequestsPerMinute = caps
+		}
 	}
 	if v, ok := env("POSTGRES_DSN"); ok {
 		cfg.Postgres.DSN = v

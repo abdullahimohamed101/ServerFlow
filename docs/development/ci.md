@@ -18,11 +18,13 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed) |
 | `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
 
-`integration` needs a PostgreSQL that requires a password, exactly like the CI service. Locally:
+`integration` needs a PostgreSQL and a Redis that both require a password, exactly like the CI services. Locally:
 
 ```bash
 scripts/dev-postgres.sh start                   # throwaway Postgres 16, password auth, 127.0.0.1:55432
 export SERVERFLOW_TEST_POSTGRES_DSN="$(scripts/dev-postgres.sh dsn)"
+scripts/dev-redis.sh start                      # throwaway Redis 7, password auth, 127.0.0.1:56379
+export SERVERFLOW_TEST_REDIS_ADDR="$(scripts/dev-redis.sh addr)" SERVERFLOW_TEST_REDIS_PASSWORD="$(scripts/dev-redis.sh password)"
 scripts/quality.sh full
 ```
 
@@ -37,7 +39,7 @@ local server deliberately requires one.
 | --- | --- | --- |
 | `lint` | `quality.sh lint` | golangci-lint installed by the official action |
 | `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod`, and current stable |
-| `integration` | `quality.sh integration` | PostgreSQL 16 service; test log uploaded on failure |
+| `integration` | `quality.sh integration` | PostgreSQL 16 service and a password-protected Redis 7; test log uploaded on failure |
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 

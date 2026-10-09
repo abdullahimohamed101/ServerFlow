@@ -88,17 +88,30 @@ jobs:
           --health-retries 10
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      SERVERFLOW_TEST_REDIS_ADDR: 127.0.0.1:6379
+      SERVERFLOW_TEST_REDIS_PASSWORD: ci-redis-test-password
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A real Redis 7 with a password like scripts/dev-redis.sh (a service container cannot take command
+      # arguments, so it is started here). This job's name stays "integration (PostgreSQL)" so a required-check
+      # setting keeps matching.
+      - name: Start Redis
+        run: |
+          docker run -d --name redis -p 127.0.0.1:6379:6379 public.ecr.aws/docker/library/redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no
+          for i in $(seq 1 30); do
+            docker exec redis redis-cli -a "$SERVERFLOW_TEST_REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG && exit 0
+            sleep 1
+          done
+          echo "Redis did not start"; exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Keep test logs in the runner's temp directory
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Database tests must run, not skip
+      - name: Database and Redis tests must run, not skip
         run: scripts/quality.sh integration
       - name: Keep the test log on failure
         if: failure()

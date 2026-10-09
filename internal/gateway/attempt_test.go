@@ -394,10 +394,19 @@ func TestEveryAttemptCarriesTheRequestIDAndItsOwnAttemptIDAndNoClientCredentials
 
 func TestAClientWhoLeavesStopsTheRetries(t *testing.T) {
 	release := make(chan struct{})
+	// gone is closed when the gateway cancels the first attempt, which it does only after it noticed the client left.
+	// The test must wait for that before letting the worker answer 503: the gateway learns of a disconnect
+	// asynchronously, and a 503 that arrives first would be a retryable failure of a client that is still
+	// (as far as the gateway knows) there. Waiting on the event, not on time, makes the test deterministic.
+	gone := make(chan struct{})
+	var goneOnce sync.Once
 	slow := newScriptWorker(t, "a-slow", func(w http.ResponseWriter, r *http.Request) {
+		// net/http only watches a connection for closing once the handler has read the request body.
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-release:
 		case <-r.Context().Done():
+			goneOnce.Do(func() { close(gone) })
 			return
 		}
 		w.WriteHeader(503)
@@ -413,6 +422,11 @@ func TestAClientWhoLeavesStopsTheRetries(t *testing.T) {
 	eventually(t, 5*time.Second, func() bool { return slow.hits.Load() == 1 }, "first attempt in flight")
 	cancel()
 	<-errc
+	select {
+	case <-gone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the gateway never cancelled the first attempt after the client left")
+	}
 	close(release)
 	allIdle(t, e, "a-slow", "b-good")
 	time.Sleep(100 * time.Millisecond)

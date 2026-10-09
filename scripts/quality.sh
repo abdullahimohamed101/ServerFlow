@@ -12,6 +12,7 @@
 #
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
+#   SERVERFLOW_TEST_REDIS_ADDR and SERVERFLOW_TEST_REDIS_PASSWORD  (scripts/dev-redis.sh start; addr; password)
 # Unset variables make `integration` fail; `full` skips it with a loud notice instead, so a laptop
 # without the servers can still run everything else.
 set -euo pipefail
@@ -82,6 +83,11 @@ integration() {
     "./internal/postgres/... ./internal/auth/... ./cmd/admin/... ./tests/integration/..." \
     TestMigrateUpCreatesSchemaAndIsIdempotent TestFullWorkflowAndKeyShownOnce \
     TestProcessAuthEndToEnd TestGatewayWithRealPostgresHotPathAndFloods
+  must_run redis SERVERFLOW_TEST_REDIS_ADDR "SERVERFLOW_TEST_REDIS_ADDR is not set" \
+    "./internal/redis/... ./internal/ratelimit/... ./internal/gateway/... ./tests/integration/..." \
+    TestRunAndPingWithPassword TestRequestsBoundaryAgainstRedis TestScriptMatchesModelOnRandomSequences \
+    TestFailureClosedAcrossTheMatrix TestThreeGatewaysShareOneRequestQuota \
+    TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd
 }
 
 build() {
@@ -112,10 +118,10 @@ full() {
   lint
   unit
   race
-  if [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ]; then
+  if [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ] && [ -n "${SERVERFLOW_TEST_REDIS_ADDR:-}" ]; then
     integration
   else
-    printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN is not set). CI will run it.\n'
+    printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN or SERVERFLOW_TEST_REDIS_ADDR is not set). CI will run it.\n'
   fi
   build
 }
