@@ -369,10 +369,7 @@ func TestKilledGatewaysLeasesExpireAndLongRequestsKeepTheirs(t *testing.T) {
 	}
 	eventually(t, 10*time.Second, func() bool {
 		code, _, _ := c.gws[1].chat(key, model)
-		if code == 200 {
-			return true
-		}
-		return false
+		return code == 200
 	}, "the dead gateway's leases to expire")
 	close(release)
 }

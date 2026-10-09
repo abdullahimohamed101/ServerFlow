@@ -103,7 +103,6 @@ func (m *Model) Allow(nowMs int64, r ModelRequest) Outcome {
 		limit Limit
 		key   string
 		quota int64
-		cost  int64
 		level int64
 		need  int64
 	}

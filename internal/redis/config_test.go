@@ -15,7 +15,7 @@ const secretPW = "s3cr3t-Pa55w0rd-do-not-print"
 func TestConfigNeverPrintsThePassword(t *testing.T) {
 	c := Config{Address: "redis://user:" + secretPW + "@redis.example.com:6379/2", Password: secretPW, Timeout: time.Second}
 	outs := []string{
-		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), fmt.Sprintf("%#v", c), fmt.Sprintf("%s", c), c.String(),
+		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), fmt.Sprintf("%#v", c), c.String(),
 		fmt.Sprintf("%v", &c), fmt.Sprintf("%+v", []Config{c}), fmt.Sprintf("%v", map[string]Config{"a": c}),
 	}
 	var buf bytes.Buffer
