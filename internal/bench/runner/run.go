@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"serverflow/internal/bench/collect"
@@ -19,6 +20,7 @@ import (
 	"serverflow/internal/bench/workload"
 	"serverflow/internal/config"
 	"serverflow/internal/registry/client"
+	"serverflow/pkg/protocol"
 )
 
 // Run executes o.Repeat runs of the configured benchmark, writing one result directory
@@ -36,7 +38,8 @@ func Run(ctx context.Context, o Options, out io.Writer) ([]report.Result, error)
 			return results, err
 		}
 		if group == "" {
-			group = id
+			// Unique across directories and over time, so groups of different runs never collide.
+			group = fmt.Sprintf("%s-%d", id, time.Now().Unix())
 		}
 		say(out, "%s: repeat %d of %d, workload %s, scheduler %s\n", id, i, o.Repeat, o.Workload, o.Scheduler)
 		res, records, err := runOnce(ctx, o, id, report.Repeat{Index: i, Of: o.Repeat, Group: group}, out)
@@ -53,6 +56,17 @@ func Run(ctx context.Context, o Options, out io.Writer) ([]report.Result, error)
 		results = append(results, res)
 		say(out, "%s: %s\n", id, Headline(res))
 		say(out, "%s: wrote %s\n", id, dir)
+		if res.Summary.Sent == 0 {
+			return results, fmt.Errorf("%s: no request was measured (sent 0): the window was empty or the run ended before it opened; see %s", id, dir)
+		}
+		if !res.Valid {
+			for _, why := range res.InvalidReasons {
+				say(out, "%s: WARNING: %s\n", id, why)
+			}
+			if !o.AllowErrors {
+				return results, fmt.Errorf("%s is invalid (%s); the result was written to %s and is marked valid=false. Re-run with a load the target can take, or pass --allow-errors to accept the exit status", id, strings.Join(res.InvalidReasons, "; "), dir)
+			}
+		}
 	}
 	if len(results) > 1 {
 		say(out, "\n")
@@ -64,7 +78,11 @@ func Run(ctx context.Context, o Options, out io.Writer) ([]report.Result, error)
 // Headline is the one-line outcome printed when a run ends.
 func Headline(r report.Result) string {
 	s := r.Summary
-	line := fmt.Sprintf("sent %d, succeeded %d, failed %d; %.2f req/s", s.Sent, s.Succeeded, s.Failed, s.RequestsPerSecond)
+	line := ""
+	if !r.Valid {
+		line = "INVALID (see warnings): "
+	}
+	line += fmt.Sprintf("sent %d, succeeded %d, failed %d; %.2f req/s", s.Sent, s.Succeeded, s.Failed, s.RequestsPerSecond)
 	if s.Latency != nil {
 		line += fmt.Sprintf("; latency p50 %.0f / p95 %.0f ms", s.Latency.P50, s.Latency.P95)
 	}
@@ -133,16 +151,24 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 	if err != nil {
 		return report.Result{}, nil, err
 	}
+	begin := time.Now() // carries a monotonic reading
+	wallBegin := begin.Round(0)
+	var tm report.Timings
+	phase := func(since time.Time) float64 { return time.Since(since).Seconds() }
+
 	tgt, err := connect(ctx, o, wl, out)
 	if err != nil {
 		return report.Result{}, nil, err
 	}
 	defer tgt.close()
+	tm.Boot = phase(begin)
 
 	meta := metadata(ctx, o, wl, tgt, rep)
+	progress := &driver.Progress{}
 	cfg := driver.Config{
 		BaseURL: tgt.gatewayURL, Workload: wl, Mode: o.Mode(), Concurrency: o.Concurrency, MaxInFlight: o.MaxInFlight,
 		Warmup: o.Warmup, Duration: o.Duration, RequestTimeout: o.RequestTimeout, DrainTimeout: o.DrainTimeout, MaxRequests: o.MaxRequests,
+		Progress: progress,
 	}
 	if o.Mode() == driver.Open {
 		cfg.Segments = workload.Segments(o.Workload, o.Rate, o.Warmup, o.Duration)
@@ -153,6 +179,7 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 	t0 := time.Now()
 	cfg.T0 = t0
 	sctx, stopSampler := context.WithCancel(ctx)
+	defer stopSampler()
 	var sampler *collect.Sampler
 	samplerDone := make(chan struct{})
 	if tgt.cp != nil {
@@ -169,6 +196,7 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 	type snap struct {
 		counts collect.WorkerCounts
 		miss   map[string]string
+		taken  bool
 	}
 	readable := make([]collect.WorkerTarget, 0, len(targets))
 	for _, w := range targets {
@@ -176,52 +204,101 @@ func runOnce(ctx context.Context, o Options, id string, rep report.Repeat, out i
 			readable = append(readable, w)
 		}
 	}
-	snapshot := func() snap {
-		c, m := collect.FetchCompleted(ctx, tgt.hc, readable)
-		return snap{c, m}
+	snapshot := func(c context.Context) snap {
+		counts, m := collect.FetchCompleted(c, tgt.hc, readable)
+		return snap{counts, m, true}
 	}
+	// The start snapshot is taken when the warm-up ends. If the run ends before that (the request
+	// cap, a cancellation) it is abandoned, and no per-worker delta is computed from an end
+	// snapshot that precedes a start.
+	startCtx, abandonStart := context.WithCancel(ctx)
+	defer abandonStart()
 	startCh := make(chan snap, 1)
 	if o.Warmup == 0 {
-		startCh <- snapshot()
+		startCh <- snapshot(ctx)
 	} else {
 		go func() {
 			select {
 			case <-time.After(time.Until(t0.Add(o.Warmup))):
-				startCh <- snapshot()
-			case <-ctx.Done():
+				startCh <- snapshot(startCtx)
+			case <-startCtx.Done():
 				startCh <- snap{}
 			}
 		}()
 	}
 
 	say(out, "  driving %s for %v (+%v warm-up)\n", loadWord(o), o.Duration, o.Warmup)
+	stopProgress := progressLines(out, t0, progress)
 	res, runErr := driver.Run(ctx, cfg)
+	stopProgress()
+	driveEnd := time.Now()
 	stopSampler()
 	<-samplerDone
 	if runErr != nil {
 		return report.Result{}, nil, fmt.Errorf("interrupted: %w", runErr)
 	}
-	end := snapshot()
+	statsStart := time.Now()
 	var start snap
-	select {
-	case start = <-startCh:
-	case <-time.After(5 * time.Second):
+	if time.Since(t0) >= o.Warmup {
+		select {
+		case start = <-startCh:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	abandonStart()
+	end := snapshot(ctx)
+	if !start.taken {
+		for _, w := range readable {
+			missing[w.ID] = "the run ended before the warm-up did, so there is no start count"
+		}
 	}
 	for _, m := range []map[string]string{start.miss, end.miss} {
 		for k, v := range m {
 			missing[k] = v
 		}
 	}
+	tm.Stats = phase(statsStart)
+
+	closeStart := time.Now()
+	tgt.close()
+	tm.Close = phase(closeStart)
+	tm.Warmup = min(o.Warmup, driveEnd.Sub(t0)).Seconds()
+	tm.Window = min(o.Duration, max(res.Window.End, 0)-res.Window.Start).Seconds()
+	tm.Drain = max(driveEnd.Sub(t0)-res.Window.End, 0).Seconds()
+	tm.MonotonicElapsed = time.Since(begin).Seconds()
+	tm.WallClock = time.Now().Round(0).Sub(wallBegin).Seconds()
 
 	in := report.Input{
 		RunID: id, Metadata: meta, Records: res.Records, Window: res.Window, Targets: targets,
 		StartCounts: start.counts, EndCounts: end.counts, StatsMissing: missing, Sampled: sampler != nil,
-		Notes: notes(o, res, tgt),
+		Notes: notes(o, res, tgt, tm), MaxErrorRate: o.MaxErrorRate, Timings: tm,
 	}
 	if sampler != nil {
 		in.Samples, in.SamplePollsFailed, in.SamplesDropped = sampler.Samples()
 	}
 	return report.Build(in), res.Records, nil
+}
+
+// progressLines prints a line every 5 seconds with the elapsed wall time, requests in flight
+// and requests finished, so a long run is visibly alive. The returned function stops it.
+func progressLines(out io.Writer, t0 time.Time, p *driver.Progress) (stop func()) {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				say(out, "  %5.0fs elapsed, %d in flight, %d finished\n", time.Since(t0).Seconds(), p.InFlight.Load(), p.Completed.Load())
+			}
+		}
+	}()
+	return func() { close(done); wg.Wait() }
 }
 
 func loadWord(o Options) string {
@@ -232,10 +309,10 @@ func loadWord(o Options) string {
 }
 
 // notes are the caveats attached to a result.
-func notes(o Options, res *driver.Output, tgt *target) []string {
+func notes(o Options, res *driver.Output, tgt *target, tm report.Timings) []string {
 	var n []string
 	if res.Truncated {
-		n = append(n, fmt.Sprintf("The run stopped early at the cap of %d requests (--max-requests); the window was cut to %.1fs.",
+		n = append(n, fmt.Sprintf("The run stopped early at the cap of %d requests inside the window (--max-requests); the window was cut to %.1fs.",
 			o.MaxRequests, res.Window.End.Seconds()))
 	}
 	if o.Mode() == driver.Open && res.MaxStartLag > 100*time.Millisecond {
@@ -243,16 +320,28 @@ func notes(o Options, res *driver.Output, tgt *target) []string {
 			res.MaxStartLag.Round(time.Millisecond)))
 	}
 	if o.Warmup > 0 && tgt.cp != nil {
-		n = append(n, "Per-worker completed counts start at the end of warm-up, so requests sent in warm-up that finish later are counted in them.")
+		late := 0
+		for _, r := range res.Records {
+			if r.Intended < res.Window.Start && r.OK() && r.Done >= res.Window.Start {
+				late++
+			}
+		}
+		n = append(n, fmt.Sprintf("Per-worker completed counts start when warm-up ends, so the %d warm-up requests that finished after that are included in them.", late))
 	}
 	if o.Mode() == driver.Closed {
 		n = append(n, "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does.")
+	}
+	n = append(n, "Streamed token counts are estimated from chunks (the gateway does not request usage for streams); non-streamed counts come from the response usage.")
+	if d := tm.WallClock - tm.MonotonicElapsed; d > 2 || d < -2 {
+		n = append(n, fmt.Sprintf("The wall clock advanced %.1fs but the monotonic clock %.1fs: the machine probably slept or its clock was changed during the run, which can explain unexpected stalls.",
+			tm.WallClock, tm.MonotonicElapsed))
 	}
 	return n
 }
 
 // target is what a run talks to.
 type target struct {
+	closeOnce  sync.Once
 	gatewayURL string
 	cp         *client.Client
 	cluster    *embedded.Cluster
@@ -261,9 +350,11 @@ type target struct {
 }
 
 func (t *target) close() {
-	if t.cluster != nil {
-		t.cluster.Close()
-	}
+	t.closeOnce.Do(func() {
+		if t.cluster != nil {
+			t.cluster.Close()
+		}
+	})
 }
 
 // workers lists the workers whose /stats can be read, and why others cannot.
@@ -286,13 +377,19 @@ func (t *target) workers(ctx context.Context) ([]collect.WorkerTarget, map[strin
 	}
 	var out []collect.WorkerTarget
 	for _, w := range ws {
+		wt := collect.WorkerTarget{ID: w.WorkerID, Model: w.Model, State: string(w.State)}
 		u, err := url.Parse(w.Address)
-		if err != nil || (!config.IsLoopbackHost(u.Hostname()) && !t.allowAll) {
+		switch {
+		case w.State != protocol.StateReady:
+			// A worker that is loading, draining, failed or lost serves no requests: its count is
+			// not part of the balance, and the result says so.
+			missing[w.WorkerID] = "worker state is " + string(w.State) + ", not READY"
+		case err != nil || (!config.IsLoopbackHost(u.Hostname()) && !t.allowAll):
 			missing[w.WorkerID] = "worker address is not loopback; pass --allow-remote to read its /stats"
-			out = append(out, collect.WorkerTarget{ID: w.WorkerID, Model: w.Model, Address: ""})
-			continue
+		default:
+			wt.Address = w.Address
 		}
-		out = append(out, collect.WorkerTarget{ID: w.WorkerID, Model: w.Model, Address: w.Address})
+		out = append(out, wt)
 	}
 	return out, missing
 }
@@ -302,7 +399,11 @@ func connect(ctx context.Context, o Options, wl *workload.Workload, out io.Write
 	t := &target{hc: hc, allowAll: o.AllowRemote}
 	if o.Embedded() {
 		say(out, "  booting embedded cluster: %d workers (%s), scheduler %s\n", o.Workers, o.Profile, o.Scheduler)
-		c, err := embedded.Start(ctx, o.EmbeddedConfig(wl.ModelNames()))
+		ecfg := o.EmbeddedConfig(wl.ModelNames())
+		if o.Verbose {
+			ecfg.LogWriter = os.Stderr
+		}
+		c, err := embedded.Start(ctx, ecfg)
 		if err != nil {
 			return nil, fmt.Errorf("embedded cluster: %w", err)
 		}
@@ -314,6 +415,9 @@ func connect(ctx context.Context, o Options, wl *workload.Workload, out io.Write
 		return nil, err
 	}
 	if o.ControlPlaneURL != "" {
+		if u, err := url.Parse(o.ControlPlaneURL); err == nil && o.ControlPlaneToken != "" && u.Scheme == "http" && !config.IsLoopbackHost(u.Hostname()) {
+			say(out, "  WARNING: the control plane token is sent in plaintext over http to a non-loopback host; use https\n")
+		}
 		t.cp = client.New(o.ControlPlaneURL, o.ControlPlaneToken, nil)
 	}
 	return t, nil
@@ -327,6 +431,11 @@ func preflight(ctx context.Context, hc *http.Client, base string) error {
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
+		// A *url.Error repeats the URL, which may carry a query; report only the cause.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return fmt.Errorf("target is not reachable: %w", err)
 	}
 	_ = resp.Body.Close()
@@ -339,7 +448,7 @@ func preflight(ctx context.Context, hc *http.Client, base string) error {
 // metadata assembles what spec section 32 asks a run to persist.
 func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, rep report.Repeat) report.Metadata {
 	m := report.Metadata{
-		Scheduler: o.Scheduler, Models: wl.ModelNames(), GPUType: report.Unknown, Mode: string(o.Mode()),
+		Scheduler: o.Scheduler, SchedulerSource: "declared (unverified)", Models: wl.ModelNames(), GPUType: report.Unknown, Mode: string(o.Mode()),
 		Concurrency: o.Concurrency, Rate: o.Rate, MaxInFlight: o.MaxInFlight,
 		DurationSecs: o.Duration.Seconds(), WarmupSecs: o.Warmup.Seconds(), Seed: o.Seed, Workload: o.Workload,
 		StreamRatio: o.StreamRatio, PlanDigest: wl.Digest(MaxPlanDigest), Repeat: rep, Target: "remote", TargetHost: report.Unknown,
@@ -349,7 +458,7 @@ func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, 
 	}
 	m.Environment(ctx, ".", time.Now())
 	if t.cluster != nil {
-		m.Target, m.TargetHost, m.GPUType = "embedded", "loopback", "none (mock workers)"
+		m.Target, m.TargetHost, m.GPUType, m.SchedulerSource = "embedded", "loopback", "none (mock workers)", "embedded"
 		n := len(t.cluster.Workers)
 		m.WorkerCount = &n
 		c := &report.Cluster{Profile: o.Profile, HeartbeatMillis: embedded.HeartbeatInterval.Milliseconds(), RegistryRefreshMs: embedded.RegistryRefresh.Milliseconds()}

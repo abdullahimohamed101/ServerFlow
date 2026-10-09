@@ -26,6 +26,8 @@ const (
 	DefaultMaxConcurrency = 2000
 	DefaultMaxRate        = 10000.0
 	DefaultConcurrency    = 16
+	DefaultMaxErrorRate   = 0.05
+	MinDuration           = 100 * time.Millisecond
 	MaxDuration           = 2 * time.Hour
 	MaxWarmup             = 10 * time.Minute
 	MaxRepeat             = 20
@@ -81,6 +83,14 @@ type Options struct {
 
 	OutDir       string
 	SaveRequests bool
+
+	// MaxErrorRate is the error rate above which a run is invalid (a failing run exits non-zero
+	// unless AllowErrors). AllowOverload lets an embedded closed-loop run use more clients than
+	// the workers have slots. Verbose shows the embedded cluster's logs.
+	MaxErrorRate  float64
+	AllowErrors   bool
+	AllowOverload bool
+	Verbose       bool
 }
 
 // Embedded reports whether the run boots its own cluster.
@@ -112,6 +122,9 @@ func (o Options) Validate() error {
 	}
 	if err := o.validateLoad(); err != nil {
 		return err
+	}
+	if !(o.MaxErrorRate >= 0 && o.MaxErrorRate <= 1) {
+		return fmt.Errorf("--max-error-rate must be between 0 and 1, got %v", o.MaxErrorRate)
 	}
 	if o.Repeat < 1 || o.Repeat > MaxRepeat {
 		return fmt.Errorf("--repeat must be between 1 and %d, got %d", MaxRepeat, o.Repeat)
@@ -199,13 +212,8 @@ func (o Options) validateLoad() error {
 	if err != nil {
 		return err
 	}
-	if o.Embedded() {
-		if _, err := embedded.Plan(o.EmbeddedConfig(wl.ModelNames())); err != nil {
-			return fmt.Errorf("embedded cluster: %w", err)
-		}
-	}
-	if o.Duration <= 0 || o.Duration > MaxDuration {
-		return fmt.Errorf("--duration must be between 1ns and %v, got %v", MaxDuration, o.Duration)
+	if o.Duration < MinDuration || o.Duration > MaxDuration {
+		return fmt.Errorf("--duration must be between %v and %v, got %v", MinDuration, MaxDuration, o.Duration)
 	}
 	if o.Warmup < 0 || o.Warmup > MaxWarmup {
 		return fmt.Errorf("--warmup must be between 0 and %v, got %v", MaxWarmup, o.Warmup)
@@ -224,6 +232,17 @@ func (o Options) validateLoad() error {
 	}
 	if o.Concurrency > o.MaxConcurrency {
 		return fmt.Errorf("--concurrency %d is above the cap of %d; raise it with --max-concurrency if you mean it", o.Concurrency, o.MaxConcurrency)
+	}
+	if o.Embedded() {
+		specs, err := embedded.Plan(o.EmbeddedConfig(wl.ModelNames()))
+		if err != nil {
+			return fmt.Errorf("embedded cluster: %w", err)
+		}
+		if slots := embedded.Slots(specs); o.Concurrency > slots && !o.AllowOverload {
+			return fmt.Errorf("--concurrency %d is above the %d request slots of %d workers x %d concurrent requests: the gateway would answer 503 "+
+				"to the excess and the run would measure rejections, not the scheduler. Use at most %d clients, add workers or --mock-concurrency, "+
+				"or pass --allow-overload to run it anyway", o.Concurrency, slots, o.Workers, o.MockConcurrent, slots)
+		}
 	}
 	if o.Rate == 0 {
 		return nil

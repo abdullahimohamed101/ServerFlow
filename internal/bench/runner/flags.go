@@ -48,7 +48,7 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.StringVar(&o.Secondary, "secondary-model", "llama-8b", "second model, for hot-model")
 	fs.Float64Var(&o.StreamRatio, "stream-ratio", 0.5, "fraction of requests that stream (TTFT is measured on these)")
 
-	fs.IntVar(&o.Concurrency, "concurrency", 0, "closed loop: this many clients, each sending when its last request ends (default 16 without --rate)")
+	fs.IntVar(&o.Concurrency, "concurrency", 0, "closed loop: this many clients, each sending when its last request ends (default 16 without --rate; embedded: at most workers x mock-concurrency)")
 	fs.Float64Var(&o.Rate, "rate", 0, "open loop: requests per second, sent on schedule whatever the responses do")
 	fs.IntVar(&o.MaxInFlight, "max-inflight", 0, "open loop: most requests in flight at once (default: --max-concurrency)")
 	fs.DurationVar(&o.Duration, "duration", 30*time.Second, "length of the measurement window")
@@ -63,6 +63,10 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.Float64Var(&o.MaxRate, "max-rate", DefaultMaxRate, "cap on the request rate, including the burst peak")
 	fs.IntVar(&o.MaxRequests, "max-requests", driver.DefaultMaxRequests, "cap on requests per run (bounds memory)")
 
+	fs.Float64Var(&o.MaxErrorRate, "max-error-rate", DefaultMaxErrorRate, "error rate above which the run is invalid (0 to 1)")
+	fs.BoolVar(&o.AllowErrors, "allow-errors", false, "exit 0 even when the run is invalid because of its error rate (the result is still marked invalid)")
+	fs.BoolVar(&o.AllowOverload, "allow-overload", false, "embedded: allow more closed-loop clients than the workers have slots (expect 503s)")
+	fs.BoolVar(&o.Verbose, "verbose", false, "show the embedded cluster's logs on stderr")
 	fs.StringVar(&o.OutDir, "out", "benchmark/runs", "directory for run_NNN result directories")
 	fs.BoolVar(&o.SaveRequests, "save-requests", false, "also write requests.jsonl with every request (large for long runs)")
 
@@ -77,6 +81,9 @@ func ParseRun(args []string) (RunFlags, error) {
 	}
 	if o.Concurrency == 0 && o.Rate == 0 && o.Workload != workload.Burst {
 		o.Concurrency = DefaultConcurrency
+		if o.TargetURL == "" && o.Workers > 0 && o.MockConcurrent > 0 {
+			o.Concurrency = min(DefaultConcurrency, o.Workers*o.MockConcurrent) // never default to an overload
+		}
 	}
 	if o.Rate > 0 && o.MaxInFlight == 0 {
 		o.MaxInFlight = o.MaxConcurrency

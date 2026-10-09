@@ -83,6 +83,20 @@ type Config struct {
 	TTFT            time.Duration
 	MaxConcurrency  int
 	QueueSize       int
+
+	// LogWriter, if set, receives the JSON logs of the control plane, workers and gateway; by
+	// default they are discarded.
+	LogWriter io.Writer
+}
+
+// Slots is the number of requests the workers can serve at once (the sum of their
+// concurrency), the most closed-loop clients that cannot overload them.
+func Slots(specs []WorkerSpec) int {
+	n := 0
+	for _, w := range specs {
+		n += w.MaxConcurrency
+	}
+	return n
 }
 
 // WorkerSpec is one mock worker.
@@ -203,7 +217,11 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	var logW io.Writer = io.Discard
+	if cfg.LogWriter != nil {
+		logW = cfg.LogWriter
+	}
+	log := slog.New(slog.NewJSONHandler(logW, nil))
 	runCtx, cancel := context.WithCancel(context.Background())
 	c := &Cluster{Token: token, Workers: specs, cancel: cancel}
 	fail := func(err error) (*Cluster, error) { c.Close(); return nil, err }
@@ -249,7 +267,7 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Gateway.ControlPlaneURL = cpURL
 	gcfg.Gateway.RegistryRefresh = RegistryRefresh
 	gcfg.Gateway.RegistryMaxStaleness = 10 * time.Second
-	gcfg.Gateway.UpstreamHeaderTimeout = 2 * time.Minute
+	gcfg.Gateway.UpstreamHeaderTimeout = 30 * time.Second // a hung worker must not cost minutes per repeat
 	gcfg.Gateway.ShutdownTimeout = 2 * time.Second
 	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token

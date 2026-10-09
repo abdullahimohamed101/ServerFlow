@@ -26,7 +26,7 @@ func TestDefaultsGiveAValidClosedLoopEmbeddedRun(t *testing.T) {
 }
 
 func TestTheSpecCommandParses(t *testing.T) {
-	rf, err := parse(t, "--scheduler", "round-robin", "--workers", "4", "--concurrency", "100", "--duration", "300s", "--workload", "mixed")
+	rf, err := parse(t, "--scheduler", "round-robin", "--workers", "4", "--mock-concurrency", "32", "--concurrency", "100", "--duration", "300s", "--workload", "mixed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,10 @@ func TestUnsafeOrInconsistentInputIsRefusedWithAClearError(t *testing.T) {
 		{"repeat many", []string{"--repeat", "21"}, "repeat"},
 		{"bad model", []string{"--model", "has space"}, "model"},
 		{"one worker two models", []string{"--workload", "hot-model", "--workers", "1"}, "workers"},
+		{"more clients than slots", []string{"--workers", "4", "--worker-profile", "heterogeneous", "--concurrency", "100"}, "request slots"},
+		{"slots named", []string{"--workers", "3", "--concurrency", "25"}, "24 request slots"},
+		{"too short", []string{"--duration", "1ms"}, "duration"},
+		{"error rate range", []string{"--max-error-rate", "2"}, "max-error-rate"},
 		{"mock tps", []string{"--mock-tps", "0"}, "must all be positive"},
 		{"sample interval", []string{"--sample-interval", "1ms"}, "sample-interval"},
 		{"too many planned requests", []string{"--rate", "1000", "--duration", "10m", "--max-requests", "1000"}, "max-requests"},
@@ -119,7 +123,7 @@ func TestLoopbackAndExplicitlyAllowedTargetsPass(t *testing.T) {
 }
 
 func TestCapsCanBeRaisedOnPurpose(t *testing.T) {
-	if _, err := parse(t, "--concurrency", "5000", "--max-concurrency", "5000"); err != nil {
+	if _, err := parse(t, "--concurrency", "5000", "--max-concurrency", "5000", "--mock-concurrency", "1024", "--workers", "8"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := parse(t, "--rate", "20000", "--max-rate", "30000", "--max-requests", "100000000", "--duration", "10s"); err != nil {
@@ -140,5 +144,32 @@ func TestNoSecretFlagExists(t *testing.T) {
 		if strings.Contains(err.Error(), bad) {
 			t.Errorf("a secret must not be a flag (it would show in the process list): %s", bad)
 		}
+	}
+}
+
+func TestOverloadIsAllowedOnPurposeAndTheDefaultNeverOverloads(t *testing.T) {
+	if _, err := parse(t, "--workers", "4", "--concurrency", "100", "--allow-overload"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parse(t, "--workers", "4", "--concurrency", "32"); err != nil {
+		t.Fatalf("exactly the slots is allowed: %v", err)
+	}
+	rf, err := parse(t, "--workers", "1")
+	if err != nil || rf.Options.Concurrency != 8 {
+		t.Fatalf("the default shrinks to the 8 slots of one worker: %+v %v", rf.Options.Concurrency, err)
+	}
+	// An open loop has no client count to overload.
+	if _, err := parse(t, "--rate", "500", "--workers", "1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestErrorRateDefaultsAndFlags(t *testing.T) {
+	rf, err := parse(t)
+	if err != nil || rf.Options.MaxErrorRate != 0.05 || rf.Options.AllowErrors {
+		t.Fatalf("%+v %v", rf.Options, err)
+	}
+	if rf, err := parse(t, "--max-error-rate", "0.2", "--allow-errors"); err != nil || rf.Options.MaxErrorRate != 0.2 || !rf.Options.AllowErrors {
+		t.Fatalf("%+v %v", rf.Options, err)
 	}
 }

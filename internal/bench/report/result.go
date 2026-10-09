@@ -2,11 +2,12 @@ package report
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"serverflow/internal/bench/collect"
 )
@@ -24,12 +25,36 @@ type Result struct {
 	Imbalance     Imbalance             `json:"imbalance"`
 	// GPUUtilization is the mean utilization workers reported, nil when none reported any.
 	GPUUtilization *float64 `json:"gpu_utilization"`
+	// Valid is false when the run does not support the conclusions its numbers invite: too many
+	// requests failed (latency, TTFT and balance then describe only the survivors) or nothing was
+	// measured. InvalidReasons say why. A result with valid=false should not be compared as is.
+	Valid          bool     `json:"valid"`
+	InvalidReasons []string `json:"invalid_reasons"`
+	// StatsMissing names the workers whose completed count could not be used, with the reason;
+	// the request balance is then partial.
+	StatsMissing map[string]string `json:"stats_missing"`
+	// Timings say where the wall-clock time of the run went.
+	Timings Timings `json:"timings"`
 	// NotMeasured maps a metric to why it is absent.
 	NotMeasured map[string]string `json:"not_measured"`
 	// SamplePollsFailed and SamplesDropped say how complete the queue samples are.
 	SamplePollsFailed int      `json:"sample_polls_failed"`
 	SamplesDropped    int      `json:"samples_dropped"`
 	Notes             []string `json:"notes"`
+}
+
+// Timings are the phases of a run, in seconds. Wall and Monotonic are the same interval
+// measured by the wall clock and by the monotonic clock; they differ when the machine slept
+// or the clock was changed, which stalls otherwise unexplained.
+type Timings struct {
+	Boot             float64 `json:"boot_seconds"`
+	Warmup           float64 `json:"warmup_seconds"`
+	Window           float64 `json:"window_seconds"`
+	Drain            float64 `json:"drain_seconds"`
+	Stats            float64 `json:"stats_seconds"`
+	Close            float64 `json:"close_seconds"`
+	WallClock        float64 `json:"wall_clock_seconds"`
+	MonotonicElapsed float64 `json:"monotonic_seconds"`
 }
 
 // WorkerResult is one worker's share of the run. Pointers are nil when not measured.
@@ -47,7 +72,10 @@ type WorkerResult struct {
 type Imbalance struct {
 	// RequestJain is the index of per-worker completed requests among workers serving the
 	// same model; with several models it is the lowest of the per-model indexes.
-	RequestJain        *float64           `json:"request_jain"`
+	RequestJain *float64 `json:"request_jain"`
+	// RequestJainPartial is true when some worker's count is missing, so the index describes
+	// only the workers that were read.
+	RequestJainPartial bool               `json:"request_jain_partial"`
 	RequestJainByModel map[string]float64 `json:"request_jain_by_model"`
 	// QueueJain is the index of per-worker mean queue depth.
 	QueueJain *float64 `json:"queue_jain"`
@@ -72,6 +100,10 @@ type Input struct {
 	// Sampled is whether queue sampling was attempted at all.
 	Sampled bool
 	Notes   []string
+
+	// MaxErrorRate is the error rate above which the run is invalid; negative disables the check.
+	MaxErrorRate float64
+	Timings      Timings
 }
 
 // Build computes the result of a run. It is pure.
@@ -80,7 +112,8 @@ func Build(in Input) Result {
 		SchemaVersion: SchemaVersion, RunID: in.RunID, Metadata: in.Metadata,
 		Summary:           collect.SummarizeRecords(in.Records, in.Window),
 		SamplePollsFailed: in.SamplePollsFailed, SamplesDropped: in.SamplesDropped,
-		NotMeasured: map[string]string{}, Notes: append([]string{}, in.Notes...),
+		NotMeasured: map[string]string{}, Notes: append([]string{}, in.Notes...), Timings: in.Timings,
+		InvalidReasons: []string{}, StatsMissing: map[string]string{},
 		Imbalance: Imbalance{RequestJainByModel: map[string]float64{}},
 	}
 	if r.Summary.Latency == nil {
@@ -136,7 +169,41 @@ func Build(in Input) Result {
 		r.Workers = append(r.Workers, w)
 	}
 	r.requestImbalance(byModel, len(targets), in.StatsMissing)
+	for _, t := range targets {
+		if _, ok := delta[t.ID]; !ok {
+			why := in.StatsMissing[t.ID]
+			if why == "" {
+				why = "no start or end count"
+			}
+			r.StatsMissing[t.ID] = why
+		}
+	}
+	if len(r.StatsMissing) > 0 {
+		r.Imbalance.RequestJainPartial = r.Imbalance.RequestJain != nil
+		ids := make([]string, 0, len(r.StatsMissing))
+		for id := range r.StatsMissing {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		r.Notes = append(r.Notes, fmt.Sprintf("Request balance is partial: %d of %d workers have no usable completed count (%s).",
+			len(ids), len(targets), strings.Join(ids, ", ")))
+	}
+	r.validate(in.MaxErrorRate)
 	return r
+}
+
+// validate sets Valid and InvalidReasons.
+func (r *Result) validate(maxErrorRate float64) {
+	s := r.Summary
+	if s.Sent == 0 {
+		r.InvalidReasons = append(r.InvalidReasons, "no request was measured (sent 0): the window was empty or the run ended before it opened")
+	}
+	if maxErrorRate >= 0 && s.Sent > 0 && s.ErrorRate > maxErrorRate {
+		r.InvalidReasons = append(r.InvalidReasons, fmt.Sprintf(
+			"error rate %.2f%% (%d of %d requests failed) exceeds %.2f%%: latency, TTFT and balance describe only the %d survivors; the load probably exceeded what the target can take",
+			s.ErrorRate*100, s.Failed, s.Sent, maxErrorRate*100, s.Succeeded))
+	}
+	r.Valid = len(r.InvalidReasons) == 0
 }
 
 func (r *Result) requestImbalance(byModel map[string][]float64, targets int, missing map[string]string) {
@@ -204,14 +271,25 @@ func Write(dir string, r Result, records []collect.Record) error {
 	return f.Close()
 }
 
+// maxResultBytes bounds a result file that is read.
+const maxResultBytes = 64 << 20
+
 // Load reads a result from a run directory, or from a result.json path.
 func Load(path string) (Result, error) {
 	if st, err := os.Stat(path); err == nil && st.IsDir() {
 		path = filepath.Join(path, ResultFile)
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Result{}, err
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxResultBytes+1))
+	if err != nil {
+		return Result{}, err
+	}
+	if len(b) > maxResultBytes {
+		return Result{}, fmt.Errorf("%s: larger than %d MiB", path, maxResultBytes>>20)
 	}
 	var r Result
 	if err := json.Unmarshal(b, &r); err != nil {
@@ -238,31 +316,40 @@ func Resolve(base, ref string) (string, error) {
 	return ref, nil
 }
 
-// LoadGroup returns every run under base in the same repeat group as r, r included, in
-// run order. A run without repeats is its own group.
-func LoadGroup(base string, r Result) ([]Result, error) {
+// RunDir returns the run directory a resolved path (a run directory or its result.json)
+// belongs to.
+func RunDir(path string) string {
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		return filepath.Dir(path)
+	}
+	return path
+}
+
+// LoadGroup returns the runs in the same repeat group as r, r included, in run order. The
+// group is looked for in base, the directory the run itself was found in (never a default
+// one). A run without repeats is its own group. Sibling directories that are not runs, and
+// siblings that cannot be read (corrupt, another schema, too large) are skipped; the
+// warnings name them, so one bad directory cannot block a comparison.
+func LoadGroup(base string, r Result) (group []Result, warnings []string, err error) {
 	if r.Metadata.Repeat.Of <= 1 || r.Metadata.Repeat.Group == "" {
-		return []Result{r}, nil
+		return []Result{r}, nil, nil
 	}
-	ids, err := RunIDs(base)
+	ids, err := RunIDs(base) // only directories named run_NNN
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []Result
 	for _, id := range ids {
 		g, err := Load(filepath.Join(base, id))
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
+			warnings = append(warnings, fmt.Sprintf("skipped %s: %v", id, err))
+			continue
 		}
 		if g.Metadata.Repeat.Group == r.Metadata.Repeat.Group {
-			out = append(out, g)
+			group = append(group, g)
 		}
 	}
-	if len(out) == 0 {
-		return []Result{r}, nil
+	if len(group) == 0 {
+		return []Result{r}, warnings, nil
 	}
-	return out, nil
+	return group, warnings, nil
 }

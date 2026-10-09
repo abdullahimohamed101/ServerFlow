@@ -14,6 +14,13 @@ func Markdown(r Result) string {
 	var b strings.Builder
 	m, s := r.Metadata, r.Summary
 	fmt.Fprintf(&b, "# Benchmark %s\n\n", r.RunID)
+	if !r.Valid {
+		b.WriteString("> **WARNING: THIS RUN IS INVALID. Do not compare or quote its numbers as they are.**\n")
+		for _, why := range r.InvalidReasons {
+			fmt.Fprintf(&b, "> - %s\n", why)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "%s, workload `%s`, scheduler `%s`, %s. Seed %d, repeat %d of %d.\n\n",
 		m.Date, m.Workload, m.Scheduler, loadLine(m), m.Seed, max(m.Repeat.Index, 1), max(m.Repeat.Of, 1))
 
@@ -42,9 +49,12 @@ func Markdown(r Result) string {
 	}
 
 	b.WriteString("## Throughput\n\n")
-	fmt.Fprintf(&b, "Measured over %.2fs (the %.0fs window plus the drain of requests still in flight at its end).\n\n", s.SpanSeconds, s.WindowSeconds)
+	fmt.Fprintf(&b, "Headline throughput counts the %d requests that completed successfully inside the %.0fs measurement window (whenever they were sent) and divides by the window, so one slow tail request cannot move it.\n\n",
+		s.CompletedInWindow, s.WindowSeconds)
 	fmt.Fprintf(&b, "| Requests/s | Input tokens/s | Output tokens/s |\n| --- | --- | --- |\n| %.2f | %.1f | %.1f |\n\n",
 		s.RequestsPerSecond, s.InputTokensPerSecond, s.OutputTokensPerSecond)
+	fmt.Fprintf(&b, "Throughput including tail: the %d requests sent inside the window divided by the %.2fs until the last of them finished (the drain counts against it, so it follows the slowest request): %.2f requests/s, %.1f input and %.1f output tokens/s.\n\n",
+		s.Succeeded, s.SpanSeconds, s.RequestsPerSecondWithTail, s.InputTokensPerSecondWithTail, s.OutputTokensPerSecondWithTail)
 	fmt.Fprintf(&b, "Tokens: %d requests reported usage, %d were estimated (request size for input, stream chunks for streamed output).\n\n",
 		s.UsageRequests, s.EstimatedRequests)
 
@@ -90,6 +100,9 @@ func Markdown(r Result) string {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "Request balance (Jain index, 1 is perfectly even): %s", optNotMeasured(r.Imbalance.RequestJain, "%.4f", r.NotMeasured["request_imbalance"]))
+	if r.Imbalance.RequestJainPartial {
+		fmt.Fprintf(&b, " (PARTIAL: %d workers have no usable count)", len(r.StatsMissing))
+	}
 	if len(r.Imbalance.RequestJainByModel) > 1 {
 		fmt.Fprintf(&b, " (lowest of %s)", floatMap(r.Imbalance.RequestJainByModel))
 	}
@@ -109,10 +122,21 @@ func Markdown(r Result) string {
 		b.WriteString("\n")
 	}
 
+	t := r.Timings
+	if t.WallClock > 0 {
+		fmt.Fprintf(&b, "## Timings\n\nBoot %.1fs, warm-up %.1fs, window %.1fs, drain %.1fs, worker stats %.1fs, close %.1fs; %.1fs wall clock, %.1fs monotonic.\n\n",
+			t.Boot, t.Warmup, t.Window, t.Drain, t.Stats, t.Close, t.WallClock, t.MonotonicElapsed)
+	}
 	b.WriteString("## How to read this\n\n")
 	b.WriteString("- These are measurements of one run, not a ranking. A different seed, machine, or load can change them; use `--repeat` to see run-to-run spread.\n")
 	if m.Target == "embedded" {
 		b.WriteString("- The load generator, gateway, control plane and mock workers share one machine, so absolute numbers say little about capacity; compare runs made on the same machine.\n")
+	}
+	if m.Mode == "open" {
+		b.WriteString("- Open-loop arrivals are evenly spaced (deterministic, not Poisson), which understates the burstiness of real traffic and so its tail latency.\n")
+	}
+	if m.SchedulerSource != "" && m.SchedulerSource != "embedded" {
+		b.WriteString("- The scheduler of a remote gateway is as declared by the user and was not verified.\n")
 	}
 	b.WriteString("- A balanced distribution (Jain near 1) is not automatically good when workers differ in speed.\n")
 	for _, n := range r.Notes {

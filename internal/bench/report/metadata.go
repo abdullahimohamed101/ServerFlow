@@ -4,7 +4,6 @@
 package report
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -40,9 +39,12 @@ type Metadata struct {
 	// Target is "embedded" (a simulated cluster booted in process) or "remote".
 	Target string `json:"target"`
 	// TargetHost is the host:port of a remote gateway, never a URL with credentials.
-	TargetHost string   `json:"target_host"`
-	Scheduler  string   `json:"scheduler"`
-	Models     []string `json:"models"`
+	TargetHost string `json:"target_host"`
+	Scheduler  string `json:"scheduler"`
+	// SchedulerSource is "embedded" when the harness started the gateway with this scheduler, or
+	// "declared (unverified)" when it only records what the user said a remote gateway runs.
+	SchedulerSource string   `json:"scheduler_source"`
+	Models          []string `json:"models"`
 	// WorkerCount is nil (JSON null) when unknown.
 	WorkerCount *int   `json:"worker_count"`
 	GPUType     string `json:"gpu_type"`
@@ -104,24 +106,13 @@ type ClusterWorker struct {
 // GitState is the commit and tree state of a source directory.
 type GitState struct{ Commit, Tree string }
 
-// Git reports the commit and whether the tree has uncommitted changes, by asking git in
-// dir. When git is unavailable or dir is not a repository it falls back to the VCS
-// stamp of the running binary, and then to "unknown". Paths git ignores (such as
-// benchmark/runs) do not make a tree dirty.
+// Git reports the commit and whether the tree had uncommitted changes for the code under
+// test. The VCS stamp of the running binary (go build stamps it) comes first, because the
+// binary may be run from any directory, including another repository whose commit would be
+// recorded by mistake. Without a stamp (go run, go test) it asks git in dir, and failing
+// that reports "unknown". Paths git ignores (such as benchmark/runs) do not make a tree dirty.
 func Git(ctx context.Context, dir string) GitState {
 	st := GitState{Commit: Unknown, Tree: Unknown}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if out, err := runGit(ctx, dir, "rev-parse", "HEAD"); err == nil && out != "" {
-		st.Commit = out
-		if status, err := exec.CommandContext(ctx, "git", "-C", dir, "status", "--porcelain").Output(); err == nil {
-			st.Tree = "clean"
-			if len(bytes.TrimSpace(status)) > 0 {
-				st.Tree = "dirty"
-			}
-		}
-		return st
-	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range bi.Settings {
 			switch s.Key {
@@ -138,12 +129,32 @@ func Git(ctx context.Context, dir string) GitState {
 				}
 			}
 		}
+		if st.Commit != Unknown {
+			return st
+		}
+		st.Tree = Unknown
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if out, err := runGit(ctx, dir, "rev-parse", "HEAD"); err == nil && out != "" {
+		st.Commit = out
+		if status, err := runGit(ctx, dir, "status", "--porcelain"); err == nil {
+			st.Tree = "clean"
+			if status != "" {
+				st.Tree = "dirty"
+			}
+		}
 	}
 	return st
 }
 
+// commandWaitDelay bounds how long a command may keep its pipes open after its context ends.
+const commandWaitDelay = 2 * time.Second
+
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.WaitDelay = commandWaitDelay
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
 
@@ -155,7 +166,11 @@ func Machine() string {
 func cpuName() string {
 	switch runtime.GOOS {
 	case "darwin":
-		if out, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "sysctl", "-n", "machdep.cpu.brand_string")
+		cmd.WaitDelay = commandWaitDelay
+		if out, err := cmd.Output(); err == nil {
 			if s := strings.TrimSpace(string(out)); s != "" {
 				return s
 			}
@@ -191,7 +206,7 @@ func (m Metadata) Missing() []string {
 	var out []string
 	for name, v := range map[string]string{
 		"date": m.Date, "harness_version": m.HarnessVersion, "go_version": m.GoVersion, "machine": m.Machine,
-		"git_commit": m.GitCommit, "git_tree": m.GitTree, "target": m.Target, "scheduler": m.Scheduler,
+		"scheduler_source": m.SchedulerSource, "git_commit": m.GitCommit, "git_tree": m.GitTree, "target": m.Target, "scheduler": m.Scheduler,
 		"gpu_type": m.GPUType, "mode": m.Mode, "workload": m.Workload, "plan_digest": m.PlanDigest,
 	} {
 		if v == "" {

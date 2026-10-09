@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"serverflow/internal/bench/report"
 )
@@ -84,8 +83,8 @@ func TestRepeatWritesOneRunPerRepeatInOneGroupAndPrintsTheSpread(t *testing.T) {
 	if err != nil || len(rs) != 2 {
 		t.Fatalf("%v %v", rs, err)
 	}
-	if rs[0].RunID != "run_001" || rs[1].RunID != "run_002" || rs[0].Metadata.Repeat != (report.Repeat{Index: 1, Of: 2, Group: "run_001"}) ||
-		rs[1].Metadata.Repeat != (report.Repeat{Index: 2, Of: 2, Group: "run_001"}) {
+	if rs[0].RunID != "run_001" || rs[1].RunID != "run_002" || rs[0].Metadata.Repeat.Group != rs[1].Metadata.Repeat.Group || !strings.HasPrefix(rs[0].Metadata.Repeat.Group, "run_001-") ||
+		rs[0].Metadata.Repeat.Index != 1 || rs[1].Metadata.Repeat.Index != 2 || rs[1].Metadata.Repeat.Of != 2 {
 		t.Fatalf("%+v %+v", rs[0].Metadata.Repeat, rs[1].Metadata.Repeat)
 	}
 	if rs[0].Metadata.PlanDigest != rs[1].Metadata.PlanDigest {
@@ -94,17 +93,34 @@ func TestRepeatWritesOneRunPerRepeatInOneGroupAndPrintsTheSpread(t *testing.T) {
 	if !strings.Contains(out.String(), "Spread across 2 repeats") {
 		t.Fatalf("%s", out.String())
 	}
-	g, err := report.LoadGroup(o.OutDir, rs[1])
+	g, _, err := report.LoadGroup(o.OutDir, rs[1])
 	if err != nil || len(g) != 2 {
 		t.Fatalf("%d %v", len(g), err)
 	}
 }
 
+// cancelWhenSeen cancels a context as soon as the progress output contains marker, so a test
+// interrupts a run at a known point instead of after a guessed delay.
+type cancelWhenSeen struct {
+	marker string
+	cancel context.CancelFunc
+	buf    bytes.Buffer
+}
+
+func (c *cancelWhenSeen) Write(p []byte) (int, error) {
+	c.buf.Write(p)
+	if strings.Contains(c.buf.String(), c.marker) {
+		c.cancel()
+	}
+	return len(p), nil
+}
+
 func TestAnInterruptedRunWritesNothingAndRetiresItsID(t *testing.T) {
 	o := quickOptions(t, "--duration", "1m")
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(700*time.Millisecond, cancel)
-	if _, err := Run(ctx, o, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "interrupted") {
+	defer cancel()
+	w := &cancelWhenSeen{marker: "driving", cancel: cancel} // the cluster is up and the load has started
+	if _, err := Run(ctx, o, w); err == nil || !strings.Contains(err.Error(), "interrupted") {
 		t.Fatalf("%v", err)
 	}
 	ids, _ := report.RunIDs(o.OutDir)
@@ -113,6 +129,50 @@ func TestAnInterruptedRunWritesNothingAndRetiresItsID(t *testing.T) {
 	}
 	if id, _, _ := report.CreateRun(o.OutDir); id != "run_002" {
 		t.Fatalf("the interrupted run's ID must stay retired, got %s", id)
+	}
+}
+
+func TestAnOverloadedRunIsInvalidFailsTheExitStatusAndIsStillWritten(t *testing.T) {
+	// 12 clients for 3 slots: the gateway rejects most requests, so the run is not valid.
+	args := []string{"--workload", "uniform-short", "--mock-concurrency", "1", "--mock-tps", "50", "--concurrency", "12", "--allow-overload", "--duration", "1s"}
+	o := quickOptions(t, args...)
+	var out bytes.Buffer
+	rs, err := Run(context.Background(), o, &out)
+	if err == nil || !strings.Contains(err.Error(), "invalid") || len(rs) != 1 {
+		t.Fatalf("an invalid run must fail the command: %v", err)
+	}
+	r := rs[0]
+	if r.Valid || len(r.InvalidReasons) == 0 || r.Summary.ErrorRate <= 0.05 {
+		t.Fatalf("%+v", r.InvalidReasons)
+	}
+	if !strings.Contains(out.String(), "INVALID") || !strings.Contains(out.String(), "WARNING") {
+		t.Fatalf("the headline must say so:\n%s", out.String())
+	}
+	md, _ := os.ReadFile(filepath.Join(o.OutDir, "run_001", "report.md"))
+	if !strings.Contains(string(md), "THIS RUN IS INVALID") {
+		t.Fatal("the report must carry the warning at the top")
+	}
+	// The closed-loop clients must not spin: backoff keeps even a rejected run to a few hundred requests.
+	if r.Summary.Sent > 2000 {
+		t.Fatalf("clients spun: %d requests in a second", r.Summary.Sent)
+	}
+
+	// --allow-errors accepts the exit status, not the result: it stays marked invalid.
+	o2 := quickOptions(t, append(args, "--allow-errors")...)
+	rs, err = Run(context.Background(), o2, &bytes.Buffer{})
+	if err != nil || len(rs) != 1 || rs[0].Valid {
+		t.Fatalf("%v %v", err, rs)
+	}
+}
+
+func TestAnEmptyMeasurementWindowFailsTheRun(t *testing.T) {
+	// One arrival every two seconds: request 0 is due at 0, inside the 1s warm-up, and the next one
+	// would be due after the window (1s-1.2s) has closed, so nothing is measured.
+	o := quickOptions(t, "--rate", "0.5", "--concurrency", "0", "--warmup", "1s", "--duration", "200ms")
+	o.Concurrency = 0
+	_, err := Run(context.Background(), o, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "sent 0") {
+		t.Fatalf("%v", err)
 	}
 }
 

@@ -37,6 +37,9 @@ this process. Choose a load with --concurrency (closed loop) or --rate (open loo
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// After the first signal restore the default behaviour, so a second Ctrl-C force-quits a
+	// run that is slow to wind down.
+	go func() { <-ctx.Done(); stop() }()
 	code := execute(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
@@ -52,7 +55,7 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "run":
 		err = cmdRun(ctx, args[1:], stdout)
 	case "compare":
-		err = cmdCompare(args[1:], stdout)
+		err = cmdCompare(args[1:], stdout, stderr)
 	case "list":
 		err = cmdList(args[1:], stdout)
 	case "help", "-h", "--help":
@@ -111,7 +114,7 @@ func cmdList(args []string, stdout io.Writer) error {
 	return report.List(stdout, dir)
 }
 
-func cmdCompare(args []string, stdout io.Writer) error {
+func cmdCompare(args []string, stdout, stderr io.Writer) error {
 	dir, rest, err := dirFlag("compare", args)
 	if err != nil {
 		return err
@@ -129,15 +132,13 @@ func cmdCompare(args []string, stdout io.Writer) error {
 		if results[i], err = report.Load(p); err != nil {
 			return err
 		}
-		base := dir
-		if st, serr := os.Stat(p); serr == nil && !st.IsDir() {
-			p = filepath.Dir(p)
-		}
-		if _, ok := report.ParseRunID(filepath.Base(p)); ok {
-			base = filepath.Dir(p)
-		}
-		if groups[i], err = report.LoadGroup(base, results[i]); err != nil {
+		// Look for the repeat group in the directory the run itself is in.
+		var warns []string
+		if groups[i], warns, err = report.LoadGroup(filepath.Dir(report.RunDir(p)), results[i]); err != nil {
 			return err
+		}
+		for _, w := range warns {
+			_, _ = fmt.Fprintf(stderr, "benchmark: warning: %s\n", w)
 		}
 	}
 	return report.CompareGroups(results[0], results[1], groups[0], groups[1]).Write(stdout)

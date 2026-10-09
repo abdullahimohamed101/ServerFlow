@@ -3,6 +3,8 @@ package report
 import (
 	"bytes"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +13,7 @@ import (
 
 func result(id string, rps, p95Lat, ttftP95, jain, errRate float64) Result {
 	j := jain
-	r := Result{RunID: id, Metadata: baseMeta(), Imbalance: Imbalance{RequestJain: &j}}
+	r := Result{RunID: id, Valid: true, Metadata: baseMeta(), Imbalance: Imbalance{RequestJain: &j}}
 	r.Metadata.Scheduler = "round-robin"
 	r.Summary.RequestsPerSecond, r.Summary.ErrorRate = rps, errRate
 	r.Summary.Latency = &collect.Dist{P95: p95Lat}
@@ -127,43 +129,108 @@ func TestDifferencesFlagUnfairComparisonsButExpectTheScheduler(t *testing.T) {
 	}
 }
 
-func TestSpreadSaysWhetherADifferenceExceedsRunToRunNoise(t *testing.T) {
-	mk := func(rps ...float64) []Result {
-		var g []Result
-		for _, v := range rps {
-			g = append(g, result("r", v, 100, 10, 1, 0))
+func group(rps ...float64) []Result {
+	var g []Result
+	for i, v := range rps {
+		g = append(g, result("run_"+string(rune('a'+i)), v, 100, 10, 1, 0))
+	}
+	return g
+}
+
+func TestSpreadNeedsThreeRunsOnBothSides(t *testing.T) {
+	for name, tc := range map[string]struct{ a, b []Result }{
+		"1 vs 3": {group(100), group(103, 99, 101)},
+		"3 vs 1": {group(100, 104, 98), group(120)},
+		"2 vs 2": {group(100, 104), group(120, 125)},
+		"2 vs 3": {group(100, 104), group(120, 125, 119)},
+	} {
+		c := CompareGroups(tc.a[0], tc.b[0], tc.a, tc.b)
+		if c.Grouped {
+			t.Errorf("%s: must not be grouped", name)
 		}
-		return g
-	}
-	ga, gb := mk(100, 104, 98), mk(103, 99, 101)
-	a, b := ga[1], gb[0]
-	c := CompareGroups(a, b, ga, gb)
-	if d := find(t, c, "throughput"); d.Spread != "within spread" {
-		t.Errorf("ranges 98-104 and 99-103 overlap: %q", d.Spread)
-	}
-	gc := mk(120, 125, 118)
-	c = CompareGroups(a, gc[0], ga, gc)
-	if d := find(t, c, "throughput"); d.Spread != "outside spread" {
-		t.Errorf("ranges 98-104 and 118-125 do not overlap: %q", d.Spread)
-	}
-	c = CompareGroups(a, gc[0], ga, gc)
-	if d := find(t, c, "latency_p95"); d.Spread != "within spread" {
-		t.Errorf("identical values lie within spread: %q", d.Spread)
-	}
-	if d := find(t, Compare(a, b), "throughput"); d.Spread != "no repeat data" {
-		t.Errorf("single runs have no spread: %q", d.Spread)
+		for _, d := range c.Deltas {
+			if d.Spread != "insufficient repeats" {
+				t.Errorf("%s: %s spread %q, want insufficient repeats", name, d.Key, d.Spread)
+			}
+		}
+		var out bytes.Buffer
+		_ = c.Write(&out)
+		if !strings.Contains(out.String(), "insufficient repeats") || strings.Contains(out.String(), "ranges overlap") {
+			t.Errorf("%s:\n%s", name, out.String())
+		}
 	}
 }
 
-func TestLoadGroupFindsRunsOfTheSameRepeatGroup(t *testing.T) {
+func TestGroupedComparisonUsesMediansAndRangesAndNeverSaysSignificant(t *testing.T) {
+	ga, gb := group(100, 104, 98), group(103, 99, 101)
+	c := CompareGroups(ga[0], gb[0], ga, gb)
+	d := find(t, c, "throughput")
+	// medians 100 and 101; the delta is between medians, not between the two runs named (100, 103).
+	if !c.Grouped || *d.A != 100 || *d.B != 101 || *d.Abs != 1 || *d.AMin != 98 || *d.AMax != 104 || *d.BMin != 99 || *d.BMax != 103 {
+		t.Fatalf("%+v", d)
+	}
+	if d.Spread != "ranges overlap" {
+		t.Errorf("98-104 and 99-103 overlap: %q", d.Spread)
+	}
+	gc := group(120, 125, 118)
+	c = CompareGroups(ga[0], gc[0], ga, gc)
+	if d := find(t, c, "throughput"); d.Spread != "ranges do not overlap" || *d.B != 120 {
+		t.Errorf("%+v", d)
+	}
+	// identical values (latency is 100 in every run): nothing to judge, so n/a rather than a vacuous verdict.
+	if d := find(t, c, "latency_p95"); d.Spread != "n/a" {
+		t.Errorf("equal values: %q", d.Spread)
+	}
+	var out bytes.Buffer
+	_ = c.Write(&out)
+	s := out.String()
+	if !strings.Contains(s, "medians of 3 and 3") || !strings.Contains(s, "[98-104]") || !strings.Contains(s, "not a significance test") || !strings.Contains(s, "10%") {
+		t.Errorf("%s", s)
+	}
+	for _, banned := range []string{"significant at", "outside spread", "within spread"} {
+		if strings.Contains(s, banned) {
+			t.Errorf("must not imply significance: %q", banned)
+		}
+	}
+}
+
+func TestZeroVersusZeroIsNotAVerdict(t *testing.T) {
+	ga, gb := group(0, 0, 0), group(0, 0, 0)
+	if d := find(t, CompareGroups(ga[0], gb[0], ga, gb), "throughput"); d.Spread != "n/a" {
+		t.Fatalf("%q", d.Spread)
+	}
+}
+
+func TestInvalidOrErroringRunsAreWarnedAboutAboveTheTable(t *testing.T) {
+	a := result("run_001", 100, 100, 10, 1, 0)
+	b := result("run_002", 100, 100, 10, 1, 0.5)
+	b.Valid, b.InvalidReasons = false, []string{"error rate 50.00% exceeds 5.00%"}
+	c := result("run_003", 100, 100, 10, 1, 0.08)
+	var out bytes.Buffer
+	_ = Compare(a, b).Write(&out)
+	s := out.String()
+	if !strings.HasPrefix(s, "WARNING: run_002 is INVALID: error rate 50.00%") || strings.Index(s, "WARNING") > strings.Index(s, "METRIC") {
+		t.Fatalf("the warning must come before the table:\n%s", s)
+	}
+	out.Reset()
+	_ = Compare(a, c).Write(&out)
+	if !strings.Contains(out.String(), "run_003 has an error rate of 8.00%") {
+		t.Fatalf("%s", out.String())
+	}
+	if w := Compare(a, a).Warnings; len(w) != 0 {
+		t.Fatalf("%v", w)
+	}
+}
+
+func TestLoadGroupFindsRunsOfTheSameRepeatGroupInTheGivenDirectory(t *testing.T) {
 	base := t.TempDir()
 	var first Result
 	for i := 1; i <= 3; i++ {
 		id, dir, _ := CreateRun(base)
 		r := Build(Input{RunID: id, Metadata: baseMeta(), Window: collect.Window{End: sec(1)}})
-		r.Metadata.Repeat = Repeat{Index: i, Of: 3, Group: "run_001"}
+		r.Metadata.Repeat = Repeat{Index: i, Of: 3, Group: "g1"}
 		if i == 3 {
-			r.Metadata.Repeat.Group = "run_other"
+			r.Metadata.Repeat.Group = "other"
 		}
 		if i == 1 {
 			first = r
@@ -172,12 +239,52 @@ func TestLoadGroupFindsRunsOfTheSameRepeatGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g, err := LoadGroup(base, first)
-	if err != nil || len(g) != 2 {
-		t.Fatalf("%d %v", len(g), err)
+	g, warns, err := LoadGroup(base, first)
+	if err != nil || len(g) != 2 || len(warns) != 0 {
+		t.Fatalf("%d %v %v", len(g), warns, err)
 	}
 	single := Build(Input{RunID: "run_x", Metadata: baseMeta()})
-	if g, _ := LoadGroup(base, single); len(g) != 1 {
+	if g, _, _ := LoadGroup(base, single); len(g) != 1 {
 		t.Fatal("a run without repeats is its own group")
+	}
+	// The same group name in another directory is another group.
+	other := t.TempDir()
+	if g, _, _ := LoadGroup(other, first); len(g) != 1 {
+		t.Fatalf("group names must not leak across directories: %d", len(g))
+	}
+}
+
+func TestOneBadSiblingCannotBlockALoadGroup(t *testing.T) {
+	base := t.TempDir()
+	var first Result
+	for i := 1; i <= 3; i++ {
+		id, dir, _ := CreateRun(base)
+		r := Build(Input{RunID: id, Metadata: baseMeta(), Window: collect.Window{End: sec(1)}})
+		r.Metadata.Repeat = Repeat{Index: i, Of: 3, Group: "g"}
+		if i == 1 {
+			first = r
+		}
+		if err := Write(dir, r, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A corrupt run, a run of another schema, a directory that is not a run, and an oversized file.
+	for id, content := range map[string]string{"run_004": "{not json", "run_005": `{"schema_version": 99}`} {
+		_ = os.Mkdir(filepath.Join(base, id), 0o755)
+		_ = os.WriteFile(filepath.Join(base, id, ResultFile), []byte(content), 0o644)
+	}
+	_ = os.Mkdir(filepath.Join(base, "scratch"), 0o755)
+	_ = os.Mkdir(filepath.Join(base, "run_006"), 0o755) // no result file at all
+	g, warns, err := LoadGroup(base, first)
+	if err != nil || len(g) != 3 {
+		t.Fatalf("%d %v", len(g), err)
+	}
+	if len(warns) != 3 {
+		t.Fatalf("one warning per unreadable run directory: %v", warns)
+	}
+	for _, w := range warns {
+		if strings.Contains(w, "scratch") {
+			t.Fatalf("non-run directories are not even looked at: %v", warns)
+		}
 	}
 }

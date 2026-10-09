@@ -18,7 +18,7 @@ func baseMeta() Metadata {
 	n := 3
 	return Metadata{
 		Date: "2026-10-08T00:00:00Z", HarnessVersion: HarnessVersion, GoVersion: "go1", Machine: "m", GitCommit: "abc", GitTree: "clean",
-		Target: "embedded", Scheduler: "round-robin", Models: []string{"m1"}, WorkerCount: &n, GPUType: "none", Mode: "closed",
+		Target: "embedded", Scheduler: "round-robin", SchedulerSource: "embedded", Models: []string{"m1"}, WorkerCount: &n, GPUType: "none", Mode: "closed",
 		Concurrency: 4, DurationSecs: 10, Workload: "mixed", Seed: 1, PlanDigest: "d", Prompt: []PromptClass{{Name: "x", Weight: 1}},
 		Repeat: Repeat{Index: 1, Of: 1}, Cluster: &Cluster{Profile: "identical"},
 	}
@@ -290,5 +290,76 @@ func TestEnvironmentFillsEveryCommonField(t *testing.T) {
 	m.Environment(context.Background(), t.TempDir(), time.Date(2026, 10, 8, 12, 0, 0, 0, time.FixedZone("x", 3600)))
 	if m.Date != "2026-10-08T11:00:00Z" || m.HarnessVersion == "" || m.GoVersion == "" || m.Machine == "" || m.GitCommit == "" || m.GitTree == "" {
 		t.Fatalf("%+v", m)
+	}
+}
+
+func TestAnErrorRateAboveTheLimitMakesTheRunInvalid(t *testing.T) {
+	mk := func(ok, fail int, max float64) Result {
+		var recs []collect.Record
+		for i := 0; i < ok; i++ {
+			recs = append(recs, rec(i, 1, 1.2, false, 0))
+		}
+		for i := 0; i < fail; i++ {
+			recs = append(recs, collect.Record{Seq: 100 + i, Intended: sec(1), Started: sec(1), Done: sec(1.1), Status: 503})
+		}
+		return Build(Input{RunID: "run_001", Metadata: baseMeta(), Window: collect.Window{End: sec(5)}, Records: recs, MaxErrorRate: max})
+	}
+	if r := mk(95, 5, 0.05); !r.Valid || len(r.InvalidReasons) != 0 {
+		t.Fatalf("exactly at the limit is valid: %+v", r.InvalidReasons)
+	}
+	r := mk(94, 6, 0.05)
+	if r.Valid || len(r.InvalidReasons) != 1 || !strings.Contains(r.InvalidReasons[0], "6.00%") {
+		t.Fatalf("%v %v", r.Valid, r.InvalidReasons)
+	}
+	md := Markdown(r)
+	if !strings.HasPrefix(md, "# Benchmark run_001\n\n> **WARNING: THIS RUN IS INVALID") {
+		t.Fatalf("the banner must be at the top of the report:\n%.200s", md)
+	}
+	if r := mk(0, 10, -1); !r.Valid {
+		t.Fatal("a negative limit disables the error-rate check")
+	}
+	b, _ := json.Marshal(r)
+	if !bytes.Contains(b, []byte(`"valid":false`)) || !bytes.Contains(b, []byte(`"invalid_reasons":["error rate`)) {
+		t.Fatalf("%s", b)
+	}
+}
+
+func TestAnEmptyMeasurementIsInvalid(t *testing.T) {
+	r := Build(Input{RunID: "run_001", Metadata: baseMeta(), Window: collect.Window{End: sec(5)}, MaxErrorRate: 0.05})
+	if r.Valid || !strings.Contains(strings.Join(r.InvalidReasons, " "), "sent 0") {
+		t.Fatalf("%+v", r.InvalidReasons)
+	}
+	if !strings.Contains(Markdown(r), "INVALID") {
+		t.Fatal("banner")
+	}
+}
+
+func TestMissingWorkerCountsMakeTheBalancePartialAndAreRecorded(t *testing.T) {
+	in := Input{
+		RunID: "run_001", Metadata: baseMeta(), Window: collect.Window{End: sec(5)},
+		Targets:      []collect.WorkerTarget{{ID: "a", Model: "q"}, {ID: "b", Model: "q"}, {ID: "c", Model: "q"}},
+		StartCounts:  collect.WorkerCounts{"a": 0, "b": 0},
+		EndCounts:    collect.WorkerCounts{"a": 5, "b": 5},
+		StatsMissing: map[string]string{"c": "worker state LOST"},
+		MaxErrorRate: -1,
+	}
+	r := Build(in)
+	if r.Imbalance.RequestJain == nil || !r.Imbalance.RequestJainPartial || r.StatsMissing["c"] != "worker state LOST" || len(r.StatsMissing) != 1 {
+		t.Fatalf("%+v %v", r.Imbalance, r.StatsMissing)
+	}
+	if !strings.Contains(strings.Join(r.Notes, " "), "partial") || !strings.Contains(Markdown(r), "PARTIAL") {
+		t.Fatalf("%v", r.Notes)
+	}
+	// Nothing missing: not partial.
+	in.Targets = in.Targets[:2]
+	in.StatsMissing = nil
+	if r := Build(in); r.Imbalance.RequestJainPartial || len(r.StatsMissing) != 0 {
+		t.Fatalf("%+v", r.Imbalance)
+	}
+	// An end snapshot without a start (the run ended before the warm-up did) yields no delta.
+	in.StartCounts = nil
+	r = Build(in)
+	if r.Imbalance.RequestJain != nil || len(r.StatsMissing) != 2 || r.NotMeasured["request_imbalance"] == "" {
+		t.Fatalf("%+v %v", r.Imbalance, r.StatsMissing)
 	}
 }

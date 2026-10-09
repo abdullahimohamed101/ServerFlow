@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"text/tabwriter"
 )
@@ -62,16 +63,27 @@ var headlines = []headline{
 	{key: "error_rate", label: "error rate", unit: "%", points: true, get: func(r Result) *float64 { return f(r.Summary.ErrorRate * 100) }},
 }
 
-// Delta is the change from run A to run B in one number. Pct is nil when it is undefined
-// (a value is not measured, or A is zero); Abs is B minus A. A positive delta means B is
-// higher, not better.
+// MinRepeats is how many runs each side needs before the spread of the repeats may be used
+// to judge a difference. With fewer, the range of a side is mostly luck.
+const MinRepeats = 3
+
+// MaxValidErrorRate is the error rate above which compare warns that a run's numbers describe
+// only its survivors.
+const MaxValidErrorRate = 0.05
+
+// Delta is the change from A to B in one number. For repeat groups of at least MinRepeats runs
+// on both sides, A and B are the medians of the groups and the ranges are shown; otherwise they
+// are the two runs named. Pct is nil when it is undefined (a value is not measured, or A is
+// zero); Abs is B minus A. A positive delta means B is higher, not better.
 type Delta struct {
 	Key, Label, Unit string
 	A, B             *float64
+	AMin, AMax       *float64
+	BMin, BMax       *float64
 	Abs, Pct         *float64
 	Points           bool
-	// Spread says whether the difference exceeds run-to-run spread: "outside spread",
-	// "within spread", or "no repeat data".
+	// Spread is one of "ranges overlap", "ranges do not overlap", "insufficient repeats", or
+	// "n/a" (the two values are equal or zero, so there is nothing to judge).
 	Spread string
 }
 
@@ -85,9 +97,16 @@ type Difference struct {
 
 // Comparison is the table of deltas between two runs.
 type Comparison struct {
-	A, B        string
+	A, B string
+	// NA and NB are how many runs stand behind each side; Grouped says the table compares
+	// medians of repeat groups (both sides have at least MinRepeats runs).
+	NA, NB      int
+	Grouped     bool
 	Deltas      []Delta
 	Differences []Difference
+	// Warnings are problems with the runs themselves (invalid, high error rate) and are
+	// printed before the table.
+	Warnings []string
 }
 
 // Unfair reports whether anything other than the expected differences differs.
@@ -111,14 +130,33 @@ func PercentDelta(a, b float64) (float64, bool) {
 // Compare compares two single runs.
 func Compare(a, b Result) Comparison { return CompareGroups(a, b, []Result{a}, []Result{b}) }
 
-// CompareGroups compares runs a and b and, from their repeat groups, says for each number
-// whether the difference exceeds the spread across repeats (the two groups' ranges do
-// not overlap).
+// CompareGroups compares runs a and b. When both repeat groups (ga, gb) have at least MinRepeats
+// runs it compares their medians and says whether the two groups' ranges overlap; otherwise it
+// compares a with b and says "insufficient repeats". The rule is a plain range check, not a
+// significance test: for two groups of 3 drawn from the same distribution the ranges are
+// disjoint 10% of the time (2/C(6,3)), per metric, so "do not overlap" on one of many metrics
+// is weak evidence.
 func CompareGroups(a, b Result, ga, gb []Result) Comparison {
-	c := Comparison{A: a.RunID, B: b.RunID, Differences: differences(a.Metadata, b.Metadata)}
-	repeated := len(ga) > 1 || len(gb) > 1
+	c := Comparison{A: a.RunID, B: b.RunID, NA: len(ga), NB: len(gb), Differences: differences(a.Metadata, b.Metadata)}
+	c.Grouped = len(ga) >= MinRepeats && len(gb) >= MinRepeats
+	c.Warnings = warnings(ga, gb)
 	for _, h := range headlines {
-		d := Delta{Key: h.key, Label: h.label, Unit: h.unit, A: h.get(a), B: h.get(b), Points: h.points}
+		d := Delta{Key: h.key, Label: h.label, Unit: h.unit, Points: h.points, Spread: "insufficient repeats"}
+		if c.Grouped {
+			amed, amin, amax, ok1 := groupStats(h, ga)
+			bmed, bmin, bmax, ok2 := groupStats(h, gb)
+			if ok1 {
+				d.A, d.AMin, d.AMax = &amed, &amin, &amax
+			}
+			if ok2 {
+				d.B, d.BMin, d.BMax = &bmed, &bmin, &bmax
+			}
+			if ok1 && ok2 {
+				d.Spread = rangeVerdict(amed, bmed, amin, amax, bmin, bmax)
+			}
+		} else {
+			d.A, d.B = h.get(a), h.get(b)
+		}
 		if d.A != nil && d.B != nil {
 			abs := *d.B - *d.A
 			d.Abs = &abs
@@ -128,34 +166,65 @@ func CompareGroups(a, b Result, ga, gb []Result) Comparison {
 				}
 			}
 		}
-		d.Spread = "no repeat data"
-		if repeated && d.A != nil && d.B != nil {
-			d.Spread = spread(h, ga, gb)
-		}
 		c.Deltas = append(c.Deltas, d)
 	}
 	return c
 }
 
-func spread(h headline, ga, gb []Result) string {
-	lo := func(g []Result) (mn, mx float64, ok bool) {
-		mn, mx = math.Inf(1), math.Inf(-1)
-		for _, r := range g {
-			if v := h.get(r); v != nil {
-				mn, mx, ok = math.Min(mn, *v), math.Max(mx, *v), true
-			}
+// groupStats returns the median, minimum and maximum of a headline across a group, over the
+// runs that measured it. ok is false when fewer than MinRepeats runs did.
+func groupStats(h headline, g []Result) (med, mn, mx float64, ok bool) {
+	var xs []float64
+	for _, r := range g {
+		if v := h.get(r); v != nil {
+			xs = append(xs, *v)
 		}
-		return
 	}
-	amin, amax, ok1 := lo(ga)
-	bmin, bmax, ok2 := lo(gb)
-	if !ok1 || !ok2 {
-		return "no repeat data"
+	if len(xs) < MinRepeats {
+		return 0, 0, 0, false
+	}
+	sort.Float64s(xs)
+	n := len(xs)
+	med = xs[n/2]
+	if n%2 == 0 {
+		med = (xs[n/2-1] + xs[n/2]) / 2
+	}
+	return med, xs[0], xs[n-1], true
+}
+
+func rangeVerdict(amed, bmed, amin, amax, bmin, bmax float64) string {
+	if amed == bmed || (amed == 0 && bmed == 0) {
+		return "n/a"
 	}
 	if bmin > amax || bmax < amin {
-		return "outside spread"
+		return "ranges do not overlap"
 	}
-	return "within spread"
+	return "ranges overlap"
+}
+
+// warnings lists runs whose numbers should not be taken at face value.
+func warnings(groups ...[]Result) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, r := range g {
+			if seen[r.RunID] {
+				continue
+			}
+			seen[r.RunID] = true
+			switch {
+			case !r.Valid:
+				why := "no reason recorded"
+				if len(r.InvalidReasons) > 0 {
+					why = strings.Join(r.InvalidReasons, "; ")
+				}
+				out = append(out, fmt.Sprintf("%s is INVALID: %s", r.RunID, why))
+			case r.Summary.ErrorRate > MaxValidErrorRate:
+				out = append(out, fmt.Sprintf("%s has an error rate of %.2f%%: its latency, TTFT and balance describe only the requests that succeeded", r.RunID, r.Summary.ErrorRate*100))
+			}
+		}
+	}
+	return out
 }
 
 func differences(a, b Metadata) []Difference {
@@ -166,6 +235,7 @@ func differences(a, b Metadata) []Difference {
 		}
 	}
 	add("scheduler", true, a.Scheduler, b.Scheduler)
+	add("scheduler source", false, a.SchedulerSource, b.SchedulerSource)
 	add("workload", false, a.Workload, b.Workload)
 	add("seed", false, fmt.Sprint(a.Seed), fmt.Sprint(b.Seed))
 	add("plan digest", false, a.PlanDigest, b.PlanDigest)
@@ -209,7 +279,18 @@ func profile(m Metadata) string {
 // comparable; it does not declare a winner.
 func (c Comparison) Write(w io.Writer) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Comparing %s (A) with %s (B). Deltas are B relative to A; positive means B is higher, not better.\n\n", c.A, c.B)
+	for _, warn := range c.Warnings {
+		fmt.Fprintf(&b, "WARNING: %s\n", warn)
+	}
+	if len(c.Warnings) > 0 {
+		b.WriteString("\n")
+	}
+	if c.Grouped {
+		fmt.Fprintf(&b, "Comparing %s (A) with %s (B): medians of %d and %d repeats, with the min-max range of each in brackets. ", c.A, c.B, c.NA, c.NB)
+	} else {
+		fmt.Fprintf(&b, "Comparing %s (A) with %s (B). ", c.A, c.B)
+	}
+	b.WriteString("Throughput is requests that completed inside the measurement window per second of window. Deltas are B relative to A; positive means B is higher, not better.\n\n")
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "METRIC\tA\tB\tDELTA\tCHANGE\tSPREAD")
 	for _, d := range c.Deltas {
@@ -224,16 +305,20 @@ func (c Comparison) Write(w io.Writer) error {
 		if d.Abs != nil {
 			abs = fmt.Sprintf("%+.4g %s", *d.Abs, d.Unit)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.Label, num(d.A), num(d.B), abs, change, d.Spread)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", d.Label, cell(d.A, d.AMin, d.AMax), cell(d.B, d.BMin, d.BMax), abs, change, d.Spread)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
+	if !c.Grouped {
+		fmt.Fprintf(&b, "\nSPREAD: insufficient repeats (it needs at least %d runs on each side, made with --repeat; this compares %d and %d). Two single runs cannot show whether a difference is noise.\n", MinRepeats, c.NA, c.NB)
+	} else {
+		b.WriteString("\nSPREAD compares the min-max ranges of the two groups. It is not a significance test: with 3 runs per side and no real difference the ranges are disjoint about 10% of the time, per metric.\n")
+	}
 	b.WriteString("\n")
-	switch {
-	case len(c.Differences) == 0:
+	if len(c.Differences) == 0 {
 		b.WriteString("Metadata: the runs differ in nothing that is recorded.\n")
-	default:
+	} else {
 		if c.Unfair() {
 			b.WriteString("WARNING: these runs differ in more than the scheduler, so the deltas may not be a fair comparison:\n")
 		} else {
@@ -251,9 +336,13 @@ func (c Comparison) Write(w io.Writer) error {
 	return err
 }
 
-func num(p *float64) string {
-	if p == nil {
+// cell formats a value, with its range when it has one.
+func cell(v, mn, mx *float64) string {
+	if v == nil {
 		return "not measured"
 	}
-	return fmt.Sprintf("%.4g", *p)
+	if mn == nil || mx == nil {
+		return fmt.Sprintf("%.4g", *v)
+	}
+	return fmt.Sprintf("%.4g [%.4g-%.4g]", *v, *mn, *mx)
 }
