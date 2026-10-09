@@ -1085,3 +1085,39 @@ func TestHugeUncappedModelNameSendsOnlySmallCommandsAndArmsNoBackoff(t *testing.
 		t.Fatalf("capped model admitted %d, want at most its cap of 5", n)
 	}
 }
+
+func TestPoolBusyFollowsTheFailureModeWithoutAnOutage(t *testing.T) {
+	for _, mode := range []FailureMode{FailClosed, FailOpen} {
+		t.Run(string(mode), func(t *testing.T) {
+			rc := redistest.Config(t)
+			proxy := redistest.NewProxy(t, rc.Address)
+			rc.Address, rc.Timeout, rc.PoolSize, rc.PoolTimeout = proxy.Addr(), time.Second, 1, 20*time.Millisecond
+			c := redistest.NewClientWith(t, rc)
+			l, err := NewRedis(c, Config{OnFailure: mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tn := redistest.Unique("t")
+			lim := Limits{RequestsPerMinute: 1000}
+			allow(t, l, tenantReq(tn, lim, 1))
+			proxy.SetDelay(300 * time.Millisecond)
+			proxy.SetMode(redistest.Slow)
+			done := make(chan struct{})
+			go func() { allow(t, l, tenantReq(tn, lim, 1)); close(done) }()
+			time.Sleep(60 * time.Millisecond)
+			d, err := l.Allow(context.Background(), tenantReq(tn, lim, 1))
+			if mode == FailClosed {
+				var ue *UnavailableError
+				if !errors.As(err, &ue) || !errors.Is(err, ErrUnavailable) || ue.RetryAfter != time.Second {
+					t.Fatalf("closed: %+v %v", d, err)
+				}
+			} else if err != nil || !d.Allowed || !d.Bypassed {
+				t.Fatalf("open: %+v %v", d, err)
+			}
+			<-done
+			if down, _ := c.Down(); down {
+				t.Fatal("pool congestion armed the backoff")
+			}
+		})
+	}
+}

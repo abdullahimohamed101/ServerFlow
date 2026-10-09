@@ -17,6 +17,9 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
+// DefaultPoolSize is the connection pool size when Config.PoolSize is zero.
+const DefaultPoolSize = 64
+
 // Config describes the connection. Password is a secret: it is never logged or put in an error, and
 // formatting a Config prints it redacted under %v, %+v, %#v and slog.
 type Config struct {
@@ -34,6 +37,10 @@ type Config struct {
 	Timeout time.Duration
 	// Backoff is how long Redis is left alone after a failure.
 	Backoff time.Duration
+	// PoolSize bounds the connections to Redis (default 64). Running out of them is the gateway's own congestion,
+	// not a Redis outage: see ErrBusy. PoolTimeout is how long a call waits for a free connection (default Timeout).
+	PoolSize    int
+	PoolTimeout time.Duration
 	// AllowInsecureTransport permits a remote server without TLS or without a password.
 	AllowInsecureTransport bool
 	// Logger receives one line when an outage starts and one when it ends; nil discards them.
@@ -48,8 +55,8 @@ func (c Config) String() string {
 	if c.Password != "" {
 		pw = "<redacted>"
 	}
-	return fmt.Sprintf("{address:%s password:%s db:%d tls:%t timeout:%v backoff:%v allow_insecure_transport:%t}",
-		redactAddress(c.Address), pw, c.DB, c.TLS, c.Timeout, c.Backoff, c.AllowInsecureTransport)
+	return fmt.Sprintf("{address:%s password:%s db:%d tls:%t timeout:%v backoff:%v pool_size:%d allow_insecure_transport:%t}",
+		redactAddress(c.Address), pw, c.DB, c.TLS, c.Timeout, c.Backoff, c.PoolSize, c.AllowInsecureTransport)
 }
 
 // GoString implements fmt.GoStringer.
@@ -106,16 +113,22 @@ func (c Config) options() (*goredis.Options, error) {
 		cp.MinVersion = tls.VersionTLS12
 		opts.TLSConfig = cp
 	}
-	// One attempt per command bounded by the timeout; at most one transparent retry so a connection
-	// that went stale (Redis restarted) is replaced without failing the request.
+	// One attempt per command, bounded by the timeout, and no driver retries: a script that Redis already applied
+	// must not be sent again after a connection reset (an acquire would be charged twice). The backoff handles failure.
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = 50 * time.Millisecond
 	}
 	opts.DialTimeout, opts.ReadTimeout, opts.WriteTimeout, opts.PoolTimeout = timeout, timeout, timeout, timeout
+	if c.PoolTimeout > 0 {
+		opts.PoolTimeout = c.PoolTimeout
+	}
+	opts.PoolSize = c.PoolSize
+	if opts.PoolSize <= 0 {
+		opts.PoolSize = DefaultPoolSize
+	}
 	opts.ContextTimeoutEnabled = true
-	opts.MaxRetries = 1
-	opts.MinRetryBackoff, opts.MaxRetryBackoff = -1, -1
+	opts.MaxRetries = -1
 	opts.DisableIdentity = true
 	return opts, nil
 }

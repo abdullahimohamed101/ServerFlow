@@ -299,7 +299,10 @@ func TestOverlongModelNameIsNotFoundEvenWhenAnyModelIsAllowed(t *testing.T) {
 }
 
 func TestBothTokenFieldsKeepTheLarger(t *testing.T) {
-	for _, tc := range []struct{ fields string; want int }{
+	for _, tc := range []struct {
+		fields string
+		want   int
+	}{
 		{`"max_tokens":50,"max_completion_tokens":20`, 50},
 		{`"max_tokens":20,"max_completion_tokens":50`, 50},
 		{`"max_tokens":7`, 7},

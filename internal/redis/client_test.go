@@ -409,3 +409,61 @@ func TestPasswordEchoedByTheServerIsScrubbed(t *testing.T) {
 		t.Fatalf("the outage should have been logged:\n%s", logs.String())
 	}
 }
+
+func TestExhaustedLocalPoolIsBusyNotAnOutage(t *testing.T) {
+	cfg := redistest.Config(t)
+	proxy := redistest.NewProxy(t, cfg.Address)
+	logs := &lockedBuf{}
+	cfg.Address, cfg.Timeout, cfg.PoolSize, cfg.PoolTimeout = proxy.Addr(), time.Second, 1, 20*time.Millisecond
+	cfg.Logger = slog.New(slog.NewTextHandler(logs, nil))
+	c := redistest.NewClientWith(t, cfg)
+	ctx := context.Background()
+	if _, err := c.Run(ctx, echo, []string{"k"}, 1); err != nil { // connection and script cache warm
+		t.Fatal(err)
+	}
+	proxy.SetDelay(300 * time.Millisecond)
+	proxy.SetMode(redistest.Slow)
+	first := make(chan error, 1)
+	go func() { _, err := c.Run(ctx, echo, []string{"k"}, 1); first <- err }()
+	time.Sleep(60 * time.Millisecond) // the only connection is now busy waiting for the slow reply
+	start := time.Now()
+	_, err := c.Run(ctx, echo, []string{"k"}, 1)
+	if !errors.Is(err, redis.ErrBusy) {
+		t.Fatalf("want ErrBusy for a call that found the pool empty, got %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("the busy answer was slow")
+	}
+	if down, _ := c.Down(); down {
+		t.Fatal("an exhausted local pool armed the backoff")
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("the call that held the connection should have succeeded: %v", err)
+	}
+	if strings.Contains(logs.String(), "redis unavailable") {
+		t.Fatalf("local congestion was logged as an outage:\n%s", logs.String())
+	}
+	// A real timeout still is an outage.
+	cfg2 := redistest.Config(t)
+	cfg2.Address, cfg2.Timeout = proxy.Addr(), 50*time.Millisecond
+	c2 := redistest.NewClientWith(t, cfg2)
+	if _, err := c2.Run(ctx, echo, []string{"k"}, 1); err == nil || errors.Is(err, redis.ErrBusy) {
+		t.Fatalf("a read timeout must be a failure, got %v", err)
+	}
+	if down, _ := c2.Down(); !down {
+		t.Fatal("a read timeout must arm the backoff")
+	}
+}
+
+func TestAScriptIsNeverSentTwiceAfterAConnectionReset(t *testing.T) {
+	cfg := redistest.Config(t)
+	fake := redistest.NewFakeServer(t, redistest.CloseConnection)
+	cfg.Address = fake.Addr()
+	c := redistest.NewClientWith(t, cfg)
+	if _, err := c.Run(context.Background(), echo, []string{"k"}, 1); err == nil {
+		t.Fatal("expected an error")
+	}
+	if n := fake.Commands(); n != 1 {
+		t.Fatalf("the server saw %d script commands; a retry after a reset could double-charge an acquire", n)
+	}
+}

@@ -189,6 +189,11 @@ func applyEnv(cfg *Config) {
 	if v, ok := env("REDIS_ON_FAILURE"); ok {
 		cfg.Redis.OnFailure = strings.ToLower(strings.TrimSpace(v))
 	}
+	if v, ok := env("REDIS_POOL_SIZE"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Redis.PoolSize = n
+		}
+	}
 	if v, ok := env("REDIS_DB"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Redis.DB = n

@@ -233,7 +233,12 @@ func (l *RedisLimiter) failed(err error) (Decision, error) {
 	if l.cfg.OnFailure == FailOpen && !errors.Is(err, ErrLeaseCapacity) {
 		return Decision{Allowed: true, Bypassed: true, Release: noopRelease}, nil
 	}
-	return Decision{}, &UnavailableError{RetryAfter: l.c.RetryAfter(), Cause: err}
+	retry := l.c.RetryAfter()
+	if errors.Is(err, redis.ErrBusy) {
+		retry = time.Second // local congestion: no backoff is running, so a short retry is right
+		err = fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return Decision{}, &UnavailableError{RetryAfter: retry, Cause: err}
 }
 
 func (l *RedisLimiter) forget(id string) {

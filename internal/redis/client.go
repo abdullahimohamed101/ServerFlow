@@ -17,6 +17,11 @@ import (
 // another caller is probing it).
 var ErrBackoff = errors.New("redis: unavailable, backing off after a recent failure")
 
+// ErrBusy is returned when the gateway's own connection pool was exhausted before a call could start (a burst, or
+// a pause such as garbage collection). That is local congestion, not evidence that Redis is down, so it neither
+// starts a backoff nor is logged as an outage.
+var ErrBusy = errors.New("redis: no free connection in the pool")
+
 // Client is a Redis connection pool with health tracking. It is safe for concurrent use.
 type Client struct {
 	rdb     *goredis.Client
@@ -107,7 +112,7 @@ func NewScript(src string, replyLen int) *Script {
 	return &Script{s: goredis.NewScript(src), len: replyLen}
 }
 
-// Run runs a script whose reply is an array of integers. The call is bounded by the client's timeout and
+// Run runs a script whose reply is an array of integers (ErrBusy if the connection pool was exhausted). The call is bounded by the client's timeout and
 // is detached from ctx's cancellation (a client that hangs up must not abandon a script that already took
 // effect, nor be mistaken for a Redis failure); ctx's values still apply. While Redis is down it returns
 // ErrBackoff without calling it. Any other error counts as a failure of Redis and starts a backoff.
@@ -126,9 +131,22 @@ func (c *Client) Run(ctx context.Context, s *Script, keys []string, args ...any)
 			return out, nil
 		}
 	}
+	if errors.Is(err, goredis.ErrPoolTimeout) {
+		c.settle(probe)
+		return nil, ErrBusy
+	}
 	err = c.scrub(err)
 	c.done(probe, err)
 	return nil, err
+}
+
+// settle ends a probe that learned nothing about Redis's health.
+func (c *Client) settle(probe bool) {
+	if probe {
+		c.mu.Lock()
+		c.probing = false
+		c.mu.Unlock()
+	}
 }
 
 func ints(res any, want int) ([]int64, error) {

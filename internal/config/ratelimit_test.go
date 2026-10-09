@@ -65,8 +65,15 @@ func TestValidateRedisAndRateLimit(t *testing.T) {
 		},
 		"required with nothing to enforce": func(c *Config) { c.RateLimit.Mode = RateLimitRequired },
 	}
+	usesRedis := map[string]bool{}
+	for _, n := range []string{"empty address", "no port", "bad scheme", "negative db", "huge db", "zero timeout", "huge timeout", "tiny backoff", "huge backoff", "bad failure mode", "empty failure mode", "zero metadata ttl", "huge metadata ttl", "lease below 3 timeouts"} {
+		usesRedis[n] = true
+	}
 	for name, mut := range cases {
 		cfg := Default()
+		if usesRedis[name] { // these settings are only checked when something uses Redis
+			cfg.RateLimit.Mode, cfg.RateLimit.ModelRequestsPerMinute = RateLimitRequired, map[string]int{"m": 5}
+		}
 		mut(&cfg)
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -115,6 +122,7 @@ func TestRedisConfigNeverPrintsOrEchoesSecrets(t *testing.T) {
 		func(c *Config) { c.RateLimit.Mode = pw },
 	} {
 		c := Default()
+		c.RateLimit.Mode, c.RateLimit.ModelRequestsPerMinute = RateLimitRequired, map[string]int{"m": 5}
 		mut(&c)
 		if err := c.Validate(); err == nil || strings.Contains(err.Error(), pw) {
 			t.Fatalf("error %v", err)
@@ -162,5 +170,31 @@ rate_limit:
 	t.Setenv("SERVERFLOW_RATE_LIMIT_MODE", "Requird")
 	if _, err := Load(path); err == nil {
 		t.Fatal("a mistyped mode was accepted")
+	}
+}
+
+func TestRedisSettingsAreOnlyCheckedWhenRedisIsUsed(t *testing.T) {
+	bad := func(c *Config) {
+		c.Redis.Address = "http://not-redis"
+		c.Redis.OnFailure = "ajar"
+		c.Redis.Timeout = 0
+		c.Redis.PoolSize = -3
+	}
+	cfg := Default()
+	bad(&cfg)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("with rate limiting off and metadata off, redis.* changes nothing, but: %v", err)
+	}
+	cfg = Default()
+	bad(&cfg)
+	cfg.Redis.RequestMetadata = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("request metadata uses Redis, so a malformed redis.address must be refused")
+	}
+	cfg = Default()
+	bad(&cfg)
+	cfg.RateLimit.Mode, cfg.RateLimit.ModelRequestsPerMinute = RateLimitRequired, map[string]int{"m": 5}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("rate_limit.mode=required uses Redis, so a malformed redis.address must be refused")
 	}
 }

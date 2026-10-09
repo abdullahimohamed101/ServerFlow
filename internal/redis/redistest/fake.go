@@ -9,6 +9,9 @@ import (
 	"testing"
 )
 
+// CloseConnection, as a FakeServer reply, makes the server close the connection without answering.
+const CloseConnection = "!close"
+
 // FakeServer speaks just enough RESP to accept a client's handshake (HELLO is declined so the client falls back
 // to RESP2; AUTH, SELECT, CLIENT and PING succeed) and answers every other command with a fixed error reply. It
 // stands in for a Redis that is up but erroring (out of memory, loading, read-only, a broken script).
@@ -68,6 +71,9 @@ func (f *FakeServer) serve(c net.Conn) {
 		default:
 			f.cmds.Add(1)
 			out = f.reply.Load().(string)
+		}
+		if out == CloseConnection { // behave like a server that drops the connection after receiving the command
+			return
 		}
 		if _, err := c.Write([]byte(out + "\r\n")); err != nil {
 			return

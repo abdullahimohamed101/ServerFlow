@@ -189,7 +189,7 @@ func openRedis(ctx context.Context, cfg config.Config, logger *slog.Logger) (*re
 	}
 	rcfg := redis.Config{
 		Address: cfg.Redis.Address, Password: cfg.Redis.Password, DB: cfg.Redis.DB, TLS: cfg.Redis.TLS, Timeout: cfg.Redis.Timeout,
-		Backoff: cfg.Redis.Backoff, AllowInsecureTransport: cfg.Redis.AllowInsecureTransport, Logger: logger,
+		Backoff: cfg.Redis.Backoff, PoolSize: cfg.Redis.PoolSize, AllowInsecureTransport: cfg.Redis.AllowInsecureTransport, Logger: logger,
 	}
 	if err := redis.CheckTransport(rcfg); err != nil {
 		return nil, err

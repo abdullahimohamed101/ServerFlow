@@ -46,8 +46,11 @@ func TestOptionsFromAddress(t *testing.T) {
 	if o.ReadTimeout != 40*time.Millisecond || o.DialTimeout != 40*time.Millisecond || o.PoolTimeout != 40*time.Millisecond || !o.ContextTimeoutEnabled {
 		t.Fatalf("timeouts not applied: %+v", o)
 	}
-	if o.MaxRetries != 1 {
-		t.Fatalf("max retries %d", o.MaxRetries)
+	if o.MaxRetries != -1 {
+		t.Fatalf("the driver must not retry a script on its own (max retries %d)", o.MaxRetries)
+	}
+	if o.PoolSize != DefaultPoolSize {
+		t.Fatalf("pool size %d", o.PoolSize)
 	}
 
 	o, err = Config{Address: "rediss://u:pw@redis.example.com:6380/5", Timeout: time.Second}.options()

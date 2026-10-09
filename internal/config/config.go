@@ -158,6 +158,7 @@ type RedisConfig struct {
 	TLS                    bool          `yaml:"tls"`
 	Timeout                time.Duration `yaml:"timeout"`
 	Backoff                time.Duration `yaml:"backoff"`
+	PoolSize               int           `yaml:"pool_size"`
 	OnFailure              string        `yaml:"on_failure"`
 	RequestMetadata        bool          `yaml:"request_metadata"`
 	RequestMetadataTTL     time.Duration `yaml:"request_metadata_ttl"`
@@ -174,8 +175,8 @@ func (r RedisConfig) String() string {
 	if strings.Contains(addr, "@") || strings.Contains(addr, "://") {
 		addr = "<redacted>"
 	}
-	return fmt.Sprintf("{address:%s password:%s db:%d tls:%t timeout:%v backoff:%v on_failure:%s request_metadata:%t allow_insecure_transport:%t}",
-		addr, pw, r.DB, r.TLS, r.Timeout, r.Backoff, r.OnFailure, r.RequestMetadata, r.AllowInsecureTransport)
+	return fmt.Sprintf("{address:%s password:%s db:%d tls:%t timeout:%v backoff:%v pool_size:%d on_failure:%s request_metadata:%t allow_insecure_transport:%t}",
+		addr, pw, r.DB, r.TLS, r.Timeout, r.Backoff, r.PoolSize, r.OnFailure, r.RequestMetadata, r.AllowInsecureTransport)
 }
 
 // GoString implements fmt.GoStringer.
@@ -314,6 +315,7 @@ func Default() Config {
 			Address:            "redis:6379",
 			Timeout:            50 * time.Millisecond,
 			Backoff:            time.Second,
+			PoolSize:           64,
 			OnFailure:          RedisFailClosed,
 			RequestMetadataTTL: time.Hour,
 		},
@@ -368,8 +370,12 @@ func (c *Config) Validate() error {
 	if c.Admission.MaxGlobalRequests <= 0 {
 		return fmt.Errorf("admission.max_global_requests must be > 0")
 	}
-	if err := c.Redis.validate(); err != nil {
-		return err
+	// Redis is only used by rate_limit.mode=required and redis.request_metadata; with both off its settings change
+	// nothing, so a malformed value must not stop a gateway that never touches Redis.
+	if c.redisUsed() {
+		if err := c.Redis.validate(); err != nil {
+			return err
+		}
 	}
 	if err := c.validateRateLimit(); err != nil {
 		return err
@@ -400,6 +406,7 @@ const (
 	minRedisBackoff     = 10 * time.Millisecond
 	maxRedisBackoff     = time.Minute
 	maxRedisDB          = 1023
+	maxRedisPoolSize    = 1000
 	maxMetadataTTL      = 7 * 24 * time.Hour
 	maxBurstSeconds     = 3600
 	minLeaseTTL         = 10 * time.Second
@@ -439,10 +446,18 @@ func (r *RedisConfig) validate() error {
 	default:
 		return fmt.Errorf("redis.on_failure must be %q or %q", RedisFailClosed, RedisFailOpen)
 	}
+	if r.PoolSize < 1 || r.PoolSize > maxRedisPoolSize {
+		return fmt.Errorf("redis.pool_size must be in 1-%d, got %d", maxRedisPoolSize, r.PoolSize)
+	}
 	if r.RequestMetadataTTL <= 0 || r.RequestMetadataTTL > maxMetadataTTL {
 		return fmt.Errorf("redis.request_metadata_ttl must be > 0 and at most %v", maxMetadataTTL)
 	}
 	return nil
+}
+
+// redisUsed reports whether any configured feature talks to Redis.
+func (c *Config) redisUsed() bool {
+	return c.RateLimit.Mode == RateLimitRequired || c.Redis.RequestMetadata
 }
 
 // validateRateLimit checks rate_limit.* and how it combines with auth and redis.
@@ -459,7 +474,7 @@ func (c *Config) validateRateLimit() error {
 	if r.LeaseTTL < minLeaseTTL || r.LeaseTTL > maxLeaseTTL {
 		return fmt.Errorf("rate_limit.lease_ttl must be between %v and %v", minLeaseTTL, maxLeaseTTL)
 	}
-	if r.LeaseTTL < minLeaseTTLTimeouts*c.Redis.Timeout {
+	if c.redisUsed() && r.LeaseTTL < minLeaseTTLTimeouts*c.Redis.Timeout {
 		return fmt.Errorf("rate_limit.lease_ttl must be at least %d times redis.timeout, or a lease could lapse between renewals", minLeaseTTLTimeouts)
 	}
 	if r.MaxLocalLeases < 1 || r.MaxLocalLeases > maxLocalLeases {
