@@ -28,13 +28,13 @@ Aggressive tenant quota 600 requests/min (a bucket of 600 that refills 10 per se
 
 | Tenant | Offered | Accepted | Rejected (429) |
 | --- | ---: | ---: | ---: |
-| aggressive (quota 600/min) | 4303 | **800** | 3503 |
+| aggressive (quota 600/min) | 4303 | **799** | 3504 |
 | normal 1 (quota 6000/min) | 443 | 443 | 0 |
 | normal 2 | 421 | 421 | 0 |
 | normal 3 | 411 | 411 | 0 |
 | normal 4 | 423 | 423 | 0 |
 
-The most the aggressive tenant may be given in 20 s is the full bucket plus what refilled: 600 + 10 x 20 = 800. It was given **800 (100.0%)**,
+The most the aggressive tenant may be given in 20 s is the full bucket plus what refilled: 600 + 10 x 20 = 800. It was given **799 (99.9%)**,
 however the requests were spread over the three gateways. Normal tenants saw no rejections. The correctness tests assert the same
 at the boundary: quota N admits exactly N across gateways, N+1 is refused, concurrently, with a frozen clock.
 
@@ -42,12 +42,12 @@ at the boundary: quota N admits exactly N across gateways, N+1 is refused, concu
 
 | Case | p50 | p95 | p99 |
 | --- | ---: | ---: | ---: |
-| no tenant, nothing to enforce (no Redis call) | 335 us | 933 us | 1.09 ms |
-| tenant with no quotas (no Redis call) | 308 us | 681 us | 1.03 ms |
-| tenant with three quotas (one script call) | 801 us | 1.25 ms | 1.81 ms |
-| **added by the round trip** | **493 us** | **572 us** | |
+| no tenant, nothing to enforce (no Redis call) | 366 us | 1.06 ms | 1.28 ms |
+| tenant with no quotas (no Redis call) | 328 us | 780 us | 1.25 ms |
+| tenant with three quotas (one script call) | 891 us | 2.10 ms | 3.03 ms |
+| **added by the round trip** | **564 us** | **1.32 ms** | |
 
-Added p95 is well below the 5 ms budget (acceptance criterion 11); a tenant with all quotas at 0 costs no Redis call (tests count Redis
+Re-measured after the final cost-estimator change (an earlier run measured 493 us / 572 us added; the spread between runs on a laptop is that large). Added p95 is well below the 5 ms budget (acceptance criterion 11); a tenant with all quotas at 0 costs no Redis call (tests count Redis
 commands: 0).
 
 ## Redis outage (3 gateways, 200 req/s for 15 s, Redis black-holed from 5 s to 10 s, `redis.timeout` 50 ms, `redis.backoff` 1 s)

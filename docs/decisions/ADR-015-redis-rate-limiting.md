@@ -100,7 +100,7 @@ limiting. The point of the phase: several gateways share one quota, and what hap
 
 ## Consequences
 
-- Redis is on the request path for tenants with quotas: one round trip per request (about 0.5 ms added at p50, 0.49 ms measured locally; see
+- Redis is on the request path for tenants with quotas: one round trip per request (about 0.5 ms added at p50, 0.49-0.56 ms measured locally in two runs; see
   `docs/benchmarks/phase-8-rate-limits.md`), bounded by a timeout and a backoff.
 - Estimates are not usage: a tenant is charged `input + max_tokens`, so a large `max_tokens` spends quota faster than the model generates.
   A refund after the response is the natural follow-up.
