@@ -62,10 +62,10 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	if err := a.dispatch(ctx, cfgPath, args); err != nil {
 		var ue usageError
 		if errors.As(err, &ue) {
-			fmt.Fprintf(errw, "serverflow-admin: %s\n\n%s", ue, usage)
+			_, _ = fmt.Fprintf(errw, "serverflow-admin: %s\n\n%s", ue, usage)
 			return 2
 		}
-		fmt.Fprintf(errw, "serverflow-admin: %s\n", describe(err))
+		_, _ = fmt.Fprintf(errw, "serverflow-admin: %s\n", describe(err))
 		return 1
 	}
 	return 0
@@ -163,13 +163,13 @@ func (a *app) migrate(ctx context.Context, sub string, args []string) error {
 	case "up":
 		done, err := a.st.MigrateUp(ctx)
 		for _, m := range done {
-			fmt.Fprintf(a.out, "applied %04d_%s\n", m.Version, m.Name)
+			_, _ = fmt.Fprintf(a.out, "applied %04d_%s\n", m.Version, m.Name)
 		}
 		if err != nil {
 			return err
 		}
 		if len(done) == 0 {
-			fmt.Fprintln(a.out, "database is up to date")
+			_, _ = fmt.Fprintln(a.out, "database is up to date")
 		}
 		return nil
 	case "status":
@@ -179,7 +179,7 @@ func (a *app) migrate(ctx context.Context, sub string, args []string) error {
 			if m.Applied {
 				state = "applied " + m.AppliedAt.UTC().Format(time.RFC3339)
 			}
-			fmt.Fprintf(a.out, "%04d_%s\t%s\n", m.Version, m.Name, state)
+			_, _ = fmt.Fprintf(a.out, "%04d_%s\t%s\n", m.Version, m.Name, state)
 		}
 		return err
 	}
@@ -209,7 +209,7 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "created tenant %s (%s)\n", t.Name, t.ID)
+		_, _ = fmt.Fprintf(a.out, "created tenant %s (%s)\n", t.Name, t.ID)
 		return nil
 	case "list":
 		if len(args) != 0 {
@@ -220,7 +220,7 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 			return err
 		}
 		for _, t := range ts {
-			fmt.Fprintf(a.out, "%s\t%s\t%s\tpriority=%d\tmodels=%s\n", t.ID, t.Name, t.Status, t.Priority, modelsText(t.AllowedModels))
+			_, _ = fmt.Fprintf(a.out, "%s\t%s\t%s\tpriority=%d\tmodels=%s\n", t.ID, t.Name, t.Status, t.Priority, modelsText(t.AllowedModels))
 		}
 		return nil
 	case "show":
@@ -237,7 +237,7 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "keys:         %d\n", len(ks))
+		_, _ = fmt.Fprintf(a.out, "keys:         %d\n", len(ks))
 		return nil
 	case "suspend", "activate":
 		ref, err := one(args, "tenant "+sub)
@@ -252,9 +252,9 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "tenant %s: %s -> %s\n", t.Name, prev, t.Status)
+		_, _ = fmt.Fprintf(a.out, "tenant %s: %s -> %s\n", t.Name, prev, t.Status)
 		if status == auth.TenantSuspended {
-			fmt.Fprintln(a.out, "note: gateways notice within auth.cache_ttl (default 30s)")
+			_, _ = fmt.Fprintln(a.out, "note: gateways notice within auth.cache_ttl (default 30s)")
 		}
 		return nil
 	case "set-quota":
@@ -287,7 +287,7 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "tenant %s: rpm=%d tpm=%d max_concurrent=%d priority=%d (stored; not enforced until a later phase)\n",
+		_, _ = fmt.Fprintf(a.out, "tenant %s: rpm=%d tpm=%d max_concurrent=%d priority=%d (stored; not enforced until a later phase)\n",
 			t.Name, t.RequestsPerMinute, t.TokensPerMinute, t.MaxConcurrentRequests, t.Priority)
 		return nil
 	case "set-models":
@@ -322,14 +322,14 @@ func (a *app) tenant(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "tenant %s: models=%s\n", t.Name, modelsText(t.AllowedModels))
+		_, _ = fmt.Fprintf(a.out, "tenant %s: models=%s\n", t.Name, modelsText(t.AllowedModels))
 		return nil
 	}
 	return usagef("unknown tenant subcommand %q", truncate(sub))
 }
 
 func (a *app) printTenant(t postgres.Tenant) {
-	fmt.Fprintf(a.out, "id:           %s\nname:         %s\nstatus:       %s\npriority:     %d\nrpm:          %d\ntpm:          %d\nmax_concurrent: %d\nmodels:       %s\ncreated:      %s\n",
+	_, _ = fmt.Fprintf(a.out, "id:           %s\nname:         %s\nstatus:       %s\npriority:     %d\nrpm:          %d\ntpm:          %d\nmax_concurrent: %d\nmodels:       %s\ncreated:      %s\n",
 		t.ID, t.Name, t.Status, t.Priority, t.RequestsPerMinute, t.TokensPerMinute, t.MaxConcurrentRequests, modelsText(t.AllowedModels), t.CreatedAt.UTC().Format(time.RFC3339))
 }
 
@@ -369,11 +369,11 @@ func (a *app) key(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.err, "Created key %s for tenant %s. This is the only time the key is shown; store it now.\n", k.ID, k.TenantName)
+		_, _ = fmt.Fprintf(a.err, "Created key %s for tenant %s. This is the only time the key is shown; store it now.\n", k.ID, k.TenantName)
 		if k.ExpiresAt != nil {
-			fmt.Fprintf(a.err, "It expires %s.\n", k.ExpiresAt.UTC().Format(time.RFC3339))
+			_, _ = fmt.Fprintf(a.err, "It expires %s.\n", k.ExpiresAt.UTC().Format(time.RFC3339))
 		}
-		fmt.Fprintln(a.out, plaintext)
+		_, _ = fmt.Fprintln(a.out, plaintext)
 		return nil
 	case "list":
 		fs := newFlags("key list")
@@ -390,7 +390,7 @@ func (a *app) key(ctx context.Context, sub string, args []string) error {
 			return err
 		}
 		for _, k := range ks {
-			fmt.Fprintf(a.out, "%s\t%s\tprefix=%s\t%s\texpires=%s\tlast_used=%s\tlabel=%q\n", k.ID, k.TenantName, k.Prefix, k.Status, tsText(k.ExpiresAt), tsText(k.LastUsedAt), k.Label)
+			_, _ = fmt.Fprintf(a.out, "%s\t%s\tprefix=%s\t%s\texpires=%s\tlast_used=%s\tlabel=%q\n", k.ID, k.TenantName, k.Prefix, k.Status, tsText(k.ExpiresAt), tsText(k.LastUsedAt), k.Label)
 		}
 		return nil
 	case "revoke":
@@ -403,9 +403,9 @@ func (a *app) key(ctx context.Context, sub string, args []string) error {
 			return err
 		}
 		if was {
-			fmt.Fprintf(a.out, "revoked key %s (tenant %s)\nnote: gateways stop accepting it within auth.cache_ttl (default 30s)\n", k.ID, k.TenantName)
+			_, _ = fmt.Fprintf(a.out, "revoked key %s (tenant %s)\nnote: gateways stop accepting it within auth.cache_ttl (default 30s)\n", k.ID, k.TenantName)
 		} else {
-			fmt.Fprintf(a.out, "key %s (tenant %s) was already revoked\n", k.ID, k.TenantName)
+			_, _ = fmt.Fprintf(a.out, "key %s (tenant %s) was already revoked\n", k.ID, k.TenantName)
 		}
 		return nil
 	}
@@ -431,7 +431,7 @@ func (a *app) model(ctx context.Context, sub string, args []string) error {
 		if m, err = a.st.AddModel(ctx, m); err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "added model %s (%s)\n", m.Name, m.Status)
+		_, _ = fmt.Fprintf(a.out, "added model %s (%s)\n", m.Name, m.Status)
 		return nil
 	case "list":
 		if len(args) != 0 {
@@ -446,7 +446,7 @@ func (a *app) model(ctx context.Context, sub string, args []string) error {
 			if m.MaxTokensLimit != nil {
 				lim = strconv.Itoa(*m.MaxTokensLimit)
 			}
-			fmt.Fprintf(a.out, "%s\t%s\tmax_tokens=%s\tdisplay=%q\n", m.Name, m.Status, lim, m.DisplayName)
+			_, _ = fmt.Fprintf(a.out, "%s\t%s\tmax_tokens=%s\tdisplay=%q\n", m.Name, m.Status, lim, m.DisplayName)
 		}
 		return nil
 	case "enable", "disable":
@@ -462,7 +462,7 @@ func (a *app) model(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "model %s: %s -> %s\n", m.Name, prev, m.Status)
+		_, _ = fmt.Fprintf(a.out, "model %s: %s -> %s\n", m.Name, prev, m.Status)
 		return nil
 	}
 	return usagef("unknown model subcommand %q", truncate(sub))

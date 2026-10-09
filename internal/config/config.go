@@ -395,9 +395,7 @@ func dsnTransport(dsn string) (hosts []string, sslmode string, ok bool) {
 	if !ok {
 		return nil, "", false
 	}
-	for _, h := range strings.Split(kv["host"], ",") {
-		hosts = append(hosts, h)
-	}
+	hosts = append(hosts, strings.Split(kv["host"], ",")...)
 	return hosts, kv["sslmode"], true
 }
 

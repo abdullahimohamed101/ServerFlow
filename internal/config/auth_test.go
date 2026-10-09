@@ -117,7 +117,7 @@ func TestDSNIsNeverEchoedOrPrinted(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	log.Info("cfg", "postgres", cfg.Postgres, "all", fmt.Sprintf("%+v", cfg))
 	for _, s := range []string{
-		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg.Postgres), fmt.Sprintf("%s", cfg.Postgres), buf.String(),
+		fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg.Postgres), cfg.Postgres.String(), buf.String(),
 		fmt.Sprint(cfg.Postgres), fmt.Sprintf("%v", &cfg.Postgres),
 	} {
 		if strings.Contains(s, pw) {
