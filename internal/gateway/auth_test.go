@@ -686,7 +686,10 @@ func TestConstructorsHonourAuthMode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := reg.Serve(context.Background(), ln); err == nil {
+			sctx, stop := context.WithTimeout(context.Background(), 2*time.Second) // a server that wrongly serves would run until this
+			err = reg.Serve(sctx, ln)
+			stop()
+			if err == nil {
 				t.Error("a registry server that requires keys and has no authenticator must refuse to serve")
 			}
 			_ = ln.Close()

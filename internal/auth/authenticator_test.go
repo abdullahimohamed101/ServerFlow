@@ -962,10 +962,15 @@ func TestUnknownPrefixDoesTheSameComparisonAsAWrongSecret(t *testing.T) {
 
 // Shedding says nothing about the store's health: it must not start the backoff.
 func TestShedRequestDoesNotStartABackoff(t *testing.T) {
-	a, st, _, _ := setup(t, Config{MaxLookups: 2}) // one slot for unseen keys, one reserved for refreshes
+	a, st, clk, _ := setup(t, Config{MaxLookups: 2, CacheTTL: 30 * time.Second, StaleGrace: time.Hour}) // one slot for unseen keys, one reserved for refreshes
 	keyA, pa := st.add(1)
 	keyB, _ := st.add(2)
-	keyC, _ := st.add(3)
+	keyC, pc := st.add(3)
+	if _, err := a.Authenticate(context.Background(), keyC); err != nil {
+		t.Fatal(err)
+	}
+	st.update(pc, func(r *KeyRecord) { r.KeyStatus = KeyRevoked })
+	clk.advance(time.Minute) // C is now due for a refresh
 	release := make(chan struct{})
 	st.mu.Lock()
 	st.holdFor = func(p string) <-chan struct{} {
@@ -977,18 +982,19 @@ func TestShedRequestDoesNotStartABackoff(t *testing.T) {
 	st.mu.Unlock()
 	done := make(chan error, 1)
 	go func() { _, err := a.Authenticate(context.Background(), keyA); done <- err }()
-	waitUntil(t, "A to occupy the only slot for unseen keys", func() bool { return st.lookups.Load() == 1 })
+	waitUntil(t, "A to occupy the only slot for unseen keys", func() bool { return st.lookups.Load() == 2 })
 	before := st.lookups.Load()
 	if _, err := a.Authenticate(context.Background(), keyB); !errors.Is(err, ErrUnavailable) || st.lookups.Load() != before {
 		t.Fatalf("B should be shed without a lookup: %v", err)
 	}
+	// No time has passed. If B's shedding had armed the backoff, C would now be served from its
+	// stale copy instead of being refreshed, and its revocation would be missed.
+	if _, err := a.Authenticate(context.Background(), keyC); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("a shed request started a backoff (C should have been refreshed and found revoked): %v", err)
+	}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-	// No time has passed. If B's shedding had armed the backoff, C would be refused now.
-	if _, err := a.Authenticate(context.Background(), keyC); err != nil {
-		t.Fatalf("a shed request started a backoff: %v", err)
 	}
 }
 
