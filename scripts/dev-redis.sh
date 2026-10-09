@@ -5,8 +5,10 @@
 # hard way). The password is public and fixed, so this is NOT a place for real data and must never
 # be exposed to a network. Nothing is persisted (--save "" --appendonly no).
 #
-# Docker is used when its daemon is running (image redis:7, container serverflow-test-redis);
-# otherwise a local redis-server is started in the background with the same flags.
+# Docker is used when its daemon is running (image redis:7, one container per port named serverflow-test-redis-<port>, so
+# several worktrees can each run their own and stop only their own); otherwise a local redis-server is started in the
+# background with the same flags. The password is deliberately fixed, public and visible on the command line: the server
+# is bound to 127.0.0.1 only and holds nothing but throwaway test keys.
 #
 # Set DEV_REDIS_PORT to use another port (e.g. when several worktrees run one each).
 #   scripts/dev-redis.sh start|stop|status|reset|addr|password
@@ -17,7 +19,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 port="${DEV_REDIS_PORT:-56379}"
-name="${DEV_REDIS_CONTAINER:-serverflow-test-redis}"
+name="${DEV_REDIS_CONTAINER:-serverflow-test-redis-$port}"
 image="${DEV_REDIS_IMAGE:-redis:7}"
 password=serverflow-test-redis-password
 pidfile="$root/.data/redis-$port.pid"
@@ -32,10 +34,13 @@ find_server() {
   command -v redis-server 2>/dev/null || true
 }
 
+# port_open reports whether something accepts connections on this script's port (not just whether a container exists).
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; }
+
 ping_ok() {
-  # Authenticated ping through a throwaway shell so the password is not on a process list for long.
+  # Ask the container that owns THIS port, and check that the port itself answers.
   if use_docker && docker ps --format '{{.Names}}' | grep -qx "$name"; then
-    docker exec "$name" redis-cli -a "$password" --no-auth-warning ping 2>/dev/null | grep -q PONG
+    port_open && docker exec "$name" redis-cli -a "$password" --no-auth-warning ping 2>/dev/null | grep -q PONG
   elif [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     return 0
   else
@@ -47,7 +52,7 @@ start() {
   mkdir -p "$root/.data"
   if use_docker; then
     if docker ps --format '{{.Names}}' | grep -qx "$name"; then
-      echo "dev-redis: already running"
+      echo "dev-redis: already running ($name)"
     else
       docker rm -f "$name" >/dev/null 2>&1 || true
       docker run -d --name "$name" -p "127.0.0.1:$port:6379" "$image" \
