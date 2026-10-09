@@ -584,3 +584,138 @@ func TestAttemptContextReachesFirstTokenAndEndInRegistryMode(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// --- ordering, rate-limit timing and tenant on completion --------------------------------------------------------
+
+// gaugeProbe reads the in-flight gauge from inside the lifecycle, which only works if metrics ran first.
+type gaugeProbe struct {
+	NopObserver
+	gw           *Server
+	mu           sync.Mutex
+	atStart      float64
+	atCompleted  float64
+	sawRequestID bool
+}
+
+func (g *gaugeProbe) RequestStarted(ctx context.Context, _ RequestStart) context.Context {
+	g.mu.Lock()
+	g.atStart = gaugeValue(g.gw)
+	g.sawRequestID = infoFrom(ctx).id != ""
+	g.mu.Unlock()
+	return ctx
+}
+
+func (g *gaugeProbe) RequestCompleted(context.Context, Completion) {
+	g.mu.Lock()
+	g.atCompleted = gaugeValue(g.gw)
+	g.mu.Unlock()
+}
+
+func gaugeValue(s *Server) float64 {
+	fams, _ := s.metrics.reg.Gather()
+	for _, f := range fams {
+		if f.GetName() == "inference_requests_active" {
+			return f.GetMetric()[0].GetGauge().GetValue()
+		}
+	}
+	return -1
+}
+
+func TestMetricsIsTheFirstObserverEvenWithUserObservers(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(okUpstream))
+	t.Cleanup(fake.Close)
+	probe := &gaugeProbe{}
+	gw := New(testConfig(fake.URL), slog.New(slog.NewJSONHandler(io.Discard, nil)), WithObserver(probe))
+	probe.gw = gw
+	if gw.obs.obs[0].o != Observer(gw.metrics) {
+		t.Fatalf("metrics must be registered first, got %s", gw.obs.obs[0].name)
+	}
+	url, c := serve(t, gw)
+	postChat(t, c, url, plainBody)
+	eventually(t, 5*time.Second, func() bool {
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		return probe.atCompleted == 0 && probe.atStart == 1
+	}, "gauge 1 at start and 0 at completion as seen by a later observer")
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if !probe.sawRequestID {
+		t.Fatal("a later observer must receive the context metrics returned (it carries the request state)")
+	}
+}
+
+// histogramCount returns the sample count of a histogram family, or 0 if it has no samples yet.
+func histogramCount(t *testing.T, s *Server, name string) uint64 {
+	t.Helper()
+	fams, err := s.metrics.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fams {
+		if f.GetName() == name && len(f.GetMetric()) > 0 {
+			return f.GetMetric()[0].GetHistogram().GetSampleCount()
+		}
+	}
+	return 0
+}
+
+func TestRateLimitRefusalsRecordTheDecisionTime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		decide func(ratelimit.Request) (ratelimit.Decision, error)
+		status int
+	}{
+		{"limited", func(ratelimit.Request) (ratelimit.Decision, error) {
+			return ratelimit.Decision{Limit: ratelimit.LimitRequests, RetryAfter: time.Second}, nil
+		}, 429},
+		{"unavailable", func(ratelimit.Request) (ratelimit.Decision, error) {
+			return ratelimit.Decision{}, fmt.Errorf("redis down")
+		}, 503},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newLimitEnv(t, okUpstream, &fakeLimiter{decide: tc.decide})
+			key := env.store.add("acme", nil, quotas(10, 1000, 2))
+			before := histogramCount(t, env.gw, "rate_limit_decision_seconds")
+			if resp, _ := env.chat(t, key, "qwen-7b"); resp.StatusCode != tc.status {
+				t.Fatalf("status %d", resp.StatusCode)
+			}
+			eventually(t, 5*time.Second, func() bool {
+				return histogramCount(t, env.gw, "rate_limit_decision_seconds") == before+1
+			}, "one decision recorded for a refused request")
+		})
+	}
+}
+
+func TestCompletionCarriesTheTenant(t *testing.T) {
+	// Authenticated and admitted.
+	rec := &recObserver{}
+	env := newLimitEnv(t, okUpstream, &fakeLimiter{}, WithObserver(rec))
+	key := env.store.add("acme", nil, quotas(10, 1000, 2))
+	env.chat(t, key, "qwen-7b")
+	rec.await(t)
+	if tenant := rec.done[0].TenantID; tenant == "" || tenant != rec.adm[0].TenantID {
+		t.Fatalf("completion tenant %q, admission tenant %q", rec.done[0].TenantID, rec.adm[0].TenantID)
+	}
+
+	// Rejected after authentication.
+	rec2 := &recObserver{}
+	lim := &fakeLimiter{decide: func(ratelimit.Request) (ratelimit.Decision, error) {
+		return ratelimit.Decision{Limit: ratelimit.LimitRequests, RetryAfter: time.Second}, nil
+	}}
+	env2 := newLimitEnv(t, okUpstream, lim, WithObserver(rec2))
+	key2 := env2.store.add("acme", nil, quotas(10, 1000, 2))
+	env2.chat(t, key2, "qwen-7b")
+	rec2.await(t)
+	if rec2.done[0].TenantID == "" || rec2.done[0].TenantID != rec2.rej[0].TenantID {
+		t.Fatalf("a refusal after authentication still names the tenant: %+v", rec2.done[0])
+	}
+
+	// Authentication off: no tenant.
+	rec3 := &recObserver{}
+	url, c, _ := staticObsServer(t, http.HandlerFunc(okUpstream), WithObserver(rec3))
+	postChat(t, c, url, plainBody)
+	rec3.await(t)
+	if rec3.done[0].TenantID != "" {
+		t.Fatalf("no authentication, no tenant: %q", rec3.done[0].TenantID)
+	}
+}
