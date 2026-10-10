@@ -114,7 +114,7 @@ func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 	)
 	bat := newBatcher(exp, res, cfg.QueueSize, cfg.MaxExportBatch, cfg.BatchTimeout, cfg.ExportTimeout, log)
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSampler(samplerFor(cfg)),
+		sdktrace.WithSampler(NewSampler(cfg.Sampler, cfg.SampleRatio)),
 		sdktrace.WithResource(res),
 		sdktrace.WithSpanProcessor(bat),
 		sdktrace.WithRawSpanLimits(spanLimits()),
@@ -142,9 +142,10 @@ func spanLimits() sdktrace.SpanLimits {
 	}
 }
 
-func samplerFor(cfg Config) sdktrace.Sampler {
-	ratio := sdktrace.TraceIDRatioBased(cfg.SampleRatio)
-	switch cfg.Sampler {
+// NewSampler returns the sampler for a mode and ratio.
+func NewSampler(mode Sampler, sampleRatio float64) sdktrace.Sampler {
+	ratio := sdktrace.TraceIDRatioBased(sampleRatio)
+	switch mode {
 	case SamplerParentRatio:
 		return sdktrace.ParentBased(ratio)
 	case SamplerParentOnly:
@@ -184,18 +185,31 @@ func (p *Provider) ExtractRemote(ctx context.Context, h http.Header, withState b
 	return trace.ContextWithRemoteSpanContext(ctx, sc)
 }
 
-// RemoteSpanContext parses h's trace context into a remote span context (invalid if absent or malformed).
+// RemoteSpanContext parses h's trace context into a remote span context (invalid if absent, malformed or
+// repeated).
 func RemoteSpanContext(h http.Header, withState bool) trace.SpanContext {
-	tp := h["Traceparent"]
-	if len(tp) != 1 || len(tp[0]) > 55 {
+	tp, ts := h["Traceparent"], h["Tracestate"]
+	if len(tp) != 1 {
 		return trace.SpanContext{}
 	}
-	carrier := propagation.MapCarrier{"traceparent": tp[0]}
-	if ts := h["Tracestate"]; withState && len(ts) == 1 && len(ts[0]) <= maxTracestateBytes {
-		carrier["tracestate"] = ts[0]
+	state := ""
+	if len(ts) == 1 {
+		state = ts[0]
 	}
-	ctx := propagation.TraceContext{}.Extract(context.Background(), carrier)
-	sc := trace.SpanContextFromContext(ctx)
+	return ParseTraceparent(tp[0], state, withState)
+}
+
+// ParseTraceparent parses a W3C traceparent (and, if withState, a tracestate of at most 512 bytes) into a
+// remote span context. It returns an invalid span context for anything malformed or oversized.
+func ParseTraceparent(traceparent, tracestate string, withState bool) trace.SpanContext {
+	if len(traceparent) != 55 {
+		return trace.SpanContext{}
+	}
+	carrier := propagation.MapCarrier{"traceparent": traceparent}
+	if withState && tracestate != "" && len(tracestate) <= maxTracestateBytes {
+		carrier["tracestate"] = tracestate
+	}
+	sc := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), carrier))
 	if !sc.IsValid() {
 		return trace.SpanContext{}
 	}
