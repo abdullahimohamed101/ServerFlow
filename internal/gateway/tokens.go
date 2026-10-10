@@ -26,9 +26,10 @@ const (
 )
 
 var (
-	usageKey      = []byte(`"usage"`)
-	promptKey     = []byte(`"prompt_tokens"`)
-	completionKey = []byte(`"completion_tokens"`)
+	contentKeyBytes = []byte(contentKey)
+	usageKey        = []byte(`"usage"`)
+	promptKey       = []byte(`"prompt_tokens"`)
+	completionKey   = []byte(`"completion_tokens"`)
 )
 
 // feed sees each piece of the response body, in order.
@@ -47,32 +48,47 @@ func (t *tokenScanner) feed(b []byte) {
 		}
 		t.tail = append(t.tail, b...)
 	}
-	// Count "content":"<something> across read boundaries. The carry is exactly the key's length, so it holds a
-	// whole key only when the key ends the previous piece, whose next byte was not yet seen and so not counted.
-	var joined []byte
+	// Count "content":"<something> across read boundaries without copying the body. A key that began in the
+	// carry (the last bytes of the previous piece) is completed from the start of this one; every other key lies
+	// wholly inside b. A key that ends exactly at the end of a piece is left for the next, which sees the byte
+	// after it. The carry is exactly the key's length, so it holds a whole key only in that case.
 	if t.ncarry > 0 {
-		joined = append(append(make([]byte, 0, t.ncarry+len(b)), t.carry[:t.ncarry]...), b...)
+		var head [2 * contentKeyLen]byte
+		n := copy(head[:], t.carry[:t.ncarry])
+		n += copy(head[n:], b[:min(len(b), contentKeyLen+1)])
+		t.chunks += countKeys(head[:n], t.ncarry)
+	}
+	t.chunks += countKeys(b, len(b))
+	if len(b) >= len(t.carry) {
+		t.ncarry = copy(t.carry[:], b[len(b)-len(t.carry):])
 	} else {
-		joined = b
+		var all [2 * contentKeyLen]byte
+		n := copy(all[:], t.carry[:t.ncarry])
+		n += copy(all[n:], b)
+		t.ncarry = copy(t.carry[:], all[max(0, n-len(t.carry)):n])
 	}
-	for rest := joined; ; {
-		i := bytes.Index(rest, []byte(contentKey))
+}
+
+// countKeys counts the keys in b that start before limit and are followed by a byte that is not a closing quote.
+// A key at the very end of b is not counted: its following byte has not arrived.
+func countKeys(b []byte, limit int) int64 {
+	var n int64
+	pos := 0
+	for {
+		i := bytes.Index(b[pos:], contentKeyBytes)
 		if i < 0 {
-			break
+			return n
 		}
-		after := i + contentKeyLen
-		if after < len(rest) {
-			if rest[after] != '"' {
-				t.chunks++
-			}
-		} else {
-			// The next byte has not arrived: look at it with the next piece by keeping the key in the carry.
-			break
+		start := pos + i
+		if start >= limit {
+			return n
 		}
-		rest = rest[after:]
+		after := start + contentKeyLen
+		if after < len(b) && b[after] != '"' {
+			n++
+		}
+		pos = after
 	}
-	keep := min(len(joined), len(t.carry))
-	t.ncarry = copy(t.carry[:], joined[len(joined)-keep:])
 }
 
 // result returns the source (TokensUsage, TokensChunks or "") and the counts.

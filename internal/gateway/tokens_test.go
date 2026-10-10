@@ -139,3 +139,42 @@ func TestCompletionCarriesChunkCountsForAStreamAndNothingForAnError(t *testing.T
 		t.Fatalf("an error response must report no tokens: %+v", d)
 	}
 }
+
+// BenchmarkTokenScanner is the cost of the token pass per streamed chunk and per non-streaming body (D8).
+func BenchmarkTokenScannerStreamChunk(b *testing.B) {
+	var s tokenScanner
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}],\"usage\":null}\n\n")
+	b.ReportAllocs()
+	b.SetBytes(int64(len(chunk)))
+	for i := 0; i < b.N; i++ {
+		s.feed(chunk)
+	}
+}
+
+func BenchmarkTokenScannerBody64KiB(b *testing.B) {
+	var s tokenScanner
+	body := []byte(strings.Repeat("x", 64<<10-len(nonStream)) + nonStream)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	for i := 0; i < b.N; i++ {
+		s.feed(body)
+		s.result(false)
+	}
+}
+
+func TestScannerCountsAreIndependentOfHowTheBodyIsCut(t *testing.T) {
+	r := rand.New(rand.NewSource(11))
+	body := []byte(sseBody(60, false))
+	_, _, want := func() (string, int64, int64) { return scanAll(true, string(body), len(body)) }()
+	for i := 0; i < 500; i++ {
+		var s tokenScanner
+		for rest := body; len(rest) > 0; {
+			n := min(1+r.Intn(40), len(rest))
+			s.feed(rest[:n])
+			rest = rest[n:]
+		}
+		if _, _, got := s.result(true); got != want || want != 60 {
+			t.Fatalf("random cut %d: counted %d, want %d (60 chunks)", i, got, want)
+		}
+	}
+}
