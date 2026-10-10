@@ -425,7 +425,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (model) (rate(inference_requests_total{status=~\"5..\",model=~\"$model\"}[5m])) / sum by (model) (rate(inference_requests_total{model=~\"$model\"}[5m]))",
+          "expr": "(sum by (model) (rate(inference_requests_total{status=~\"5..\",model=~\"$model\"}[5m])) or sum by (model) (rate(inference_requests_total{model=~\"$model\"}[5m])) * 0) / sum by (model) (rate(inference_requests_total{model=~\"$model\"}[5m]))",
           "legendFormat": "{{model}}",
           "range": true
         }

@@ -90,6 +90,22 @@ failure (the backend dies, the agent reports it) meets it at 5.1 s.
 Alerts with a `for:` hold (the burn-rate pair) stayed pending or fired according to their rules while run A's failures sat in their windows;
 they are not part of this demonstration beyond that.
 
+### The documented commands, run again from a clean state
+
+After the independent verification the commands of `docs/operations/observability.md` were run once more from nothing (processes stopped, binaries rebuilt, the
+Compose project recreated). Ports were remapped into this phase's 58000-58099 range because `make dev-cluster` has fixed ports (8080, 9090, 9001-9003, 9100, 9101);
+everything else is the documented sequence: workers started with `--max-concurrency=8 --queue-size=64` (what `WORKER_CONCURRENCY=8 WORKER_QUEUE=64 make dev-cluster`
+passes), the gateway on `least-active`, then
+
+```sh
+bin/benchmark run --target http://127.0.0.1:58080 --control-plane http://127.0.0.1:58001 --scheduler least-active --workers 3 --model mock-model --duration 120s --concurrency 12
+```
+
+Result: all five Prometheus targets `up`; sent 1174, succeeded 1174, failed 0, 9.78 req/s, latency p50 732 / p95 3452 ms, TTFT p95 301 ms, a valid run;
+`scheduler_ineligible_selections_total` 0. The two claims behind the fix were also confirmed: without `--model mock-model` the same command sends `qwen-7b`
+and every request fails (125,515 of 125,515 in a 6 s run, all 404), and the default worker size (concurrency 4) with 8 clients gave 19% `NO_CAPACITY` in run A above.
+This run also showed that the 5xx-ratio recording rule returned no data when no 5xx series existed at all; it now yields 0 (`or vector(0)`), with a test.
+
 ## Cost of the instrumentation
 
 Budget (plan D16): the metrics observer adds at most 20 microseconds per request and no allocation in the steady state; `TestGatewayOverhead` and

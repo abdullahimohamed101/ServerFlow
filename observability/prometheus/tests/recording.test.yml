@@ -167,3 +167,13 @@ tests:
         eval_time: 110m
         exp_samples:
           - {labels: 'model:worker_tokens_per_second:sum{model="a"}', value: 80}
+
+  # With traffic but no 5xx series at all, the error ratio is 0, not "no data" (a panel and an alert must see zero).
+  - interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+    promql_expr_test:
+      - expr: cluster:inference_errors:ratio_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate5m', value: 0}

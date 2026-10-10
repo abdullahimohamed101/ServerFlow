@@ -10,13 +10,13 @@ groups:
       - record: model:inference_requests:rate1m
         expr: sum by (model) (rate(inference_requests_total[1m]))
       - record: cluster:inference_errors:ratio_rate5m
-        expr: sum(rate(inference_requests_total{status=~"5.."}[5m])) / sum(rate(inference_requests_total[5m]))
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[5m])) or vector(0)) / sum(rate(inference_requests_total[5m]))
       - record: cluster:inference_errors:ratio_rate30m
-        expr: sum(rate(inference_requests_total{status=~"5.."}[30m])) / sum(rate(inference_requests_total[30m]))
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[30m])) or vector(0)) / sum(rate(inference_requests_total[30m]))
       - record: cluster:inference_errors:ratio_rate1h
-        expr: sum(rate(inference_requests_total{status=~"5.."}[1h])) / sum(rate(inference_requests_total[1h]))
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[1h])) or vector(0)) / sum(rate(inference_requests_total[1h]))
       - record: cluster:inference_errors:ratio_rate6h
-        expr: sum(rate(inference_requests_total{status=~"5.."}[6h])) / sum(rate(inference_requests_total[6h]))
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[6h])) or vector(0)) / sum(rate(inference_requests_total[6h]))
       - record: cluster:inference_request_duration_seconds:p50_rate5m
         expr: histogram_quantile(0.50, sum by (le) (rate(inference_request_duration_seconds_bucket[5m])))
       - record: cluster:inference_request_duration_seconds:p95_rate5m
