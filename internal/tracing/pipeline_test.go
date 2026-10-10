@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -266,5 +267,36 @@ func TestUnsampledSpansAreNotCounted(t *testing.T) {
 func TestSetupRejectsBadEndpoint(t *testing.T) {
 	if _, err := Setup(testConfig("ftp://x"), Service{}, nil); err == nil {
 		t.Error("expected an error")
+	}
+}
+
+func TestShutdownLeavesNoGoroutinesBehind(t *testing.T) {
+	rcv := newFakeReceiver(t)
+	before := runtimeGoroutines()
+	for i := 0; i < 5; i++ {
+		p, _ := Setup(testConfig(rcv.srv.URL), Service{Name: "svc"}, nil)
+		emit(p, 50)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = p.Shutdown(ctx)
+		cancel()
+	}
+	rcv.srv.CloseClientConnections()
+	waitFor(t, "goroutines to return to the baseline", func() bool { return runtimeGoroutines() <= before+1 })
+}
+
+func runtimeGoroutines() int { return runtime.NumGoroutine() }
+
+func TestShutdownBoundWithAHungCollector(t *testing.T) {
+	rcv := newFakeReceiver(t)
+	rcv.setMode("hang")
+	p, _ := Setup(testConfig(rcv.srv.URL), Service{Name: "svc"}, nil)
+	emit(p, 500)
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = p.Shutdown(ctx)
+	if d := time.Since(start); d > 1500*time.Millisecond {
+		t.Fatalf("shutdown took %v against a hung collector with a 1s budget", d)
 	}
 }

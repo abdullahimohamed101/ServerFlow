@@ -12,10 +12,12 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/tracing"
+	"serverflow/internal/tracing/tracingtest"
 )
 
 func attrOf(s tracetest.SpanStub, k attribute.Key) (attribute.Value, bool) {
@@ -421,4 +423,33 @@ func TestTenantIDSwitch(t *testing.T) {
 			t.Errorf("%s carries a tenant id although include_tenant_id is off", s.Name)
 		}
 	}
+}
+
+// emptyStore knows no keys.
+type emptyStore struct{}
+
+func (emptyStore) LookupKey(context.Context, string) (auth.KeyRecord, error) {
+	return auth.KeyRecord{}, auth.ErrNotFound
+}
+
+func TestAuthRefusalGetsARootSpan(t *testing.T) {
+	a := auth.New(emptyStore{}, auth.Config{CacheTTL: time.Minute, NegativeTTL: time.Minute, CacheSize: 10, StaleGrace: time.Minute})
+	e := newEnv(t, envOpts{gwOpts: []gateway.Option{gateway.WithAuthenticator(a)}})
+	key, _, _ := auth.GenerateKey()
+	resp, _ := e.post(plainBody, "Authorization", "Bearer "+key)
+	if resp.StatusCode != 401 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	spans := e.spans()
+	if len(spans) != 1 {
+		t.Fatalf("a refused key gets only the root span: %v", names(spans))
+	}
+	root := spans[0]
+	if mustAttr(t, root, tracing.KeyRejectKind).AsString() != "auth" || mustAttr(t, root, tracing.KeyHTTPStatusCode).AsInt64() != 401 {
+		t.Errorf("attributes: %v", root.Attributes)
+	}
+	if strings.Contains(tracingtest.Dump(spans), key[:12]) {
+		t.Error("the API key (or its prefix) leaked into a span")
+	}
+	e.noLeak()
 }

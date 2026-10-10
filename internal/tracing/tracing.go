@@ -66,6 +66,8 @@ type Provider struct {
 	tracer trace.Tracer
 	prop   propagation.TextMapPropagator
 	bat    *batcher
+	// closeIdle closes the exporter's idle connections at shutdown.
+	closeIdle func()
 }
 
 const instrumentationName = "serverflow/internal/tracing"
@@ -74,6 +76,7 @@ const instrumentationName = "serverflow/internal/tracing"
 // start is not an error, and a dead collector can never slow or fail a request (ADR-018).
 func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 	exp := cfg.Exporter
+	var closeIdle func()
 	if exp == nil {
 		u, err := url.Parse(cfg.Endpoint)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -89,6 +92,7 @@ func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 		if u.Path == "" || u.Path == "/" {
 			endpoint = strings.TrimRight(endpoint, "/") + "/v1/traces" // a bare base URL gets the standard path
 		}
+		closeIdle = client.CloseIdleConnections
 		opts := []otlptracehttp.Option{
 			otlptracehttp.WithEndpointURL(endpoint),
 			otlptracehttp.WithHTTPClient(client),
@@ -115,7 +119,9 @@ func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 		sdktrace.WithSpanProcessor(bat),
 		sdktrace.WithRawSpanLimits(spanLimits()),
 	)
-	return newProvider(tp, bat), nil
+	prov := newProvider(tp, bat)
+	prov.closeIdle = closeIdle
+	return prov, nil
 }
 
 // NewResource is the resource every exported span carries: service name, version and instance ID, nothing
@@ -176,7 +182,13 @@ func (p *Provider) ForceFlush(ctx context.Context) error { return p.tp.ForceFlus
 
 // Shutdown flushes and stops the pipeline. Call it once after the server stopped; ctx bounds the wait, and
 // with a dead collector it is what bounds the process exit.
-func (p *Provider) Shutdown(ctx context.Context) error { return p.tp.Shutdown(ctx) }
+func (p *Provider) Shutdown(ctx context.Context) error {
+	err := p.tp.Shutdown(ctx)
+	if p.closeIdle != nil {
+		p.closeIdle()
+	}
+	return err
+}
 
 // maxTracestateBytes bounds the tracestate accepted from a caller.
 const maxTracestateBytes = 512
