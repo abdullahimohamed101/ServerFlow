@@ -39,6 +39,7 @@ func newTraceRig(t *testing.T, mutate func(*Config)) *traceRig {
 	}
 	r := &traceRig{exp: tracetest.NewInMemoryExporter(), rec: tracetest.NewSpanRecorder(), logs: &bytes.Buffer{}}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(tracing.NewSampler(tracing.SamplerParentOnly, 0)),
+		sdktrace.WithResource(tracing.NewResource(tracing.Service{Name: "serverflow-mock-worker", Version: "test", InstanceID: "test"})),
 		sdktrace.WithSyncer(r.exp), sdktrace.WithSpanProcessor(r.rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	r.srv = httptest.NewServer(New(cfg, slog.New(slog.NewJSONHandler(r.logs, nil)), WithTracing(tracing.NewProvider(tp))).Handler())

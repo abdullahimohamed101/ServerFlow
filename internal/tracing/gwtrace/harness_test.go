@@ -109,6 +109,7 @@ func newEnv(t *testing.T, o envOpts) *env {
 	e := &env{t: t, exp: tracetest.NewInMemoryExporter(), rec: tracetest.NewSpanRecorder(), logs: &syncBuf{}, up: &seen{}}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(tracing.NewSampler(o.sampler, ratio)),
+		sdktrace.WithResource(tracing.NewResource(tracing.Service{Name: "serverflow-gateway", Version: "test", InstanceID: "test"})),
 		sdktrace.WithSyncer(e.exp), sdktrace.WithSpanProcessor(e.rec),
 		sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{AttributeValueLengthLimit: 128, AttributeCountLimit: 32, EventCountLimit: 8,
 			LinkCountLimit: 4, AttributePerEventCountLimit: 8, AttributePerLinkCountLimit: 4}),

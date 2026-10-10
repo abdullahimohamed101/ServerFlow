@@ -107,11 +107,7 @@ func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 		}
 	}
 
-	res := resource.NewSchemaless(
-		KeyServiceName.String(svc.Name),
-		KeyServiceVersion.String(svc.Version),
-		KeyServiceInstance.String(svc.InstanceID),
-	)
+	res := NewResource(svc)
 	bat := newBatcher(exp, res, cfg.QueueSize, cfg.MaxExportBatch, cfg.BatchTimeout, cfg.ExportTimeout, log)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(NewSampler(cfg.Sampler, cfg.SampleRatio)),
@@ -120,6 +116,16 @@ func Setup(cfg Config, svc Service, log *slog.Logger) (*Provider, error) {
 		sdktrace.WithRawSpanLimits(spanLimits()),
 	)
 	return newProvider(tp, bat), nil
+}
+
+// NewResource is the resource every exported span carries: service name, version and instance ID, nothing
+// from the environment.
+func NewResource(svc Service) *resource.Resource {
+	return resource.NewSchemaless(
+		KeyServiceName.String(svc.Name),
+		KeyServiceVersion.String(svc.Version),
+		KeyServiceInstance.String(svc.InstanceID),
+	)
 }
 
 // NewProvider wraps an SDK tracer provider built by the caller. It is the seam tests use to record spans in
