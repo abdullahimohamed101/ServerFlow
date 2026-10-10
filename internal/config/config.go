@@ -26,6 +26,7 @@ type Config struct {
 	Postgres     PostgresConfig     `yaml:"postgres"`
 	Auth         AuthConfig         `yaml:"auth"`
 	Log          LogConfig          `yaml:"log"`
+	Metrics      MetricsConfig      `yaml:"metrics"`
 
 	configFilePath string
 }
@@ -99,6 +100,7 @@ func Default() Config {
 		Log: LogConfig{
 			Level: "info",
 		},
+		Metrics: defaultMetrics(),
 	}
 }
 
@@ -150,6 +152,9 @@ func (c *Config) Validate() error {
 		// last_used_at writes and the startup check can still run) and need two of their own: one for
 		// unseen keys and one reserved for refreshing cached keys.
 		return fmt.Errorf("postgres.max_conns must be at least %d when auth.mode is %q", minAuthPoolConns, AuthModeRequired)
+	}
+	if err := c.Metrics.validate(); err != nil {
+		return err
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":

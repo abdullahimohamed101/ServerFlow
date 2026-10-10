@@ -21,6 +21,7 @@ import (
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/redis"
 	"serverflow/internal/telemetry"
+	"serverflow/internal/telemetry/metricsserver"
 )
 
 func main() {
@@ -42,6 +43,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// After the first signal start the drain, and give signals back to the default handler so a second
+	// Ctrl-C or SIGTERM ends the process at once instead of being swallowed.
+	go func() { <-ctx.Done(); stop() }()
 
 	// With auth.mode=required the gateway must be able to verify keys, so a database that is
 	// unreachable or not migrated is a startup failure, not a surprise at the first request.
@@ -59,7 +63,7 @@ func main() {
 			// Lookups may use all but two pool connections, so the pool is never entirely theirs.
 			MaxLookups: lookupCap(cfg.Postgres.MaxConns),
 		})
-		opts = append(opts, gateway.WithAuthenticator(authn))
+		opts = append(opts, gateway.WithAuthenticator(authn), gateway.WithCollector(authn.Collector()), gateway.WithCollector(store.Collector()))
 		logger.Info("api key authentication required", "component", "gateway", "cache_ttl", cfg.Auth.CacheTTL.String(),
 			"negative_ttl", cfg.Auth.NegativeTTL.String(), "cache_size", cfg.Auth.CacheSize, "stale_grace", cfg.Auth.StaleGrace.String())
 	}
@@ -73,6 +77,7 @@ func main() {
 	}
 	if rc != nil {
 		defer func() { _ = rc.Close() }()
+		opts = append(opts, gateway.WithCollector(rc.Collector()))
 	}
 	if cfg.RateLimit.Mode == config.RateLimitRequired {
 		lim, err := ratelimit.NewRedis(rc, ratelimit.Config{
@@ -108,20 +113,25 @@ func main() {
 	}
 
 	var srv *gateway.Server
+	var announce func() // "gateway starting", logged once the metrics listener is bound
 	if cfg.Gateway.WorkerSource == config.WorkerSourceRegistry {
 		if srv, err = gateway.NewRegistry(cfg, logger, opts...); err != nil {
 			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
 			os.Exit(1)
 		}
 		// The token itself is never logged.
-		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
-			"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
-			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
-			"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
+		announce = func() {
+			logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
+				"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
+				"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
+				"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
+		}
 	} else {
 		srv = gateway.NewFromConfig(cfg, logger, opts...)
-		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
-			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
+		announce = func() {
+			logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
+				"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
+		}
 	}
 
 	if err := checkAuthWiring(cfg.Auth.Mode, srv.AuthRequired()); err != nil {
@@ -134,8 +144,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := srv.Serve(ctx, ln); err != nil {
-		logger.Error("gateway stopped with error", "component", "gateway", "error", err)
+	// /metrics has a listener of its own: loopback by default, a bearer token for anything else (ADR-017). It
+	// is bound before the gateway announces itself, so a refused or busy address (a second gateway on one host
+	// with the default port) is a fatal error and never a half-started process. It outlives the shutdown signal:
+	// Prometheus can still scrape while in-flight requests drain, and it stops only after the drain.
+	ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultGatewayMetricsListen), cfg.Metrics, srv.MetricsGatherer(), logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+	stopMetrics := func() {}
+	if ms != nil {
+		mctx, mstop := context.WithCancel(context.Background())
+		mdone := make(chan struct{})
+		go func() {
+			defer close(mdone)
+			if err := ms.Serve(mctx); err != nil {
+				logger.Error("metrics endpoint stopped with error", "component", "gateway", "error", err.Error())
+			}
+		}()
+		stopMetrics = func() { mstop(); <-mdone }
+		logger.Info("metrics endpoint", "component", "gateway", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
+	} else {
+		logger.Info("metrics endpoint is off (metrics.listen is empty)", "component", "gateway")
+	}
+	announce()
+
+	serveErr := srv.Serve(ctx, ln) // returns after the drain
+	stopMetrics()
+	if serveErr != nil {
+		logger.Error("gateway stopped with error", "component", "gateway", "error", serveErr)
 		os.Exit(1)
 	}
 	logger.Info("gateway stopped", "component", "gateway")

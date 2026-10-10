@@ -1,0 +1,179 @@
+# promtool unit tests for the recording rules. Each rule has at least one expected sample.
+# Input: 2 hours of samples every 15 s. Counter increments are chosen so the rates are round numbers:
+# 200: 1/s, 503: 0.1/s, 499: 0.5/s, 429: 0.4/s, so the 5xx error ratio is 0.1 / 2.0 = 0.05 (429 and 499 are not errors).
+rule_files:
+  - ../rules/recording.yml
+evaluation_interval: 15s
+
+tests:
+  - interval: 15s
+    input_series:
+      - series: 'inference_requests_total{model="a",status="200"}'
+        values: '0+15x480'
+      - series: 'inference_requests_total{model="a",status="503"}'
+        values: '0+1.5x480'
+      - series: 'inference_requests_total{model="b",status="499"}'
+        values: '0+7.5x480'
+      - series: 'inference_requests_total{model="b",status="429"}'
+        values: '0+6x480'
+      - series: 'inference_request_duration_seconds_bucket{le="0.1"}'
+        values: '0+750x480'
+      - series: 'inference_request_duration_seconds_bucket{le="0.25"}'
+        values: '0+1425x480'
+      - series: 'inference_request_duration_seconds_bucket{le="1"}'
+        values: '0+1500x480'
+      - series: 'inference_request_duration_seconds_bucket{le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'inference_request_duration_seconds_bucket{model="a",le="0.1"}'
+        values: '0+750x480'
+      - series: 'inference_request_duration_seconds_bucket{model="a",le="0.25"}'
+        values: '0+1425x480'
+      - series: 'inference_request_duration_seconds_bucket{model="a",le="1"}'
+        values: '0+1500x480'
+      - series: 'inference_request_duration_seconds_bucket{model="a",le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'inference_ttft_seconds_bucket{le="0.1"}'
+        values: '0+750x480'
+      - series: 'inference_ttft_seconds_bucket{le="0.25"}'
+        values: '0+1425x480'
+      - series: 'inference_ttft_seconds_bucket{le="1"}'
+        values: '0+1500x480'
+      - series: 'inference_ttft_seconds_bucket{le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'inference_ttft_seconds_bucket{model="a",le="0.1"}'
+        values: '0+750x480'
+      - series: 'inference_ttft_seconds_bucket{model="a",le="0.25"}'
+        values: '0+1425x480'
+      - series: 'inference_ttft_seconds_bucket{model="a",le="1"}'
+        values: '0+1500x480'
+      - series: 'inference_ttft_seconds_bucket{model="a",le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'scheduler_decision_duration_seconds_bucket{le="0.005"}'
+        values: '0+750x480'
+      - series: 'scheduler_decision_duration_seconds_bucket{le="0.01"}'
+        values: '0+1425x480'
+      - series: 'scheduler_decision_duration_seconds_bucket{le="0.025"}'
+        values: '0+1500x480'
+      - series: 'scheduler_decision_duration_seconds_bucket{le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'inference_gateway_overhead_seconds_bucket{le="0.005"}'
+        values: '0+750x480'
+      - series: 'inference_gateway_overhead_seconds_bucket{le="0.01"}'
+        values: '0+1425x480'
+      - series: 'inference_gateway_overhead_seconds_bucket{le="0.025"}'
+        values: '0+1500x480'
+      - series: 'inference_gateway_overhead_seconds_bucket{le="+Inf"}'
+        values: '0+1500x480'
+      - series: 'worker_output_tokens_total{worker_id="w1"}'
+        values: '0+600x480'
+      - series: 'worker_output_tokens_total{worker_id="w2"}'
+        values: '0+300x480'
+      - series: 'worker_queue_depth{worker_id="w1",model="a"}'
+        values: '2x480'
+      - series: 'worker_queue_depth{worker_id="w2",model="a"}'
+        values: '8x480'
+      - series: 'worker_queue_depth{worker_id="w3",model="b"}'
+        values: '5x480'
+      - series: 'worker_health{worker_id="w1",model="a",state="READY"}'
+        values: '1x480'
+      - series: 'worker_health{worker_id="w2",model="a",state="READY"}'
+        values: '1x480'
+      - series: 'worker_health{worker_id="w3",model="b",state="READY"}'
+        values: '0x480'
+      - series: 'worker_tokens_per_second{worker_id="w1",model="a"}'
+        values: '50x480'
+      - series: 'worker_tokens_per_second{worker_id="w2",model="a"}'
+        values: '30x480'
+    promql_expr_test:
+      - expr: cluster:inference_requests:rate1m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_requests:rate1m', value: 2.0}
+      - expr: model:inference_requests:rate1m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:inference_requests:rate1m{model="a"}', value: 1.1}
+          - {labels: 'model:inference_requests:rate1m{model="b"}', value: 0.9}
+      - expr: cluster:inference_errors:ratio_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate5m', value: 0.05}
+      - expr: cluster:inference_errors:ratio_rate30m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate30m', value: 0.05}
+      - expr: cluster:inference_errors:ratio_rate1h
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate1h', value: 0.05}
+      - expr: cluster:inference_errors:ratio_rate6h
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate6h', value: 0.05}
+      - expr: cluster:inference_request_duration_seconds:p50_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_request_duration_seconds:p50_rate5m', value: 0.1}
+      - expr: cluster:inference_request_duration_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_request_duration_seconds:p95_rate5m', value: 0.25}
+      - expr: cluster:inference_request_duration_seconds:p99_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_request_duration_seconds:p99_rate5m', value: 8.500000000000001E-01}
+      - expr: model:inference_request_duration_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:inference_request_duration_seconds:p95_rate5m', value: 0.25} # the series without a model label (test data mixes both)
+          - {labels: 'model:inference_request_duration_seconds:p95_rate5m{model="a"}', value: 0.25}
+      - expr: cluster:inference_ttft_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_ttft_seconds:p95_rate5m', value: 0.25}
+      - expr: model:inference_ttft_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:inference_ttft_seconds:p95_rate5m', value: 0.25} # the series without a model label (test data mixes both)
+          - {labels: 'model:inference_ttft_seconds:p95_rate5m{model="a"}', value: 0.25}
+      - expr: cluster:worker_output_tokens:rate1m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:worker_output_tokens:rate1m', value: 60}
+      - expr: worker:worker_output_tokens:rate1m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'worker:worker_output_tokens:rate1m{worker_id="w1"}', value: 40}
+          - {labels: 'worker:worker_output_tokens:rate1m{worker_id="w2"}', value: 20}
+      - expr: cluster:scheduler_decision_duration_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:scheduler_decision_duration_seconds:p95_rate5m', value: 0.01}
+      - expr: cluster:inference_gateway_overhead_seconds:p95_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_gateway_overhead_seconds:p95_rate5m', value: 0.01}
+      - expr: model:worker_queue_depth:imbalance
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:worker_queue_depth:imbalance{model="a"}', value: 6}
+          - {labels: 'model:worker_queue_depth:imbalance{model="b"}', value: 0}
+      - expr: model:worker_health:sum
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:worker_health:sum{model="a"}', value: 2}
+          - {labels: 'model:worker_health:sum{model="b"}', value: 0}
+      - expr: model:worker_tokens_per_second:sum
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'model:worker_tokens_per_second:sum{model="a"}', value: 80}
+
+  # With traffic but no 5xx series at all, the error ratio is 0, not "no data" (a panel and an alert must see zero).
+  - interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+    promql_expr_test:
+      - expr: cluster:inference_errors:ratio_rate5m
+        eval_time: 110m
+        exp_samples:
+          - {labels: 'cluster:inference_errors:ratio_rate5m', value: 0}

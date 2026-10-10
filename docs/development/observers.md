@@ -13,8 +13,8 @@ ADR-016.
 | --- | --- |
 | `RequestStarted(ctx, RequestStart) ctx` | the middleware accepted `POST /v1/chat/completions` (before authentication) |
 | `RequestAdmitted(ctx, Admission)` | authentication, validation and the rate limit passed |
-| `RequestRejected(ctx, Rejection)` | refused before a worker was used (auth, rate_limit, validation, model, capacity, internal) |
-| `AttemptStarted(ctx, AttemptStart) ctx` | a worker was chosen (static mode: the upstream is about to be called; worker ID empty) |
+| `RequestRejected(ctx, Rejection)` | refused before a worker was used (auth, rate_limit, validation, model, capacity, internal); `Model` is set only for a confirmed model, `DecisionDuration` is the limiter's or, for model and capacity refusals, the scheduler's |
+| `AttemptStarted(ctx, AttemptStart) ctx` | a worker was chosen (static mode: the upstream is about to be called; worker ID empty); carries the strategy, selection time, request age, the worker's state and whether the registry view judged it eligible |
 | `FirstToken(ctx, FirstToken)` | the first streamed chunk was written to the client |
 | `AttemptEnded(ctx, AttemptEnd)` | an attempt finished (outcome ok, failed, retried or client_closed) |
 | `RequestCompleted(ctx, Completion)` | the final status is decided; exactly once, last |
@@ -51,5 +51,7 @@ the context returned by those before it.
 
 Copy the recording observer in `observer_test.go` (`recObserver`) to assert the events your observer should see, and run
 `go test -race ./internal/gateway`. To check the cost of the seam: `go test -run '^$' -bench BenchmarkObserverRequest -benchmem ./internal/gateway`.
+Metrics is the reference for cost: `BenchmarkMetricsObserverEvents` feeds a whole request's events to it and must report 0 allocs/op (resolve labelled
+instruments once; see `modelInst` in `metrics.go` and `docs/operations/observability.md`).
 If your observer exports Prometheus series, extend `testdata/metrics_series_*.golden` deliberately
 (`go test ./internal/gateway -run MetricsSeriesGolden -update-golden`) and say so in the change.

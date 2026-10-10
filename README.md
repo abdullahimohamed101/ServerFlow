@@ -57,7 +57,7 @@ SERVERFLOW_GATEWAY_MODELS=my-model \
 go run ./cmd/gateway
 ```
 
-Endpoints: `GET /healthz`, `/readyz`, `/metrics`, `/v1/models`, and
+Endpoints: `GET /healthz`, `/readyz`, `/v1/models`, and
 `POST /v1/chat/completions` (streaming supported). See `internal/config` for all
 `gateway.*` settings and their `SERVERFLOW_GATEWAY_*` environment variables.
 
@@ -103,7 +103,7 @@ On Windows (no `make`), use the existing quality gate:
 | 7 | Baseline benchmark harness | Complete |
 | 8 | Redis integration | Complete |
 | 9 | PostgreSQL | Complete |
-| 10 | Prometheus + Grafana | Not started |
+| 10 | Prometheus + Grafana | Complete (`docs/operations/observability.md`, ADR-017) |
 | 11 | OpenTelemetry | Not started |
 | 12 | Kafka | Not started |
 | 13 | Real vLLM worker pool | Not started |

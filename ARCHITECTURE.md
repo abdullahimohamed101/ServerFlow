@@ -38,7 +38,7 @@ Purpose: OpenAI-compatible HTTP API: auth, rate limiting, validation,
 streaming proxy, scheduler invocation.
 Location: `cmd/gateway` + `internal/gateway`. Owns: request lifecycle,
 client-facing contracts.
- Status: MVP implemented (Phase 2): `/healthz`, `/readyz`, `/metrics`,
+ Status: MVP implemented (Phase 2): `/healthz`, `/readyz`,
 `/v1/models`, `/v1/chat/completions` (stream and non-stream), request IDs,
 structured logs, Prometheus metrics, graceful shutdown. Proxies to one
 configured upstream behind the `gateway.Upstream` interface; with
@@ -55,6 +55,13 @@ A `multiObserver` built at construction fans events out in order and contains pa
 (registered first); `gateway.WithObserver` adds more, so tracing and event publishing (Phases 11-12) do not touch the request path.
 Observers must be fast, because they run on the request goroutine. See ADR-016 and `docs/development/observers.md`.
 Configuration is likewise one file per feature under `internal/config`.
+
+**Metrics (Phase 10).** `/metrics` is not on the data port: the gateway and the control plane serve it on a listener of their own (`internal/telemetry/metricsserver`,
+loopback by default, a bearer token for anything else). The metrics observer exports request, attempt, scheduler and overhead series with bounded labels
+(`telemetry.LabelGuard`); state that is not a request event (the worker registry, the registry snapshot, Redis, the PostgreSQL pool, the API key cache, the
+mock worker's engine) is exported by collectors that sit with what they observe and are attached with `gateway.WithCollector`. `observability/` holds the
+Prometheus configuration, recording and alert rules with promtool tests, and the Grafana datasource and four dashboards; `internal/observability` checks them
+against what a running cluster exports. See ADR-017 and `docs/operations/observability.md`.
 
 ### Mock Worker
 Purpose: a configurable fake vLLM (latency, tokens/s, queueing, failures) so the
@@ -109,8 +116,8 @@ shared-secret bearer token. Placement and scaling are later phases. See
 Purpose: distributed ephemeral state (Redis), durable metadata (PostgreSQL),
 async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
 tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
-`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9) and Redis rate limiting (Phase 8);
-the rest are skeletons.
+`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9), Redis rate limiting (Phase 8) and
+Prometheus and Grafana (Phase 10); the rest are skeletons.
 
 ### Authentication and PostgreSQL
 Purpose: tenants, hashed API keys, model configs and benchmark-run metadata,

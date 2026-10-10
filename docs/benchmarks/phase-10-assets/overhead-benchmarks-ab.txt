@@ -1,0 +1,6 @@
+benchmark                                                      before ns/op mean+-sd    after ns/op mean+-sd     B/op, allocs/op before->after
+BenchmarkObserverRequest/static_nonstream                      10848 +-531 (n=10)       10887 +-579 (n=10)       [(27919, 101)] -> [(27919, 100)]
+BenchmarkObserverRequest/static_stream                         11785 +-642 (n=10)       11905 +-619 (n=10)       [(28103, 108)] -> [(28103, 107)]
+BenchmarkObserverRequest/static_nonstream_two_nop_observers    11070 +-589 (n=10)       11148 +-414 (n=10)       [(27919, 101)] -> [(27919, 100)]
+BenchmarkMetricsObserverEvents/one_worker                      189 +-3 (n=10)           132 +-1 (n=10)           [(3, 1)] -> [(0, 0)]
+BenchmarkMetricsObserverEvents/sixteen_workers                 188 +-3 (n=10)           136 +-2 (n=10)           [(3, 1)] -> [(0, 0)]

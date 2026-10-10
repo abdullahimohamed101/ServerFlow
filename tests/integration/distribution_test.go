@@ -246,7 +246,7 @@ func TestAFlakyWorkerCostsNoClientFailuresWhileHealthyWorkersExist(t *testing.T)
 // retriesWithReason sums inference_retries_total for a reason from the gateway's /metrics.
 func retriesWithReason(t *testing.T, gw, reason string) float64 {
 	t.Helper()
-	resp, err := http.Get(gw + "/metrics")
+	resp, err := http.Get(metricsOf(gw) + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}

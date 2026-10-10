@@ -1,0 +1,24 @@
+--- base 1
+    overhead_test.go:128: non-stream p95 overhead = 1.524416ms (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 805.624µs (budget 25ms)
+PASS
+--- new 1
+    overhead_test.go:128: non-stream p95 overhead = 612.042µs (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 601.791µs (budget 25ms)
+PASS
+--- base 2
+    overhead_test.go:128: non-stream p95 overhead = 786.667µs (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 587.541µs (budget 25ms)
+PASS
+--- new 2
+    overhead_test.go:128: non-stream p95 overhead = 678.292µs (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 588.583µs (budget 25ms)
+PASS
+--- base 3
+    overhead_test.go:128: non-stream p95 overhead = 680.875µs (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 580.291µs (budget 25ms)
+PASS
+--- new 3
+    overhead_test.go:128: non-stream p95 overhead = 635.709µs (budget 25ms)
+    overhead_test.go:128: stream-ttft p95 overhead = 641.041µs (budget 25ms)
+PASS

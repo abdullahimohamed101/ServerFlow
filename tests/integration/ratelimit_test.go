@@ -52,10 +52,12 @@ func (m *memKeys) add(tenant string, models []string, rpm, tpm, conc int) string
 
 type gw struct {
 	url string
-	rc  *redis.Client
-	lim *ratelimit.RedisLimiter
-	srv *gateway.Server
-	log *syncLog
+	// metricsURL is the gateway's metrics listener (/metrics is not on url, ADR-017).
+	metricsURL string
+	rc         *redis.Client
+	lim        *ratelimit.RedisLimiter
+	srv        *gateway.Server
+	log        *syncLog
 }
 
 type syncLog struct {
@@ -135,6 +137,9 @@ func newCluster(t *testing.T, o clusterOpts) *cluster {
 		ts := httptest.NewServer(g.srv.Handler())
 		t.Cleanup(ts.Close)
 		g.url = ts.URL
+		ms := httptest.NewServer(g.srv.MetricsHandler())
+		t.Cleanup(ms.Close)
+		g.metricsURL = ms.URL
 		if o.run {
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
@@ -600,7 +605,7 @@ func TestPasswordEchoedByRedisReachesNoResponseLogOrMetric(t *testing.T) {
 	if code != 503 || h.Get("Retry-After") == "" {
 		t.Fatalf("%d %v %s", code, h, body)
 	}
-	resp, err := httpc.Get(g.url + "/metrics")
+	resp, err := httpc.Get(g.metricsURL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
 	}

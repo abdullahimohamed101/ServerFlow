@@ -149,6 +149,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *api.Error) {
 	selecting := time.Now()
 	target, apiErr := s.router.Route(r.Context(), ireq, exclude...)
+	info.selectDuration = time.Since(selecting)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -158,7 +159,7 @@ func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	idx := len(info.attempts) - 1
 	info.attempted = len(info.attempts)
 	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
-		string(target.worker.State), info.attempts[idx].Started.Sub(selecting)))
+		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(selecting)))
 	info.attemptCtx = octx
 	ctx, cancel := context.WithCancel(withAttemptID(octx, id))
 	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancel)

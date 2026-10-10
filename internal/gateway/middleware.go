@@ -51,6 +51,8 @@ type reqInfo struct {
 	// context the observers returned for the current attempt.
 	attempted  int
 	attemptCtx context.Context
+	// selectDuration is how long the last worker selection took, whether or not it found a worker.
+	selectDuration time.Duration
 }
 
 type ctxKey struct{}

@@ -44,9 +44,16 @@ func (s *Server) admitted(ctx context.Context, info *reqInfo) {
 
 // rejected tells the observers a request was refused before it reached a worker.
 func (s *Server) rejected(ctx context.Context, info *reqInfo, kind, reason string, status int) {
+	dur := time.Duration(0)
+	switch kind {
+	case RejectRateLimit:
+		dur = info.rateDuration
+	case RejectModel, RejectCapacity, RejectInternal:
+		dur = info.selectDuration
+	}
 	s.obs.RequestRejected(ctx, Rejection{
 		RequestID: info.id, TenantID: info.tenantID, Kind: kind, Reason: reason, Status: status,
-		DecisionDuration: info.rateDuration,
+		DecisionDuration: dur, Model: info.model,
 	})
 }
 
@@ -79,10 +86,10 @@ func completionFrom(info *reqInfo, status int, d time.Duration) Completion {
 	}
 }
 
-func (s *Server) attemptStartEvent(info *reqInfo, number int, worker, model, strategy, state string, selectDur time.Duration) AttemptStart {
+func (s *Server) attemptStartEvent(info *reqInfo, number int, worker, model, strategy, state string, eligible bool, selectDur time.Duration) AttemptStart {
 	return AttemptStart{
 		RequestID: info.id, AttemptID: info.attemptID, Number: number, WorkerID: worker, Model: model, Strategy: strategy,
-		SelectDuration: selectDur, SinceRequestStart: time.Since(info.start), WorkerState: state,
+		SelectDuration: selectDur, SinceRequestStart: time.Since(info.start), WorkerState: state, WorkerEligible: eligible,
 	}
 }
 
