@@ -45,8 +45,9 @@ hard to reverse or easy to misread, and the findings made while building it.
   chunks counted: output only, an approximation) or `estimate` (nothing reported; counts are null). A bounded scanner reads bytes already
   flowing to the client, keeps a 2 KiB sliding window that is overwritten as the response passes, and emits integers only. Reports group
   by `tokens_source`.
-- **Broker for development and CI: Redpanda v25.1.1** (`docker.redpanda.com/redpandadata/redpanda:v25.1.1`, not Docker Hub, which
-  rate-limits CI runners), with SASL/SCRAM so a client that forgets credentials fails locally as it would in CI. Redpanda is Kafka API
+- **Broker for development and CI: Redpanda v25.1.1** (`docker.redpanda.com/redpandadata/redpanda:v25.1.1`; that host only fronts Docker
+  Hub and gives no rate-limit relief, and no unauthenticated mirror exists on public.ecr.aws, quay.io or ghcr.io, see
+  `docs/development/ci.md`, so CI caches the image and pulls with retries), with SASL/SCRAM so a client that forgets credentials fails locally as it would in CI. Redpanda is Kafka API
   compatible, not Apache Kafka; one verification run is made against `apache/kafka:3.9.1` and recorded in the plan. There is no Apache Kafka
   job in the nightly workflow. Redpanda's community edition is BSL licensed; this use is allowed.
 

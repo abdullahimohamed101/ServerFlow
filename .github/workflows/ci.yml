@@ -109,10 +109,31 @@ jobs:
             sleep 1
           done
           echo "Redis did not start"; exit 1
-      # A Kafka-compatible broker with SASL/SCRAM, started by the same script developers use
-      # (docker.redpanda.com/redpandadata/redpanda:v25.1.1: not Docker Hub, which rate-limits shared runners). The
-      # script waits until the broker answers an authenticated request and creates inference.lifecycle.v1. Redpanda
-      # is Kafka API compatible, not Apache Kafka (ADR-019). The job name stays unchanged.
+      # A Kafka-compatible broker with SASL/SCRAM, started by the same script developers use. The image is Redpanda
+      # (Kafka API compatible, not Apache Kafka, ADR-019). Its registry host docker.redpanda.com is only a front for
+      # Docker Hub (anonymous pulls count against Docker Hub's shared-runner limit) and no unauthenticated mirror exists
+      # on public.ecr.aws, quay.io or ghcr.io, so: the image is cached as a `docker save` tarball keyed by its
+      # reference, a cache miss pulls with retries and backoff (scripts/dev-kafka.sh pull), and a hit pulls nothing.
+      # What is NOT verified: a cold pull from a GitHub-hosted runner has never been run from here. If it is rate
+      # limited past the retries, the step fails loudly; an optional `docker login` with a Docker Hub account in a
+      # repository secret before this step lifts the limit (docs/development/ci.md).
+      - name: Redpanda image reference
+        id: redpanda
+        run: echo "image=$(scripts/dev-kafka.sh image)" >> "$GITHUB_OUTPUT"
+      - name: Cache the Redpanda image
+        id: redpanda-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/redpanda-image.tar
+          key: redpanda-image-${{ steps.redpanda.outputs.image }}
+      - name: Load the cached Redpanda image
+        if: steps.redpanda-cache.outputs.cache-hit == 'true'
+        run: docker load -i "$RUNNER_TEMP/redpanda-image.tar"
+      - name: Pull the Redpanda image (cache miss only; retries with backoff)
+        if: steps.redpanda-cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/dev-kafka.sh pull
+          docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
       - name: Start Kafka
         run: scripts/dev-kafka.sh start
       - name: Keep the Kafka log on failure

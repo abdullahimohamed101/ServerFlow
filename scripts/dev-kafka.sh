@@ -5,13 +5,16 @@
 # the hard way). The user and password are public and fixed, so this is NOT a place for real data and must
 # never be exposed to a network. Nothing is persisted (the container is removed on stop).
 #
-# Redpanda is Kafka API compatible, not Apache Kafka (ADR-019). It is used because it starts in seconds and its
-# image is published on docker.redpanda.com, not Docker Hub, which rate-limits CI runners. The image's licence
-# (BSL for the community edition) allows this use. DEV_KAFKA_IMAGE overrides the image.
+# Redpanda is Kafka API compatible, not Apache Kafka (ADR-019). It is used because it starts in seconds. NOTE: its
+# registry host, docker.redpanda.com, is only a front for Docker Hub (the token realm is auth.docker.io and an
+# anonymous pull counts against Docker Hub's 100-per-hour limit), and no unauthenticated mirror exists on
+# public.ecr.aws, quay.io or ghcr.io (checked 2026-10-10, docs/development/ci.md). So `pull` retries with
+# backoff, and CI caches the image. The image's licence (BSL for the community edition) allows this use.
+# DEV_KAFKA_IMAGE overrides the image.
 #
 # One named container per port (serverflow-test-kafka-<port>), so several worktrees can each run their own and
 # stop only their own. Set DEV_KAFKA_PORT to use another port.
-#   scripts/dev-kafka.sh start|stop|status|reset|brokers|user|password|topic <name> [partitions]|logs
+#   scripts/dev-kafka.sh start|stop|status|reset|brokers|user|password|image|pull|topic <name> [partitions]|logs
 #
 # Tests use: export SERVERFLOW_TEST_KAFKA_BROKERS="$(scripts/dev-kafka.sh brokers)"
 #            export SERVERFLOW_TEST_KAFKA_USER="$(scripts/dev-kafka.sh user)"
@@ -28,6 +31,19 @@ topic=inference.lifecycle.v1
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || {
   echo "dev-kafka: a running Docker daemon is required" >&2
   exit 1
+}
+
+# pull fetches the image, retrying with backoff: a rate-limited anonymous pull (HTTP 429) is the usual failure.
+pull() {
+  local i delay="${DEV_KAFKA_PULL_DELAY:-5}"
+  for i in 1 2 3 4 5; do
+    if docker pull "$image" >/dev/null; then return 0; fi
+    echo "dev-kafka: pulling $image failed (attempt $i of 5); retrying in ${delay}s" >&2
+    sleep "$delay"
+    delay=$((delay * 3))
+  done
+  echo "dev-kafka: could not pull $image (rate limited? log in with docker login, or load a saved image)" >&2
+  return 1
 }
 
 running() { docker ps --format '{{.Names}}' | grep -qx "$name"; }
@@ -57,6 +73,7 @@ start() {
     echo "dev-kafka: already running ($name)"
   else
     docker rm -f "$name" >/dev/null 2>&1 || true
+    docker image inspect "$image" >/dev/null 2>&1 || pull
     # The external listener is what the host connects to; the internal one is for rpk inside the container.
     docker run -d --name "$name" -p "127.0.0.1:$port:$port" "$image" \
       redpanda start --mode dev-container --smp 1 --memory 512M \
@@ -96,8 +113,10 @@ case "${1:-}" in
   brokers) echo "127.0.0.1:$port" ;;
   user) echo "$user" ;;
   password) echo "$password" ;;
+  image) echo "$image" ;;
+  pull) pull ;;
   topic) create_topic "${2:?usage: $0 topic <name> [partitions]}" "${3:-6}" ;;
   rpk) shift; rpk_auth "$@" ;;
   logs) docker logs --tail "${2:-50}" "$name" ;;
-  *) echo "usage: $0 start|stop|status|reset|brokers|user|password|topic <name> [partitions]|rpk <args>|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 start|stop|status|reset|brokers|user|password|image|pull|topic <name> [partitions]|rpk <args>|logs" >&2; exit 2 ;;
 esac

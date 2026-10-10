@@ -276,8 +276,9 @@ killed from outside; a third found a flaky start-up assumption in my retry-event
   producer, consumer, unauthenticated-refusal, missing-topic, end-to-end, stop/replay, crash, SIGTERM-flush and usage-consumer process
   tests all passed. The outage test was not run against it (it uses a private Redpanda container). SASL/SCRAM against Apache's own
   implementation was not exercised; the Apache run used PLAIN.
-- **CI image**: `docker.redpanda.com/redpandadata/redpanda:v25.1.1` pulls and runs here without Docker Hub. Whether GitHub's runners can
-  reach `docker.redpanda.com` was not verified from here; the `Start Kafka` step fails loudly if not. The CI job uses the same script,
+- **CI image (corrected in the fix round)**: the first version of this note said `docker.redpanda.com` avoids Docker Hub. It does not: it
+  proxies Docker Hub authentication and the anonymous limit applies (see `docs/development/ci.md` for the evidence and the checked
+  alternatives). CI now caches the image and pulls with retries; a cold pull from a GitHub runner has not been run. The CI job uses the same script,
   port 59092 and `docker logs` on failure.
 - No Apache Kafka job was added to the nightly workflow (open question D17 answered "no").
 
