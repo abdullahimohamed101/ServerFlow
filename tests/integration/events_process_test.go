@@ -1,0 +1,142 @@
+package integration
+
+import (
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"serverflow/internal/kafka/kafkatest"
+	"serverflow/internal/mockworker"
+	"serverflow/pkg/protocol"
+)
+
+func eventsGatewayEnv(gwAddr, upstream string, extra ...string) []string {
+	_, port, _ := strings.Cut(gwAddr, ":")
+	return append([]string{
+		"SERVERFLOW_GATEWAY_PORT=" + port, "SERVERFLOW_GATEWAY_MODELS=" + model, "SERVERFLOW_GATEWAY_UPSTREAM_URL=" + upstream,
+		"SERVERFLOW_GATEWAY_SHUTDOWN_TIMEOUT=15s", "SERVERFLOW_EVENTS_MODE=on", "SERVERFLOW_EVENTS_SHUTDOWN_FLUSH_TIMEOUT=2s",
+		"SERVERFLOW_EVENTS_DELIVERY_TIMEOUT=2s", "SERVERFLOW_EVENTS_LINGER=5ms",
+	}, extra...)
+}
+
+func metricValue(t *testing.T, gw, prefix string) float64 {
+	t.Helper()
+	resp, err := http.Get("http://" + gw + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	var sum float64
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			f := strings.Fields(line)
+			v, _ := strconv.ParseFloat(f[len(f)-1], 64)
+			sum += v
+		}
+	}
+	return sum
+}
+
+// A gateway whose Kafka is unreachable starts, serves every request normally, counts the lost events, logs the
+// outage once, and still shuts down on time on SIGTERM.
+func TestProcessGatewayStartsWithKafkaDownAndStopsOnTime(t *testing.T) {
+	mock, _ := startMock(t)
+	dead := freePort(t) // nothing listens here
+	gw := freePort(t)
+	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL, "SERVERFLOW_EVENTS_BROKERS="+dead))
+	for i := 0; i < 20; i++ {
+		if code, body := gatewayChat(gw); code != 200 {
+			t.Fatalf("request %d with Kafka down: %d %s", i, code, body)
+		}
+	}
+	eventually(t, 20*time.Second, func() bool {
+		return metricValue(t, gw, `event_publish_failures_total{reason="delivery_failed"}`) > 0
+	}, "dropped events are counted as delivery failures")
+	if n := strings.Count(p.stderr.String(), "kafka is unreachable"); n != 1 {
+		t.Fatalf("the outage must be logged once, got %d:\n%s", n, p.stderr.String())
+	}
+	began := time.Now()
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	if err := p.wait(t, 15*time.Second); err != nil {
+		t.Fatalf("exit: %v\n%s", err, p.stderr.String())
+	}
+	if d := time.Since(began); d > 8*time.Second {
+		t.Fatalf("shutdown took %v with the broker down; the flush must give up on time", d)
+	}
+}
+
+// SIGTERM with requests in flight: the HTTP server drains first, so every in-flight request still emits its
+// terminal event, and the flush delivers them before the process exits.
+func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *testing.T) {
+	kcfg := kafkatest.Config(t)
+	topic := kafkatest.NewTopic(t, kcfg, 3)
+	mock, _ := startMock(t, func(c *mockworker.Config) { c.OutputTokens, c.TokensPerSecond, c.TTFT = 60, 40, 20*time.Millisecond })
+	gw := freePort(t)
+	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL,
+		"SERVERFLOW_EVENTS_BROKERS="+strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC="+topic,
+		"SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256", "SERVERFLOW_EVENTS_SASL_USERNAME="+kcfg.SASLUsername,
+		"SERVERFLOW_EVENTS_SASL_PASSWORD="+kcfg.SASLPassword))
+	const inflight = 5
+	var wg sync.WaitGroup
+	started := make(chan struct{}, inflight)
+	results := make(chan int, inflight)
+	for i := 0; i < inflight; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post("http://"+gw+"/v1/chat/completions", "application/json", strings.NewReader(chat(true, "hello")))
+			if err != nil {
+				results <- -1
+				return
+			}
+			buf := make([]byte, 16)
+			_, _ = resp.Body.Read(buf)
+			started <- struct{}{}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			results <- resp.StatusCode
+		}()
+	}
+	for i := 0; i < inflight; i++ {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("requests did not start streaming")
+		}
+	}
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	if err := p.wait(t, 30*time.Second); err != nil {
+		t.Fatalf("exit: %v\n%s", err, p.stderr.String())
+	}
+	wg.Wait()
+	close(results)
+	for code := range results {
+		if code != 200 {
+			t.Fatalf("an in-flight stream ended with %d during shutdown", code)
+		}
+	}
+	// received, routed, first_token and completed for each of the five requests
+	msgs := kafkatest.ReadN(t, kcfg, topic, inflight*4, 30*time.Second)
+	done := map[string]bool{}
+	for _, m := range msgs {
+		e, err := protocol.Decode(m.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.EventType == protocol.EventCompleted {
+			done[e.RequestID] = true
+		}
+	}
+	if len(done) != inflight {
+		t.Fatalf("%d of %d in-flight requests delivered a completed event before exit", len(done), inflight)
+	}
+	if strings.Contains(p.stderr.String(), kcfg.SASLPassword) {
+		t.Fatal("the gateway log contains the SASL password")
+	}
+}

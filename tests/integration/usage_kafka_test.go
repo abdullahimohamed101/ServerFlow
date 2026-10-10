@@ -118,6 +118,8 @@ type runningConsumer struct {
 	src    *kafka.Consumer
 	cancel context.CancelFunc
 	done   chan error
+	once   sync.Once
+	err    error
 }
 
 func (s *kafkaStack) startConsumer(group, startOffset string, mut func(*usage.Config)) *runningConsumer {
@@ -141,15 +143,16 @@ func (s *kafkaStack) startConsumer(group, startOffset string, mut func(*usage.Co
 }
 
 func (r *runningConsumer) stop() error {
-	r.cancel()
-	var err error
-	select {
-	case err = <-r.done:
-	case <-time.After(20 * time.Second):
-		err = fmt.Errorf("consumer did not stop")
-	}
-	r.src.Close()
-	return err
+	r.once.Do(func() {
+		r.cancel()
+		select {
+		case r.err = <-r.done:
+		case <-time.After(20 * time.Second):
+			r.err = fmt.Errorf("consumer did not stop")
+		}
+		r.src.Close()
+	})
+	return r.err
 }
 
 type totals struct{ requests, failures, in, out, est int64 }
@@ -309,7 +312,7 @@ func TestUsageCrashBetweenDatabaseAndOffsetCommit(t *testing.T) {
 		if err != usage.ErrStopped {
 			t.Fatalf("Run = %v", err)
 		}
-		c1.done <- nil // so the cleanup's stop() does not wait for it again
+		c1.once.Do(func() { c1.cancel() }) // the consumer already returned; stop() must not wait for it again
 	case <-time.After(30 * time.Second):
 		t.Fatal("the consumer did not reach the crash point")
 	}
