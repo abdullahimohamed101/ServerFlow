@@ -42,7 +42,9 @@ type Server struct {
 	background func(ctx context.Context)
 	ready      *readiness
 	metrics    *metrics
-	handler    http.Handler
+	// obs fans lifecycle events out to the observers: metrics first, then any WithObserver (ADR-016).
+	obs     *multiObserver
+	handler http.Handler
 	// authn, when set, requires an API key on /v1 requests (auth.mode=required).
 	authn *auth.Authenticator
 	// authRequired is true once authentication was asked for, even if authn is (wrongly) nil.
@@ -93,9 +95,11 @@ func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *S
 		upstream:           up,
 		ready:              &readiness{upstream: up},
 		metrics:            newMetrics(),
+		obs:                newMultiObserver(log),
 		bodyReadTimeout:    defaultBodyReadTimeout,
 		clientWriteTimeout: defaultClientWriteTimeout,
 	}
+	s.obs.add(s.metrics)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
