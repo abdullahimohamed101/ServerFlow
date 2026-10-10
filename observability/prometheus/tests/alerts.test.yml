@@ -150,6 +150,29 @@ tests:
               summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
               runbook: "docs/operations/observability.md#runbook-availability-burn"
 
+  # The threshold itself is 14.4 * 0.001 in floating point and the ratio is a quotient of extrapolated rates, so a ratio
+  # exactly equal to it does not occur in practice and "greater" versus "greater or equal" cannot be told apart by any
+  # input; the boundary is pinned from both sides with a margin of under 1% instead.
+  - name: 5xx ratio of 1.45% (0.7% above the 1.44% threshold) fires the fast burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+9855x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+145x480'}
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 14.4x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+  - name: 5xx ratio of 1.43% (0.7% below the 1.44% threshold) does not fire the fast burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+9857x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+143x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
   - name: the fast burn holds for 2 minutes before it fires
     interval: 15s
     input_series:
@@ -158,8 +181,8 @@ tests:
       - {series: 'inference_requests_total{status="503"}', values: '0x400 0+500x80'}
     alert_rule_test:
       - {eval_time: 100m30s, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
-      # the condition has held for well under 2 minutes: pending, not firing
-      - {eval_time: 102m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      # the condition has held for under 2 minutes: pending, not firing
+      - {eval_time: 103m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
       - eval_time: 106m
         alertname: ServerFlowAvailabilityBurnFast
         exp_alerts:
