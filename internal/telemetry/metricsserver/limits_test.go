@@ -72,9 +72,9 @@ func TestScrapeConcurrencyIsCapped(t *testing.T) {
 			t.Fatalf("only %d of %d scrapes were admitted", i, l.MaxInFlight)
 		}
 	}
-	resp, err := http.Get(srv.URL + "/metrics")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(srv.URL + "/metrics")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("scrape number %d got no answer: %v", l.MaxInFlight+1, err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -97,9 +97,9 @@ func TestSlowScrapeTimesOut(t *testing.T) {
 	srv := newTestServer(Handler(g, ""))
 	defer srv.Close()
 	start := time.Now()
-	resp, err := http.Get(srv.URL + "/metrics")
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(srv.URL + "/metrics")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("no answer within 3 s from a scrape that outlasts the handler timeout: %v", err)
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable || time.Since(start) > 3*time.Second {
