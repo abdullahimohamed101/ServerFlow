@@ -37,7 +37,7 @@ func (cannedUpstream) Probe(context.Context) error { return nil }
 type discardExporter struct{}
 
 func (discardExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error { return nil }
-func (discardExporter) Shutdown(context.Context) error                              { return nil }
+func (discardExporter) Shutdown(context.Context) error                             { return nil }
 
 // BenchmarkTracingObserver is the per-request cost of tracing on the gateway's in-process request path:
 // tracing off (no observer), on but unsampled, and on at 100% sampling with the real export queue. Run:
