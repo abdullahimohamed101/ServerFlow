@@ -352,6 +352,7 @@ func TestUnknownModelTextNeverReachesTheRecords(t *testing.T) {
 		if resp.StatusCode != 404 {
 			t.Fatalf("an unknown model should be 404, got %d", resp.StatusCode)
 		}
+		reqID := resp.Header.Get(protocol.HeaderRequestID)
 		time.Sleep(100 * time.Millisecond)
 		var mine []protocol.Event
 		evs, _ := sink.Events()
@@ -367,7 +368,7 @@ func TestUnknownModelTextNeverReachesTheRecords(t *testing.T) {
 		}
 		// The unknown-model request did leave a received/failed pair (it was admitted), without the model.
 		for _, e := range evs {
-			if e.EventType == protocol.EventFailed && e.Terminal.HTTPStatus == 404 {
+			if e.EventType == protocol.EventFailed && e.RequestID == reqID {
 				mine = append(mine, e)
 			}
 		}
