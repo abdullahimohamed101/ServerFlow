@@ -210,3 +210,6 @@ func (s *MemStore) Rows() []usage.Row {
 	}
 	return out
 }
+
+// CallCount is how many times InsertUsage was called.
+func (s *MemStore) CallCount() int { s.mu.Lock(); defer s.mu.Unlock(); return s.Calls }

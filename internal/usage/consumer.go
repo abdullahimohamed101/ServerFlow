@@ -56,11 +56,12 @@ type Consumer struct {
 	cfg   Config
 	log   *slog.Logger
 
-	counts   [4]atomic.Uint64
-	dbErrors atomic.Uint64
-	dbDown   atomic.Bool
-	lastWarn atomic.Int64
-	collect  []prometheus.Collector
+	counts     [4]atomic.Uint64
+	dbErrors   atomic.Uint64
+	dbDown     atomic.Bool
+	lastWarn   atomic.Int64
+	lastReject atomic.Int64
+	collect    []prometheus.Collector
 }
 
 // New builds a Consumer.
@@ -188,6 +189,18 @@ func (c *Consumer) collectBatch(ctx context.Context) []Message {
 	return batch
 }
 
+// logRejects says that records were skipped, at most once every ten seconds, with coordinates and reasons only: the
+// payload of a record that could not be used is never logged (it may be garbage, or someone else's data).
+func (c *Consumer) logRejects(rs []Reject) {
+	now := time.Now().UnixNano()
+	last := c.lastReject.Load()
+	if (last == 0 || now-last > int64(10*time.Second)) && c.lastReject.CompareAndSwap(last, now) {
+		first := rs[0]
+		c.log.Warn("records could not be used and were skipped", "count", len(rs), "first_topic", first.Topic,
+			"first_partition", first.Partition, "first_offset", first.Offset, "first_reason", first.Reason)
+	}
+}
+
 func (c *Consumer) warnThrottled(msg string, err error) {
 	now := time.Now().UnixNano()
 	last := c.lastWarn.Load()
@@ -218,8 +231,11 @@ func (c *Consumer) process(ctx context.Context, batch []Message) error {
 		}
 	}
 
-	if err := c.retry(ctx, func() error { return c.store.RecordRejects(ctx, rejects) }); err != nil {
-		return err
+	if len(rejects) > 0 {
+		c.logRejects(rejects)
+		if err := c.retry(ctx, func() error { return c.store.RecordRejects(ctx, rejects) }); err != nil {
+			return err
+		}
 	}
 	inserted, bad, err := c.insert(ctx, rows)
 	if err != nil {

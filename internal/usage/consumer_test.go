@@ -1,12 +1,14 @@
 package usage_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,4 +276,105 @@ func TestEventsWithAbsurdNumbersAreRejected(t *testing.T) {
 			t.Errorf("reason %s", r.Reason)
 		}
 	}
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+// A record the consumer cannot use is logged by coordinates and reason only, never by content.
+func TestRejectedRecordsAreLoggedWithoutTheirPayload(t *testing.T) {
+	const canary = "CANARY-POISON-PAYLOAD-5d2f"
+	b := eventstest.NewMemBroker(topic, 1)
+	st := eventstest.NewMemStore()
+	b.Append(key(0), []byte(`{"not":"an event","secret":"`+canary+`"}`))
+	b.Append(key(1), []byte(canary+" is not json"))
+	b.Append(key(2), []byte(strings.Repeat(canary, protocol.MaxEventBytes/len(canary)+2)))
+	logs := &lockedBuf{}
+	_, _, cancel, done := start(t, b, st, "g", func(c *usage.Config) {
+		c.Logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	})
+	eventually(t, func() bool { return b.Lag("g") == 0 }, "drains")
+	cancel()
+	<-done
+	out := logs.String()
+	if strings.Contains(out, canary) {
+		t.Fatalf("a rejected record's payload reached the log:\n%s", out)
+	}
+	if !strings.Contains(out, "skipped") || !strings.Contains(out, "first_reason") {
+		t.Fatalf("the rejection must be logged (coordinates and reason):\n%s", out)
+	}
+	for _, r := range st.Rejects {
+		if strings.Contains(fmt.Sprintf("%+v", r), canary) {
+			t.Fatal("a stored reject holds the payload")
+		}
+	}
+}
+
+// occurred_at is the time the request finished on the gateway, so a replay does not move usage into "today".
+func TestRowsKeepTheEventTimeNotTheTimeOfConsumption(t *testing.T) {
+	b := eventstest.NewMemBroker(topic, 1)
+	st := eventstest.NewMemStore()
+	for i := 0; i < 5; i++ {
+		b.Append(key(i), terminal(i, protocol.EventCompleted, false))
+	}
+	_, _, cancel, done := start(t, b, st, "g", nil)
+	eventually(t, func() bool { return st.Count() == 5 }, "rows")
+	cancel()
+	<-done
+	want := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for _, r := range st.Rows() {
+		if !r.OccurredAt.Equal(want) {
+			t.Fatalf("occurred_at = %v, want the event's own time %v (now is %v)", r.OccurredAt, want, time.Now())
+		}
+	}
+	// a replay under a new group leaves the stored time untouched
+	_, _, cancel2, done2 := start(t, b, st, "g2", nil)
+	eventually(t, func() bool { return b.Lag("g2") == 0 }, "replay")
+	cancel2()
+	<-done2
+	for _, r := range st.Rows() {
+		if !r.OccurredAt.Equal(want) {
+			t.Fatalf("after a replay occurred_at = %v", r.OccurredAt)
+		}
+	}
+}
+
+// Shutting down in the middle of a database outage must not swallow the error and commit: the batch in hand was never
+// written, so its offsets stay where they were and it is read again.
+func TestShutdownDuringADatabaseOutageCommitsNothing(t *testing.T) {
+	b := eventstest.NewMemBroker(topic, 1)
+	st := eventstest.NewMemStore()
+	st.FailNext = 1 << 30
+	for i := 0; i < 5; i++ {
+		b.Append(key(i), terminal(i, protocol.EventCompleted, false))
+	}
+	_, src, cancel, done := start(t, b, st, "g", func(c *usage.Config) { c.ShutdownGrace = 100 * time.Millisecond })
+	eventually(t, func() bool { return st.CallCount() > 0 }, "the consumer to try the database")
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if st.Count() != 0 || src.Commits != 0 || b.Lag("g") != 5 {
+		t.Fatalf("rows=%d commits=%d lag=%d: nothing may be committed for a batch the database never took", st.Count(), src.Commits, b.Lag("g"))
+	}
+	// After the database returns, a new consumer takes all five.
+	st.FailNext = 0
+	_, _, cancel2, done2 := start(t, b, st, "g", nil)
+	eventually(t, func() bool { return st.Count() == 5 && b.Lag("g") == 0 }, "recovery")
+	cancel2()
+	<-done2
 }
