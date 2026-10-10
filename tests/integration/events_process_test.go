@@ -82,7 +82,7 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 	gw := freePort(t)
 	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL,
 		"SERVERFLOW_EVENTS_BROKERS="+strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC="+topic,
-		"SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256", "SERVERFLOW_EVENTS_SASL_USERNAME="+kcfg.SASLUsername,
+		"SERVERFLOW_EVENTS_SASL_MECHANISM="+kcfg.SASLMechanism, "SERVERFLOW_EVENTS_SASL_USERNAME="+kcfg.SASLUsername,
 		"SERVERFLOW_EVENTS_SASL_PASSWORD="+kcfg.SASLPassword,
 		// A long linger holds the last events in the client until the flush: without Close they would be lost.
 		"SERVERFLOW_EVENTS_LINGER=1500ms"))
@@ -154,7 +154,7 @@ func TestProcessUsageConsumerEndToEnd(t *testing.T) {
 	metrics := freePort(t)
 	env := []string{
 		"SERVERFLOW_POSTGRES_DSN=" + dsn, "SERVERFLOW_EVENTS_BROKERS=" + strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC=" + topic,
-		"SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256", "SERVERFLOW_EVENTS_SASL_USERNAME=" + kcfg.SASLUsername,
+		"SERVERFLOW_EVENTS_SASL_MECHANISM=" + kcfg.SASLMechanism, "SERVERFLOW_EVENTS_SASL_USERNAME=" + kcfg.SASLUsername,
 		"SERVERFLOW_EVENTS_SASL_PASSWORD=" + kcfg.SASLPassword, "SERVERFLOW_EVENTS_CONSUMER_GROUP_ID=" + kafkatest.Unique("sf-proc"),
 		"SERVERFLOW_EVENTS_CONSUMER_METRICS_ADDR=" + metrics, "SERVERFLOW_EVENTS_CONSUMER_BATCH_TIMEOUT=50ms",
 	}

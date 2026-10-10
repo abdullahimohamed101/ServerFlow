@@ -34,9 +34,15 @@ func Config(t testing.TB) kafka.Config {
 	if brokers == "" {
 		t.Skip(SkipMessage)
 	}
+	// The shared test broker (scripts/dev-kafka.sh, CI) takes SCRAM-SHA-256. SERVERFLOW_TEST_KAFKA_SASL_MECHANISM=plain
+	// is for the one-off compatibility run against Apache Kafka (docs/operations/kafka-and-usage.md).
+	mech := config.SASLScram256
+	if m := os.Getenv("SERVERFLOW_TEST_KAFKA_SASL_MECHANISM"); m != "" {
+		mech = m
+	}
 	return kafka.Config{
 		Brokers: strings.Split(brokers, ","), ClientID: "serverflow-test", Topic: "unset",
-		SASLMechanism: config.SASLScram256, SASLUsername: os.Getenv("SERVERFLOW_TEST_KAFKA_USER"), SASLPassword: os.Getenv("SERVERFLOW_TEST_KAFKA_PASSWORD"),
+		SASLMechanism: mech, SASLUsername: os.Getenv("SERVERFLOW_TEST_KAFKA_USER"), SASLPassword: os.Getenv("SERVERFLOW_TEST_KAFKA_PASSWORD"),
 		Compression: "snappy", MaxBufferedRecords: 10_000, Linger: 5 * time.Millisecond, BatchMaxBytes: 1 << 20, DeliveryTimeout: 30 * time.Second,
 		StartOffset: "earliest",
 	}
@@ -172,6 +178,8 @@ func (b *PrivateBroker) docker(args ...string) {
 func (b *PrivateBroker) Config() kafka.Config {
 	cfg := Config(b.t)
 	cfg.Brokers = []string{fmt.Sprintf("127.0.0.1:%d", b.port)}
+	// The private broker is always the Redpanda that scripts/dev-kafka.sh starts, whatever the shared one is.
+	cfg.SASLMechanism, cfg.SASLUsername, cfg.SASLPassword = config.SASLScram256, "serverflow-test", "serverflow-test-kafka-password"
 	return cfg
 }
 
