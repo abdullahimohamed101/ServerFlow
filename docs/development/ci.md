@@ -38,7 +38,7 @@ local server deliberately requires one.
 | Job | Runs | Notes |
 | --- | --- | --- |
 | `lint` | `quality.sh lint` | golangci-lint installed by the official action |
-| `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod`, and current stable |
+| `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod` (`go-version-file`, currently 1.26), and current stable |
 | `integration` | `quality.sh integration` | PostgreSQL 16 service and a password-protected Redis 7; test log uploaded on failure |
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
