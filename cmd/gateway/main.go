@@ -110,20 +110,25 @@ func main() {
 	}
 
 	var srv *gateway.Server
+	var announce func() // "gateway starting", logged once the metrics listener is bound
 	if cfg.Gateway.WorkerSource == config.WorkerSourceRegistry {
 		if srv, err = gateway.NewRegistry(cfg, logger, opts...); err != nil {
 			fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
 			os.Exit(1)
 		}
 		// The token itself is never logged.
-		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
-			"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
-			"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
-			"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
+		announce = func() {
+			logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port, "worker_source", "registry",
+				"strategy", cfg.Scheduler.Strategy, "refresh", cfg.Gateway.RegistryRefresh.String(),
+				"max_staleness", cfg.Gateway.RegistryMaxStaleness.String(),
+				"control_plane_token", cfg.ControlPlane.Token != "", "api_key_auth", cfg.Auth.Mode)
+		}
 	} else {
 		srv = gateway.NewFromConfig(cfg, logger, opts...)
-		logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
-			"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
+		announce = func() {
+			logger.Info("gateway starting", "component", "gateway", "port", cfg.Gateway.Port,
+				"upstream", cfg.Gateway.UpstreamURL, "models", cfg.Gateway.Models, "api_key_auth", cfg.Auth.Mode)
+		}
 	}
 
 	if err := checkAuthWiring(cfg.Auth.Mode, srv.AuthRequired()); err != nil {
@@ -137,23 +142,35 @@ func main() {
 	}
 
 	// /metrics has a listener of its own: loopback by default, a bearer token for anything else (ADR-017). It
-	// is bound before serving so a refused or busy address stops the gateway at start-up.
-	if ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultGatewayMetricsListen), cfg.Metrics, srv.MetricsGatherer(), logger); err != nil {
+	// is bound before the gateway announces itself, so a refused or busy address (a second gateway on one host
+	// with the default port) is a fatal error and never a half-started process. It outlives the shutdown signal:
+	// Prometheus can still scrape while in-flight requests drain, and it stops only after the drain.
+	ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultGatewayMetricsListen), cfg.Metrics, srv.MetricsGatherer(), logger)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
 		os.Exit(1)
-	} else if ms != nil {
-		logger.Info("metrics endpoint", "component", "gateway", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
+	}
+	stopMetrics := func() {}
+	if ms != nil {
+		mctx, mstop := context.WithCancel(context.Background())
+		mdone := make(chan struct{})
 		go func() {
-			if err := ms.Serve(ctx); err != nil {
+			defer close(mdone)
+			if err := ms.Serve(mctx); err != nil {
 				logger.Error("metrics endpoint stopped with error", "component", "gateway", "error", err.Error())
 			}
 		}()
+		stopMetrics = func() { mstop(); <-mdone }
+		logger.Info("metrics endpoint", "component", "gateway", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
 	} else {
 		logger.Info("metrics endpoint is off (metrics.listen is empty)", "component", "gateway")
 	}
+	announce()
 
-	if err := srv.Serve(ctx, ln); err != nil {
-		logger.Error("gateway stopped with error", "component", "gateway", "error", err)
+	serveErr := srv.Serve(ctx, ln) // returns after the drain
+	stopMetrics()
+	if serveErr != nil {
+		logger.Error("gateway stopped with error", "component", "gateway", "error", serveErr)
 		os.Exit(1)
 	}
 	logger.Info("gateway stopped", "component", "gateway")

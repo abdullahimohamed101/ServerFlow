@@ -1,8 +1,10 @@
 package integration
 
 import (
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -98,5 +100,90 @@ func TestProcessControlPlaneServesMetricsOnItsOwnListener(t *testing.T) {
 	}
 	if r, _ := authGet(t, cp.addr, "/metrics", ""); r.StatusCode == 200 {
 		t.Fatal("the control plane API port must not serve /metrics")
+	}
+}
+
+// The metrics listener outlives the shutdown signal: while in-flight requests drain, Prometheus can still scrape, and
+// the listener goes away only after the gateway has finished draining.
+func TestProcessGatewayKeepsServingMetricsWhileDraining(t *testing.T) {
+	mockAddr := freePort(t)
+	startMockProc(t, mockAddr, "--tokens-per-second=2", "--output-tokens=8") // a request takes about 4 s
+	gwAddr := freePort(t)
+	_, port, _ := strings.Cut(gwAddr, ":")
+	gw := startProc(t, "gateway", "gateway starting", []string{
+		"SERVERFLOW_GATEWAY_PORT=" + port, "SERVERFLOW_GATEWAY_MODELS=" + model, "SERVERFLOW_GATEWAY_UPSTREAM_URL=http://" + mockAddr,
+		"SERVERFLOW_GATEWAY_SHUTDOWN_TIMEOUT=20s",
+	})
+	waitFor(t, 10*time.Second, "the gateway to be ready", func() bool {
+		r, _ := authGet(t, gwAddr, "/readyz", "")
+		return r.StatusCode == 200
+	})
+	mAddr := strings.TrimPrefix(gw.metricsURL(t), "http://")
+
+	status := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+gwAddr+"/v1/chat/completions", strings.NewReader(chat(false, "hi")))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- -1
+			return
+		}
+		_ = resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	waitFor(t, 5*time.Second, "the request to be in flight", func() bool {
+		_, body := authGet(t, mAddr, "/metrics", "")
+		return strings.Contains(body, "inference_requests_active 1\n")
+	})
+	if err := gw.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond) // the gateway is draining now
+	r, body := authGet(t, mAddr, "/metrics", "")
+	if r.StatusCode != 200 || !strings.Contains(body, "inference_requests_active 1\n") {
+		t.Fatalf("during the drain the metrics listener answered %d\n%.300s", r.StatusCode, body)
+	}
+	if c := <-status; c != 200 {
+		t.Fatalf("the in-flight request was cut off by the shutdown: %d", c)
+	}
+	if err := gw.wait(t, 15*time.Second); err != nil {
+		t.Fatalf("the gateway did not exit cleanly after draining: %v\n%s", err, gw.stderr.String())
+	}
+	if c, err := net.DialTimeout("tcp", mAddr, time.Second); err == nil {
+		_ = c.Close()
+		t.Fatal("the metrics listener is still up after the gateway exited")
+	}
+}
+
+// A second gateway or control plane on one host with the same metrics port is a clear fatal error, reported before
+// the process announces that it is starting.
+func TestProcessSecondInstanceOnTheSameMetricsPortFailsClearly(t *testing.T) {
+	mockAddr := freePort(t)
+	startMockProc(t, mockAddr)
+	metricsAddr := freePort(t)
+	gwAddr := freePort(t)
+	_, port, _ := strings.Cut(gwAddr, ":")
+	startProc(t, "gateway", "gateway starting", []string{
+		"SERVERFLOW_GATEWAY_PORT=" + port, "SERVERFLOW_GATEWAY_MODELS=" + model, "SERVERFLOW_GATEWAY_UPSTREAM_URL=http://" + mockAddr,
+		"SERVERFLOW_METRICS_LISTEN=" + metricsAddr,
+	})
+	_, port2, _ := strings.Cut(freePort(t), ":")
+	code, out := runBin(t, "gateway", []string{
+		"SERVERFLOW_GATEWAY_PORT=" + port2, "SERVERFLOW_GATEWAY_MODELS=" + model, "SERVERFLOW_GATEWAY_UPSTREAM_URL=http://" + mockAddr,
+		"SERVERFLOW_METRICS_LISTEN=" + metricsAddr,
+	})
+	if code != 1 || !strings.Contains(out, "metrics listener: listen tcp "+metricsAddr) || !strings.Contains(out, "address already in use") {
+		t.Fatalf("exit %d, output %q", code, out)
+	}
+	if strings.Contains(out, "gateway starting") {
+		t.Fatalf("the second gateway announced itself before failing:\n%s", out)
+	}
+
+	cpMetrics := freePort(t)
+	startProc(t, "control-plane", "control-plane starting", []string{"SERVERFLOW_CONTROL_PLANE_ADDR=127.0.0.1:0", "SERVERFLOW_METRICS_LISTEN=" + cpMetrics})
+	code, out = runBin(t, "control-plane", []string{"SERVERFLOW_CONTROL_PLANE_ADDR=127.0.0.1:0", "SERVERFLOW_METRICS_LISTEN=" + cpMetrics})
+	if code != 1 || !strings.Contains(out, "address already in use") || strings.Contains(out, "control-plane starting") {
+		t.Fatalf("control plane: exit %d, output %q", code, out)
 	}
 }
