@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"syscall"
@@ -87,5 +89,40 @@ func TestProcessGatewayHungDrainEndsAtTheShutdownTimeout(t *testing.T) {
 	}
 	if d < 1500*time.Millisecond || d > 6*time.Second {
 		t.Fatalf("the gateway left after %v, want about the 2 s shutdown timeout", d)
+	}
+}
+
+// The control plane's metrics listener also outlives the shutdown signal: while a stalled request holds the drain
+// open it still answers, and it is gone only after the control plane has exited.
+func TestProcessControlPlaneKeepsServingMetricsWhileDraining(t *testing.T) {
+	cpAddr := freePort(t)
+	cp := startControlPlaneProc(t, cpAddr, clusterToken)
+	mAddr := strings.TrimPrefix(cp.metricsURL(t), "http://")
+	conn, err := net.Dial("tcp", cpAddr) // an authenticated client that stalls mid-body, so the drain waits for it
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(conn, "POST /v1/workers/register HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 500\r\n\r\n{", cpAddr, clusterToken)
+	time.Sleep(200 * time.Millisecond)
+
+	if err := cp.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if cp.dead.Load() {
+		t.Fatal("the control plane should still be draining the stalled request")
+	}
+	r, body := authGet(t, mAddr, "/metrics", "")
+	if r.StatusCode != 200 || !strings.Contains(body, "registry_registrations_total") {
+		t.Fatalf("during the drain the metrics listener answered %d", r.StatusCode)
+	}
+	_ = conn.Close() // the stalled request ends; the drain can finish
+	if err := cp.wait(t, 10*time.Second); err != nil {
+		t.Fatalf("the control plane did not exit cleanly after draining: %v\n%s", err, cp.stderr.String())
+	}
+	if c, err := net.DialTimeout("tcp", mAddr, time.Second); err == nil {
+		_ = c.Close()
+		t.Fatal("the metrics listener is still up after the control plane exited")
 	}
 }

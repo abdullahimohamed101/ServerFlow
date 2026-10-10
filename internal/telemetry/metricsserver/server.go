@@ -21,10 +21,7 @@ import (
 	"serverflow/internal/config"
 )
 
-const (
-	metricsPath       = "/metrics"
-	shutdownGraceTime = 5 * time.Second
-)
+const metricsPath = "/metrics"
 
 // Limits are the bounds on what a scraper can make the endpoint do.
 type Limits struct {
@@ -32,6 +29,7 @@ type Limits struct {
 	HandlerTimeout    time.Duration // one scrape's time before it gets 503
 	ReadHeaderTimeout time.Duration // time to send the request headers before the connection is dropped
 	MaxHeaderBytes    int           // request header size before 431
+	ShutdownGrace     time.Duration // time a scrape in progress gets to finish once the server is told to stop
 }
 
 // limits is a variable only so tests can shorten the durations; DefaultLimits are the shipped values.
@@ -39,7 +37,7 @@ var limits = DefaultLimits()
 
 // DefaultLimits returns the bounds the shipped binaries run with.
 func DefaultLimits() Limits {
-	return Limits{MaxInFlight: 4, HandlerTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
+	return Limits{MaxInFlight: 4, HandlerTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10, ShutdownGrace: 5 * time.Second}
 }
 
 // Handler returns the /metrics handler for g. With a non-empty token every request must present it as
@@ -84,6 +82,8 @@ type Server struct {
 	ln   net.Listener
 	http *http.Server
 	log  *slog.Logger
+	// grace is limits.ShutdownGrace as it was when the server was bound.
+	grace time.Duration
 }
 
 // Listen applies the exposure guard to cfg and addr, then binds addr (the effective address: the configured one
@@ -110,7 +110,8 @@ func Listen(addr string, cfg config.MetricsConfig, g prometheus.Gatherer, log *s
 			IdleTimeout:       60 * time.Second,
 			MaxHeaderBytes:    limits.MaxHeaderBytes,
 		},
-		log: log,
+		log:   log,
+		grace: limits.ShutdownGrace,
 	}, nil
 }
 
@@ -129,7 +130,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	case <-ctx.Done():
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), shutdownGraceTime)
+	sctx, cancel := context.WithTimeout(context.Background(), s.grace)
 	defer cancel()
 	if err := s.http.Shutdown(sctx); err != nil {
 		_ = s.http.Close()

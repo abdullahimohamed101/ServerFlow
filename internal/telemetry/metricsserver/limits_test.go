@@ -19,7 +19,7 @@ import (
 // shortened value and a test that the shipped value is the documented one, so changing either fails something.
 
 func TestShippedLimits(t *testing.T) {
-	want := Limits{MaxInFlight: 4, HandlerTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
+	want := Limits{MaxInFlight: 4, HandlerTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10, ShutdownGrace: 5 * time.Second}
 	if DefaultLimits() != want {
 		t.Fatalf("the shipped limits changed: %+v, want %+v (ADR-017 and the operations guide state them)", DefaultLimits(), want)
 	}
@@ -157,5 +157,38 @@ func TestOversizedHeadersAreRefused(t *testing.T) {
 	}
 	if c := get(16 << 10); c != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("16 KiB of headers: %d, want 431", c)
+	}
+}
+
+// Stopping the server waits for a scrape in progress, but only for the grace period: a scrape stuck in a dependency
+// cannot keep the process alive.
+func TestShutdownWaitsOnlyTheGracePeriod(t *testing.T) {
+	l := DefaultLimits()
+	l.ShutdownGrace = 300 * time.Millisecond
+	withLimits(t, l)
+	g := &slowGatherer{started: make(chan struct{}, 4), release: make(chan struct{})}
+	defer close(g.release)
+	s, err := Listen("127.0.0.1:0", config.MetricsConfig{}, g, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+	go func() { _, _ = (&http.Client{Timeout: 20 * time.Second}).Get("http://" + s.Addr() + "/metrics") }()
+	select {
+	case <-g.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scrape never started")
+	}
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+		if d := time.Since(start); d > 3*time.Second {
+			t.Fatalf("Serve took %v to return with a stuck scrape; the grace is 300 ms", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return while a scrape was stuck: the shutdown grace is not enforced")
 	}
 }
