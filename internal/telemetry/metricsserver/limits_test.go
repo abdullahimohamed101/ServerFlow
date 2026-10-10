@@ -93,9 +93,9 @@ func TestSlowScrapeTimesOut(t *testing.T) {
 	l.HandlerTimeout = 200 * time.Millisecond
 	withLimits(t, l)
 	g := &slowGatherer{started: make(chan struct{}, 4), release: make(chan struct{})}
-	defer close(g.release)
 	srv := newTestServer(Handler(g, ""))
 	defer srv.Close()
+	defer close(g.release) // runs before srv.Close, which waits for handlers still inside Gather
 	start := time.Now()
 	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(srv.URL + "/metrics")
 	if err != nil {
