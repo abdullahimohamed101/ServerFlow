@@ -35,8 +35,9 @@ const (
 	// with tracing.incoming=trust).
 	SamplerParentRatio
 	// SamplerParentOnly records only when a remote parent was sampled and never starts a recorded trace of
-	// its own (mock worker): an untraced or unsampled request costs almost nothing, and a caller reaching
-	// the worker directly cannot make it record.
+	// its own (mock worker): an untraced or unsampled request costs almost nothing. It is not a guard: a
+	// caller reaching the worker directly with a sampled traceparent does make it record, bounded by the
+	// export queue.
 	SamplerParentOnly
 )
 

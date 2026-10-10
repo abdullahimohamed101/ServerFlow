@@ -55,13 +55,19 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
 - **Head sampling, ratio 1.0 when enabled.** `TraceIDRatioBased`; with `incoming: trust` it is wrapped in `ParentBased`. Head sampling
   cannot keep "all error traces" because the decision precedes the outcome; for that use tail sampling in a collector (documented, not
   built here). Unsampled requests still get valid IDs, so `trace_id` is in every log line and the worker gets `traceparent` with flags
-  `00`. The worker's own sampler is `ParentBased(never)`: it records only under a sampled remote parent, so a caller that reaches the
-  worker directly cannot make it record.
+  `00`. The mock worker's own sampler is `ParentBased(never)`: it never starts a recorded trace of its own and records only under a sampled
+  remote parent. That does **not** stop a caller who can reach the worker directly: a request with a valid sampled `traceparent` makes
+  the mock worker record `inference` and `queue_wait` spans (an independent verifier did exactly this). The harm is bounded by the export
+  queue (2048 spans, then drops) and it affects the mock worker only, but the worker must not be exposed to untrusted callers. A guard (for
+  example recording only when a shared secret header is present) was considered and not added: the mock worker is a development tool
+  that already trusts its callers, and a real worker (Phase 13) must make its own decision.
 - **A dead collector never slows or fails a request.** A bounded queue (default 2048 spans), a single export goroutine, batches of up to
   512 every 5 s, a 5 s export timeout that also caps retries. `OnEnd` never blocks: a full queue drops the span and counts it. The SDK's
   `BatchSpanProcessor` was not used because it does not report drops; the replacement is about 150 lines (`internal/tracing/processor.go`)
   with exact accounting (`ended = exported + failed + dropped + queued`, tested). Starting with the collector down is not an error.
-  Export errors are logged as a short class (`timeout`, `connection_refused`, `export_error`, never the error text, which can name
+  Spans in a batch the collector rejects are counted in neither the exported nor the dropped counter: they appear as one increment of
+  `tracing_export_failures_total` (batches), and the identity `ended = exported + failed + dropped + queued` holds only when the
+  pipeline is at rest (spans are in flight in between). Export errors are logged as a short class (`timeout`, `connection_refused`, `export_error`, never the error text, which can name
   the collector) once, then at most once a minute, plus one recovery line. Counters `tracing_spans_exported_total`,
   `tracing_spans_dropped_total` and `tracing_export_failures_total` (failed batches) exist on `/metrics` only when tracing is enabled
   (a new gateway file, `tracing_metrics.go`; Phase 10's metrics code is untouched). Shutdown flushes for at most 5 s (the context given to
@@ -70,6 +76,24 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
   The endpoint must be an http(s) URL without credentials, query or fragment; plaintext to a non-loopback host is refused unless
   `allow_insecure_transport`; validation errors never echo the endpoint, and the config prints it redacted. With `enabled: false` nothing
   else is validated. The mock worker has `--otlp-endpoint` (and `--trace-insecure-ok`) instead of a config file.
+
+## Known vulnerability exception (golang.org/x/net)
+
+`govulncheck` (v1.8.0) on this branch reports GO-2026-6617, 6612, 6611, 6610 and 6603 in `golang.org/x/net@v0.58.0`, fixed in v0.60.0. v0.59.0
+and v0.60.0 declare `go 1.26.0`, so taking them would raise the Go floor (the same reason OpenTelemetry v1.47 is refused), and no older
+release carries the fixes. `google.golang.org/grpc` was bumped to v1.83.2 (GO-2026-6443), which builds on Go 1.25. The facts, checked:
+`golang.org/x/net/http2` is linked only through `google.golang.org/grpc/internal/transport`, which the OTLP exporter package pulls in for
+its shared (gRPC-oriented) option types; nothing in this repository or in the HTTP exporter creates a gRPC client or server, and the
+exporter sends with `net/http`. In source mode govulncheck still lists these as reachable, through over-approximated call traces
+(for example `sync.Once.Do` or `fmt.Fprintln` "eventually" calling `http2.Framer` methods, and `http.Client.Do` calling the
+transport); I have not proved from the code that none of those paths runs, only that no gRPC or x/net HTTP/2 server or client is
+constructed. The same five advisories also apply to the standard library's own `net/http` HTTP/2 (fixed in the Go 1.27.2 toolchain), which the
+gateway links on master too; the gateway serves plain HTTP and Go serves HTTP/2 only over TLS. Consequence: the plan's criterion 14
+"govulncheck is clean" is **not met as written**. Handling is a decision for the owner, not applied here: `scripts/quality.sh vuln` and the
+nightly job exit non-zero while these findings exist, and the pull-request job is advisory (`continue-on-error`). The least bad option is a
+reviewed exception list of exactly these five IDs in `scripts/quality.sh vuln` (parsing `govulncheck -format json`, failing on any other
+ID), removed when the Go floor is raised. Raising the floor to Go 1.26 (taking x/net v0.60.0 and OpenTelemetry v1.47 together) is the
+other fix.
 
 ## Consequences
 

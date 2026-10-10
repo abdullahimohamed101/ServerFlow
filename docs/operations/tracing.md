@@ -8,7 +8,7 @@ was retried, when the first token left and when it finished. Tracing is **off by
 ```yaml
 tracing:
   enabled: true
-  endpoint: http://127.0.0.1:4318   # OTLP/HTTP base URL; the path /v1/traces is added
+  endpoint: http://127.0.0.1:4318   # OTLP/HTTP URL; /v1/traces is added when the URL has no path
   sample_ratio: 1.0                 # 0-1, chosen at the gateway
   incoming: link                    # link | ignore | trust (below)
   include_tenant_id: true           # put the opaque tenant ID on spans
@@ -21,12 +21,12 @@ tracing:
 
 Environment: `SERVERFLOW_TRACING_ENABLED`, `SERVERFLOW_TRACING_ENDPOINT`, `SERVERFLOW_TRACING_SAMPLE_RATIO`,
 `SERVERFLOW_TRACING_INCOMING`, `SERVERFLOW_TRACING_INCLUDE_TENANT_ID`. The endpoint must be an `http://` or `https://` URL with no
-credentials, query or fragment, and plaintext is refused for any host that is not loopback unless `allow_insecure_transport` is set.
+credentials, query or fragment, a valid port, and plaintext is refused for any host that is not loopback unless `allow_insecure_transport` is set.
 Put a collector in front if the backend needs authentication: the gateway sends no auth headers. The standard `OTEL_*` variables are
 **not** read.
 
 The mock worker has no config file: `mock-worker --otlp-endpoint=http://127.0.0.1:4318` (and `--trace-insecure-ok` for plaintext to a
-non-loopback host). A worker records spans only for requests whose `traceparent` the gateway marked sampled.
+non-loopback host). A worker records spans only for requests whose `traceparent` is valid and marked sampled; it never starts a recorded trace itself. That is not a security control: anyone who can reach the mock worker directly can send a sampled `traceparent` and make it record (bounded by its export queue). Do not expose the mock worker to untrusted callers.
 
 ## What a trace looks like
 
@@ -85,7 +85,7 @@ line when exporting works again. The log line names a reason (`timeout`, `connec
 | --- | --- |
 | `tracing_spans_exported_total` | spans the collector accepted |
 | `tracing_spans_dropped_total` | spans lost before export: queue full, or arrived during shutdown |
-| `tracing_export_failures_total` | batches the collector did not accept |
+| `tracing_export_failures_total` | batches the collector did not accept. The spans in such a batch are counted in neither of the two series above (they are lost), and the exact identity ended = exported + failed + dropped + queued holds only at rest |
 
 Growing `dropped` or `failures` means traces are being lost. At exit the gateway flushes the queue for up to **5 seconds**; with a dead
 collector it therefore needs that long to stop, so orchestration drain timeouts must allow for it.
@@ -116,6 +116,14 @@ OpenTelemetry Go is pinned at **v1.46.0**. Version 1.47.0 and later declare `go 
 1.25.0. Dependabot is configured to ignore `go.opentelemetry.io/otel*` from 1.47.0, but if a pull request that bumps them appears anyway,
 do not merge it unexamined: it either needs to be refused or to come with a deliberate decision to raise the Go floor (CI's minimum-Go job
 will fail on it). When the floor is raised, remove the ignore entry in `.github/dependabot.yml`.
+
+## Known vulnerability exception
+
+`govulncheck` reports five `golang.org/x/net@v0.58.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed only in v0.60.0, which needs Go 1.26.
+They are accepted for now for the same reason as the OpenTelemetry pin: taking the fix raises the Go floor. The affected HTTP/2 code is linked
+through gRPC types the OTLP/HTTP exporter imports but does not use; govulncheck's source mode still marks them reachable through
+over-approximated call traces, so "not reachable at runtime" is the expectation from the code structure, not something the tool confirms.
+`scripts/quality.sh vuln` and the nightly job will fail until the floor is raised or an exception list is added (see ADR-018).
 
 ## Known limits
 

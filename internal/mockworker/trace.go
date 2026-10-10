@@ -21,8 +21,9 @@ type traceState struct {
 }
 
 // beginTrace starts the inference span when tracing is on and the caller's traceparent is valid and sampled.
-// The worker's sampler records only under a sampled remote parent, so a caller that reaches the worker
-// directly, or an unsampled request, costs almost nothing and cannot make the worker record. The trace ID is
+// The worker's sampler records only under a sampled remote parent, so an untraced or unsampled request costs
+// almost nothing. A caller that reaches the worker directly with a sampled traceparent does make it record
+// (bounded by the export queue); the mock worker must not be exposed to untrusted callers. The trace ID is
 // still logged for any valid traceparent. Only traceparent is read; the request and attempt IDs are checked
 // before they become attributes because a direct caller could send anything.
 func (s *Server) beginTrace(r *http.Request, rl *chatLog, start time.Time) *traceState {
