@@ -156,9 +156,10 @@ func balanced(b []byte) (obj []byte, closed bool) {
 		c := b[i]
 		switch {
 		case inStr:
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '"' {
+			case '"':
 				inStr = false
 			}
 		case c == '"':
