@@ -88,12 +88,17 @@ exporter sends with `net/http`. In source mode govulncheck still lists these as 
 (for example `sync.Once.Do` or `fmt.Fprintln` "eventually" calling `http2.Framer` methods, and `http.Client.Do` calling the
 transport); I have not proved from the code that none of those paths runs, only that no gRPC or x/net HTTP/2 server or client is
 constructed. The same five advisories also apply to the standard library's own `net/http` HTTP/2 (fixed in the Go 1.27.2 toolchain), which the
-gateway links on master too; the gateway serves plain HTTP and Go serves HTTP/2 only over TLS. Consequence: the plan's criterion 14
-"govulncheck is clean" is **not met as written**. Handling is a decision for the owner, not applied here: `scripts/quality.sh vuln` and the
-nightly job exit non-zero while these findings exist, and the pull-request job is advisory (`continue-on-error`). The least bad option is a
-reviewed exception list of exactly these five IDs in `scripts/quality.sh vuln` (parsing `govulncheck -format json`, failing on any other
-ID), removed when the Go floor is raised. Raising the floor to Go 1.26 (taking x/net v0.60.0 and OpenTelemetry v1.47 together) is the
-other fix.
+gateway links on master too; the gateway serves plain HTTP and Go serves HTTP/2 only over TLS. Decision (the owner chose this): the five advisories are accepted through an **enforced exception list**, not ignored.
+`scripts/quality.sh vuln` runs `govulncheck -format json` and pipes it to `scripts/vulnfilter`, which fails on every called
+vulnerability except those listed in the marked `VULN_EXCEPTIONS` block of `quality.sh`. An exception names the module **and** the OSV id
+(`golang.org/x/net:GO-2026-6617`, and so on), so the same id in another module, or another advisory in `x/net`, still fails; standard
+library findings are not silenced either (CI runs the stable toolchain, which carries the stdlib fixes; on this machine's Go 1.27.1 the
+stdlib findings fail the check, and with Go 1.27.2 it passes). Every run prints the exception list as a NOTICE, prints each excepted
+finding, and flags an exception that matched nothing. The block must be **deleted when the Go floor is raised to 1.26 and
+`golang.org/x/net` v0.60.0 or later is taken** (a separate, approved change). `scripts/vulnfilter/main_test.go` proves, with canned
+govulncheck JSON: only excepted ids pass with the notice; an excepted id in another module fails; an unrelated new id fails; stdlib
+findings fail; empty findings pass; invalid JSON fails. The plan's criterion 14 is therefore **met with a documented, enforced
+exception**, not "clean".
 
 ## Consequences
 
