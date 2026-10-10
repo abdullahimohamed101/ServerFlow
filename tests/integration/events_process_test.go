@@ -88,9 +88,11 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 		// gets the production default of 5s: it has to connect, authenticate and produce, and on a machine running the
 		// whole suite at once 2s was not always enough (the first full-suite run of the fix round lost 18 of 20 events).
 		"SERVERFLOW_EVENTS_LINGER=1500ms", "SERVERFLOW_EVENTS_SHUTDOWN_FLUSH_TIMEOUT=5s",
-		// The base environment uses a 2s delivery timeout for the broker-down test; here the first connection and SASL
-		// handshake may take longer than that on a busy machine (the failure that led here dropped the first events).
-		"SERVERFLOW_EVENTS_DELIVERY_TIMEOUT=30s"))
+		// The base environment uses a 2s delivery timeout for the broker-down test; this test is about the flush, not
+		// the timeout. A laptop on battery sleeps for tens of seconds in the middle of a long gate run (the wall clock
+		// jumped 37 to 51 seconds inside this 3 second test, three times), and the client counts that against the
+		// delivery timeout, so give it room.
+		"SERVERFLOW_EVENTS_DELIVERY_TIMEOUT=5m"))
 	const inflight = 5
 	var wg sync.WaitGroup
 	started := make(chan struct{}, inflight)
