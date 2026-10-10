@@ -289,6 +289,7 @@ func applyEnv(cfg *Config) {
 			}
 		}
 	}
+	applyEventsEnv(cfg, env)
 	if v, ok := env("LOG_LEVEL"); ok {
 		cfg.Log.Level = strings.ToLower(v)
 	}

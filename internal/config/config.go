@@ -25,6 +25,7 @@ type Config struct {
 	RateLimit    RateLimitConfig    `yaml:"rate_limit"`
 	Postgres     PostgresConfig     `yaml:"postgres"`
 	Auth         AuthConfig         `yaml:"auth"`
+	Events       EventsConfig       `yaml:"events"`
 	Log          LogConfig          `yaml:"log"`
 
 	configFilePath string
@@ -96,6 +97,7 @@ func Default() Config {
 			CacheSize:   10000,
 			StaleGrace:  5 * time.Minute,
 		},
+		Events: defaultEvents(),
 		Log: LogConfig{
 			Level: "info",
 		},
@@ -150,6 +152,10 @@ func (c *Config) Validate() error {
 		// last_used_at writes and the startup check can still run) and need two of their own: one for
 		// unseen keys and one reserved for refreshing cached keys.
 		return fmt.Errorf("postgres.max_conns must be at least %d when auth.mode is %q", minAuthPoolConns, AuthModeRequired)
+	}
+	// Event publishing settings only matter while events.mode is on (the Redis rule).
+	if err := c.Events.validate(c.Gateway.ShutdownTimeout); err != nil {
+		return err
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
