@@ -24,3 +24,8 @@ updates:
         versions: [">=5.9.0"]
       - dependency-name: github.com/redis/go-redis/v9
         versions: [">=9.23.0"]
+      # OpenTelemetry Go v1.47.0 sets go 1.26.0 in go.mod and would raise the module's floor from 1.25.0
+      # (ADR-018). Pinned at v1.46.x until the floor is raised on purpose; then remove this entry.
+      # The wildcard covers otel, otel/trace, otel/sdk and the OTLP exporter.
+      - dependency-name: "go.opentelemetry.io/otel*"
+        versions: [">=1.47.0"]

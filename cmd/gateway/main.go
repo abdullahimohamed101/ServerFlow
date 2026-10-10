@@ -97,6 +97,13 @@ func main() {
 		opts = append(opts, gateway.WithRequestRecorder(redis.NewRecorder(rc, cfg.Redis.RequestMetadataTTL)))
 	}
 
+	tracer, topts, err := setupTracing(cfg, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+	opts = append(opts, topts...)
+
 	if cfg.Auth.Mode == config.AuthModeOff {
 		logger.Info("api key authentication is OFF: /v1 is open to any caller that can reach this port", "component", "gateway", "auth_mode", cfg.Auth.Mode)
 	}
@@ -134,8 +141,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := srv.Serve(ctx, ln); err != nil {
-		logger.Error("gateway stopped with error", "component", "gateway", "error", err)
+	if serveErr := serveAndFlush(ctx, srv, ln, tracer, logger); serveErr != nil {
+		logger.Error("gateway stopped with error", "component", "gateway", "error", serveErr)
 		os.Exit(1)
 	}
 	logger.Info("gateway stopped", "component", "gateway")

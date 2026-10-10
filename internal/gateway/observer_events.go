@@ -38,6 +38,7 @@ type Admission struct {
 	// RateLimitChecked is true when a limiter decided the request; RateLimitDuration is how long it took and
 	// RateLimitBypassed says it was admitted unchecked because the limiter's store was unavailable.
 	RateLimitChecked  bool
+	RateLimitStart    time.Time
 	RateLimitDuration time.Duration
 	RateLimitBypassed bool
 }
@@ -62,7 +63,9 @@ type Rejection struct {
 	Kind   string
 	Reason string
 	Status int
-	// DecisionDuration is how long the deciding component took (the limiter for rate_limit, else 0).
+	// DecisionStart and DecisionDuration say when the deciding component began and how long it took: the
+	// limiter for rate_limit, the scheduler's selection for capacity and model, else zero.
+	DecisionStart    time.Time
 	DecisionDuration time.Duration
 }
 

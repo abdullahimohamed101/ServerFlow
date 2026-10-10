@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/internal/tracing"
 	"serverflow/pkg/protocol"
 )
 
@@ -68,11 +69,18 @@ type Server struct {
 	sleep   func(ctx context.Context, until time.Time) error
 	ready   *time.Timer
 	handler http.Handler
+	tracing *tracing.Provider // nil: tracing off
 }
+
+// Option customises a Server.
+type Option func(*Server)
+
+// WithTracing records inference and queue_wait spans, for requests the caller's traceparent marks sampled.
+func WithTracing(p *tracing.Provider) Option { return func(s *Server) { s.tracing = p } }
 
 // New builds a Server. cfg must already be valid. If cfg.StartupDelay is set
 // the server reports "starting" (not ready) until it elapses.
-func New(cfg Config, log *slog.Logger) *Server {
+func New(cfg Config, log *slog.Logger, opts ...Option) *Server {
 	s := &Server{
 		cfg:    cfg,
 		log:    log,
@@ -95,6 +103,9 @@ func New(cfg Config, log *slog.Logger) *Server {
 	mux.HandleFunc("GET /stats", s.handleStats)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
 	s.handler = mux
+	for _, o := range opts {
+		o(s)
+	}
 	return s
 }
 
@@ -252,7 +263,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	rl := &chatLog{outcome: "rejected", requestID: r.Header.Get("X-Request-ID"), attemptID: r.Header.Get("X-Attempt-ID")}
-	defer func() { s.logChat(rl, start) }()
+	ts := s.beginTrace(r, rl, start)
+	defer func() { ts.finish(rl); s.logChat(rl, start) }()
 
 	if st := s.currentState(); st != stateReady {
 		writeAPIError(w, notReadyError(st))
@@ -317,8 +329,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	queued := time.Now()
+	ts.queueStart(queued)
 	release, err := s.engine.Acquire(r.Context(), rl.promptTokens)
 	rl.queueMillis = time.Since(queued).Milliseconds()
+	ts.queueEnd()
 	if err != nil {
 		if errors.Is(err, ErrQueueFull) {
 			writeAPIError(w, queueFullError())
@@ -394,6 +408,7 @@ func (s *Server) streamResponse(w http.ResponseWriter, ctx context.Context, rl *
 	err := s.generate(ctx, n, abortAt, func(i int) error {
 		if i == 0 {
 			rl.ttftMillis = time.Since(started).Milliseconds()
+			rl.firstTokenAt = time.Now()
 			if err := send(api.NewChunk(id, s.cfg.Model, created, api.Delta{Role: "assistant", Content: api.Str("")}, "")); err != nil {
 				return err
 			}
@@ -475,6 +490,8 @@ type chatLog struct {
 	outputTokens int
 	queueMillis  int64
 	ttftMillis   int64
+	firstTokenAt time.Time
+	traceID      string // set when the request carried a valid trace context
 }
 
 func (s *Server) logChat(rl *chatLog, start time.Time) {
@@ -488,6 +505,9 @@ func (s *Server) logChat(rl *chatLog, start time.Time) {
 	}
 	if rl.injected != "" {
 		attrs = append(attrs, "injected_failure", rl.injected)
+	}
+	if rl.traceID != "" {
+		attrs = append(attrs, "trace_id", rl.traceID)
 	}
 	if rl.requestID != "" {
 		attrs = append(attrs, "request_id", rl.requestID) // the gateway's ID, for correlation

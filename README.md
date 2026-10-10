@@ -9,7 +9,7 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8 and 9 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8, 9 and 11 are complete. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
@@ -19,7 +19,7 @@ and observability. See `ARCHITECTURE.md` for the full picture.
 > request that fails before any output on a different worker (ADR-012). A benchmark harness (`cmd/benchmark`, Phase 7) runs reproducible load tests and compares
 > runs (ADR-013). With `auth.mode: required` the gateway needs an API key kept in PostgreSQL
 > (`docs/operations/postgres-and-auth.md`, ADR-014). With `rate_limit.mode: required` tenant quotas (requests, tokens, concurrency) and optional per-model
-> caps are enforced across gateways through Redis (`docs/operations/redis-and-rate-limits.md`, ADR-015). Phase 1 is deferred
+> caps are enforced across gateways through Redis (`docs/operations/redis-and-rate-limits.md`, ADR-015). With `tracing.enabled: true` one request is one trace across the gateway and the worker, retries included (`docs/operations/tracing.md`, ADR-018; try it with `make dev-tracing` and `scripts/trace-demo.sh`). Phase 1 is deferred
 > until a GPU is available. See `docs/plans/completed/` for finished plans and
 > `docs/plans/active/` for the current one.
 
@@ -104,7 +104,7 @@ On Windows (no `make`), use the existing quality gate:
 | 8 | Redis integration | Complete |
 | 9 | PostgreSQL | Complete |
 | 10 | Prometheus + Grafana | Not started |
-| 11 | OpenTelemetry | Not started |
+| 11 | OpenTelemetry | Complete |
 | 12 | Kafka | Not started |
 | 13 | Real vLLM worker pool | Not started |
 | 14 | Workload-aware scheduler | Not started |

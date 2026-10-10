@@ -66,6 +66,8 @@ jobs:
         run: scripts/quality.sh unit
       - name: Race tests
         run: scripts/quality.sh race
+      - name: Tracing tests must run (no Docker)
+        run: scripts/quality.sh tracing
 
   integration:
     name: integration (PostgreSQL)

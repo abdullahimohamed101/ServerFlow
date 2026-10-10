@@ -112,6 +112,13 @@ tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
 `internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9) and Redis rate limiting (Phase 8);
 the rest are skeletons.
 
+### Tracing (OpenTelemetry)
+Purpose: follow one request across the gateway and the worker, including retries. Location: `internal/tracing` (provider setup, bounded
+export pipeline, attribute allow-list), `internal/tracing/gwtrace` (the gateway's tracing `Observer`), the mock worker's `inference` and
+`queue_wait` spans, `observability/tracing` (a standalone Jaeger). Off by default; the gateway never imports OpenTelemetry (a test
+enforces it), it only exposes `gateway.TraceRef`, a context value whose `traceparent` is sent to the worker. A dead collector cannot slow
+or fail a request. Status: implemented (Phase 11). See ADR-018 and `docs/operations/tracing.md`.
+
 ### Authentication and PostgreSQL
 Purpose: tenants, hashed API keys, model configs and benchmark-run metadata,
 and gateway authentication. Location: `internal/auth` (key format, hashing,
