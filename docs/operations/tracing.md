@@ -1,0 +1,124 @@
+# Tracing (OpenTelemetry)
+
+With tracing on, one request is one trace across the gateway and the worker: where it waited, which worker each attempt used, whether it
+was retried, when the first token left and when it finished. Tracing is **off by default**. The reasoning is in ADR-018.
+
+## Turning it on
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: http://127.0.0.1:4318   # OTLP/HTTP base URL; the path /v1/traces is added
+  sample_ratio: 1.0                 # 0-1, chosen at the gateway
+  incoming: link                    # link | ignore | trust (below)
+  include_tenant_id: true           # put the opaque tenant ID on spans
+  queue_size: 2048                  # spans waiting to be exported; more are dropped
+  max_export_batch: 512
+  batch_timeout: 5s                 # how often a partial batch is sent
+  export_timeout: 5s                # one export, retries included
+  allow_insecure_transport: false   # permit plaintext http:// to a non-loopback endpoint
+```
+
+Environment: `SERVERFLOW_TRACING_ENABLED`, `SERVERFLOW_TRACING_ENDPOINT`, `SERVERFLOW_TRACING_SAMPLE_RATIO`,
+`SERVERFLOW_TRACING_INCOMING`, `SERVERFLOW_TRACING_INCLUDE_TENANT_ID`. The endpoint must be an `http://` or `https://` URL with no
+credentials, query or fragment, and plaintext is refused for any host that is not loopback unless `allow_insecure_transport` is set.
+Put a collector in front if the backend needs authentication: the gateway sends no auth headers. The standard `OTEL_*` variables are
+**not** read.
+
+The mock worker has no config file: `mock-worker --otlp-endpoint=http://127.0.0.1:4318` (and `--trace-insecure-ok` for plaintext to a
+non-loopback host). A worker records spans only for requests whose `traceparent` the gateway marked sampled.
+
+## What a trace looks like
+
+```text
+gateway.receive                      (SERVER)  one per request; status, error code, attempts, model
+  rate_limit                                   only with rate_limit.mode: required
+  scheduler.select  #1                         registry mode; strategy, chosen worker
+  worker.forward    #1                (CLIENT) attempt 1: worker_id, attempt_id, outcome, class      [event: retry]
+    inference                         (worker) joined through traceparent
+      queue_wait
+    first_token                                streams: attempt start to first chunk
+    completion                                 streams: first chunk to end of relay
+  scheduler.select  #2
+  worker.forward    #2                (CLIENT) link -> #1 (serverflow.link=retry_of)
+    inference ...
+```
+
+A retry is a sibling attempt under the request, not a child of the failed one. A client that disconnects ends the request with status
+499 and no error; a 5xx, or a stream that failed after output began, is an error. The request ID (`X-Request-ID`) is on the root and
+every gateway span, so Jaeger can search `serverflow.request_id=req_...`. Logs carry the same `trace_id` for every request, sampled or
+not, once tracing is on.
+
+`serverflow.ttft_ms` on the root is the request-level time to first token (from request accepted); `first_token` spans from the start of
+the attempt. Both are shown so the difference (earlier attempts, selection) is visible.
+
+## Incoming `traceparent`
+
+| `incoming` | A client sends `traceparent` | Use |
+| --- | --- | --- |
+| `link` (default) | a new trace starts; the client's trace and span ID become a **link** on `gateway.receive` | any gateway reachable by clients |
+| `ignore` | ignored | same, with no link |
+| `trust` | the client's trace is **continued** (parent = client span, its sampling flag decides, `tracestate` is forwarded) | only behind a proxy or mesh that you trust to set it |
+
+Do not use `trust` on an internet-facing gateway. Any client could then force every request to be recorded and exported (cost), pick trace
+IDs and attach your spans to someone else's trace, and send oversized `tracestate`. Malformed, repeated or oversized trace headers are
+ignored in every mode. `baggage` is never read or forwarded, and a client's `traceparent` is never passed to the worker as sent.
+
+## What is recorded, and what never is
+
+Recorded: HTTP method, the fixed route, status code, request / attempt / worker IDs, attempt number and outcome, a bounded failure class
+(`connect`, `reset`, `empty_stream`, `status_NNN`), the confirmed model name, stream flag, scheduler strategy, rate limit outcome and limit
+name, estimated token cost (a number), TTFT, and (unless `include_tenant_id: false`) the opaque tenant ID. On the worker: token counts,
+queue wait, the injected failure mode. The complete list is the constants in `internal/tracing/attrs.go`; a test fails if a span uses any
+other key.
+
+Never recorded: prompts or responses, any header value (`Authorization`, `User-Agent`, `Cookie`, `X-Forwarded-For`), the API key or any
+part of it, the key ID, the tenant name, client addresses, URLs or query strings, worker addresses, error text, the client's `tracestate`.
+
+## When the collector is down
+
+Requests are not affected: spans go to a bounded queue; when it is full, spans are dropped. Exporting is retried within `export_timeout`,
+then the batch is counted as failed. The gateway logs the first failure, then at most one line per minute while it continues, then one
+line when exporting works again. The log line names a reason (`timeout`, `connection_refused`, `export_error`), never the address.
+
+| Series (only when tracing is enabled) | Meaning |
+| --- | --- |
+| `tracing_spans_exported_total` | spans the collector accepted |
+| `tracing_spans_dropped_total` | spans lost before export: queue full, or arrived during shutdown |
+| `tracing_export_failures_total` | batches the collector did not accept |
+
+Growing `dropped` or `failures` means traces are being lost. At exit the gateway flushes the queue for up to **5 seconds**; with a dead
+collector it therefore needs that long to stop, so orchestration drain timeouts must allow for it.
+
+## Sampling
+
+Head sampling at the gateway: `sample_ratio` of requests are recorded, in both processes (the worker follows the gateway's flag). It
+cannot keep "only the failed requests", because the decision is made before the outcome is known. To keep all errors and a sample of the
+rest, record everything (`1.0`) and let a collector's `tail_sampling` processor decide; that is a collector configuration, not done here.
+An unsampled request is still given trace and span IDs, so its `trace_id` is in the logs.
+
+## Trying it locally
+
+```bash
+make dev-tracing          # Jaeger v2 in Docker: OTLP/HTTP on 127.0.0.1:14318, UI on http://127.0.0.1:16686
+scripts/trace-demo.sh     # a small cluster with one failing worker; prints the trace tree of a retried request
+make dev-tracing-stop
+```
+
+`TRACING_OTLP_PORT`, `TRACING_UI_PORT` and `TRACING_CONTAINER` change the ports and container name (and `TRACE_DEMO_OTLP_PORT`,
+`TRACE_DEMO_UI_PORT` must match for the script). Jaeger keeps traces in memory only. The file is `observability/tracing/docker-compose.yml`;
+Phase 16 moves it into the full compose behind the collector, and the gateway then only needs a new `tracing.endpoint`. Search the UI
+for service `serverflow-gateway`, tag `serverflow.request_id`.
+
+## Dependency note: OpenTelemetry v1.47 and Go 1.26
+
+OpenTelemetry Go is pinned at **v1.46.0**. Version 1.47.0 and later declare `go 1.26.0`, which would raise this module's Go floor from
+1.25.0. Dependabot is configured to ignore `go.opentelemetry.io/otel*` from 1.47.0, but if a pull request that bumps them appears anyway,
+do not merge it unexamined: it either needs to be refused or to come with a deliberate decision to raise the Go floor (CI's minimum-Go job
+will fail on it). When the floor is raised, remove the ignore entry in `.github/dependabot.yml`.
+
+## Known limits
+
+- Clocks are not corrected: a worker whose clock is ahead of the gateway's can show a child starting before its parent.
+- The agent, control plane, Postgres, Redis and authentication have no spans; they are not on a request path or are better seen in metrics.
+- A real inference worker must propagate `traceparent` itself to appear in the trace (Phase 13).

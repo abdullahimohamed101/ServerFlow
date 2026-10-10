@@ -36,6 +36,11 @@ attempt before ending the first. The tests in `internal/gateway/observer_test.go
    uses the first for the rest of the request and the second for that attempt, including the upstream call. Return the given context
    if you have nothing to add; never return a context that is not derived from it.
 
+8. An observer that traces sets `gateway.WithTraceRef(ctx, ref)` in the context it returns (from `RequestStarted`, and from `AttemptStarted`
+   for the worker call). The gateway sends only the `Traceparent` and `Tracestate` of the attempt's `TraceRef` to the worker and logs its
+   `TraceID`; it never forwards a client's trace headers. `FirstToken` and `AttemptEnded` receive the **attempt's** context, so an observer
+   can keep per-attempt state there. The tracing observer (`internal/tracing/gwtrace`, ADR-018) is the reference.
+
 ```go
 type counter struct{ gateway.NopObserver; n atomic.Int64 }
 
