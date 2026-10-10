@@ -49,16 +49,16 @@ func metricValue(t *testing.T, gw, prefix string) float64 {
 // outage once, and still shuts down on time on SIGTERM.
 func TestProcessGatewayStartsWithKafkaDownAndStopsOnTime(t *testing.T) {
 	mock, _ := startMock(t)
-	dead := freePort(t) // nothing listens here
-	gw := freePort(t)
-	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL, "SERVERFLOW_EVENTS_BROKERS="+dead))
+	dead := freePort(t)                     // nothing listens here
+	gw, metrics := freePort(t), freePort(t) // /metrics has a listener of its own since Phase 10
+	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL, "SERVERFLOW_EVENTS_BROKERS="+dead, "SERVERFLOW_METRICS_LISTEN="+metrics))
 	for i := 0; i < 20; i++ {
 		if code, body := gatewayChat(gw); code != 200 {
 			t.Fatalf("request %d with Kafka down: %d %s", i, code, body)
 		}
 	}
 	eventually(t, 20*time.Second, func() bool {
-		return metricValue(t, gw, `event_publish_failures_total{reason="delivery_failed"}`) > 0
+		return metricValue(t, metrics, `event_publish_failures_total{reason="delivery_failed"}`) > 0
 	}, "dropped events are counted as delivery failures")
 	if n := strings.Count(p.stderr.String(), "kafka is unreachable"); n != 1 {
 		t.Fatalf("the outage must be logged once, got %d:\n%s", n, p.stderr.String())
