@@ -238,7 +238,16 @@ Makefile wiring.
 | 12 Config and secrets | `internal/config/events_test.go` (off ignores a malformed section, validation table, redaction under every verb, slog and JSON, env overrides, errors never echo values), `internal/kafka` `TestConfigNeverPrintsThePassword`, `TestHostileBrokerCannotMakeTheClientEchoThePassword` (a fake broker echoes the password in its SASL error; mutation: without scrubbing the test fails), process tests check the logs |
 | 13 Metrics | `metric()` assertions in `internal/events` tests; `TestProcessGatewayStartsWithKafkaDown...` reads `event_publish_failures_total` from `/metrics`; `TestProcessUsageConsumerEndToEnd` reads `usage_consumer_records_total`; `consumer_lag` is exposed and `Consumer.Lag()` is asserted to be 0 after commit. A test asserting the lag metric while the consumer is stopped is not separate: the stopped-state lag is asserted with the broker's own group offsets |
 | 14 Overhead | `docs/benchmarks/phase-12-kafka-events.md`: events up/down/frozen within the spread of off (+10 to +30 us non-stream, +110 to +170 us streaming TTFT when up), Observer 2.0 us and 35 allocs per lifecycle, scanner 130 ns and 0 allocs per chunk, token capture indistinguishable from master in five alternating runs |
-| 15 Build hygiene | `go.mod` still `go 1.25.0`; `go mod tidy -diff` clean; gate results below |
+| 15 Build hygiene | `go.mod` still `go 1.25.0`; `go mod tidy -diff` clean; `CGO_ENABLED=0`-style cross-compiles pass; the gate (below) ran once to green with Postgres, Redis and Kafka up |
+
+### The gate
+
+`scripts/quality.sh full` under the full-suite lock with PostgreSQL 16, Redis 7 and Redpanda up: gofmt, go vet, golangci-lint (0 issues),
+`go test ./...`, `go test -race ./...`, `integration` (postgres 4 named tests, redis 7, **kafka 8 named tests ran and passed, nothing
+skipped**), build with four cross-compiles, `go mod verify`, `go mod tidy` unchanged: exit 0 at 22:32 on 2026-10-09. Two earlier attempts
+did not count: one hit ephemeral port exhaustion right after the benchmarks (unrelated packages, `can't assign requested address`), one was
+killed from outside; a third found a flaky start-up assumption in my retry-events test (fixed: wait until the gateway routes a request).
+`govulncheck` is not installed here and was not run.
 
 ### Deviations from the plan
 
