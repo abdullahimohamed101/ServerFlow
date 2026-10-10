@@ -25,7 +25,7 @@ gateway with the `gateway.WithCollector` option. There is no global `DefaultRegi
 **2. `/metrics` moves to a listener of its own** (`internal/telemetry/metricsserver`). The gateway serves it on `metrics.listen` (default
 `127.0.0.1:9100`) and the control plane on `127.0.0.1:9101`; `metrics.listen: ""` turns it off. A `listen` address that is not loopback is
 refused at start-up unless `metrics.token` is set (a bearer token, at least 16 characters, compared in constant time, redacted from `String()`,
-`GoString()`, `LogValue()`, JSON and every error) or `metrics.allow_non_loopback` is set explicitly. The handler serves `GET /metrics` only,
+`GoString()`, `LogValue()`, JSON and every error) or `metrics.allow_non_loopback` is set explicitly. The handler serves `GET` (and `HEAD`) on exactly `/metrics` only,
 with a request limit of 4 in flight, a 10 s handler timeout and a header size cap. **This removes `/metrics` from the gateway's data
 listener and from its public mux: a shipped surface changed.** The mock worker, a test double that is never public, keeps serving `/metrics`
 on its existing listener. The worker agent has no HTTP server and gets none; its health is visible through the heartbeat age.
@@ -68,8 +68,13 @@ the workers' counters and the heartbeat gauge, not from parsing response bodies 
 - `tenant` does not exist by default. With `metrics.tenant_labels: true` one extra series `tenant_requests_total{tenant,outcome}` keeps the first
   `metrics.max_tenants` (50) tenants and folds the rest into `other`. First-come-first-kept is a documented limitation: per-tenant analysis
   belongs to logs and the Phase 12 usage records.
-- A hostile-traffic test (thousands of invented models, keys, paths and request IDs) bounds the gateway to 2,000 series; Prometheus scrape jobs
-  set `sample_limit: 20000` as a last line of defence.
+- Stated ceilings, each enforced by a test: a gateway exports at most **4,500 series** however many models and workers it sees (3,667 measured with
+  1,000 models each served by 1,000 workers, every status, outcome and failure class, tenant labels on); a hostile-traffic test (thousands of invented
+  models, keys, paths and request IDs from outside) stays far below that. The model and worker caps alone would allow 66 x 257 = 16,962 `scheduler_selections_total`
+  pairs, so those pairs also share a budget of 1,024; later pairs count under `worker_id="other"`. A control plane exports at most **10,500 series** at its default
+  `control_plane.max_workers` of 1,000 (9,108 measured, every worker reporting GPU numbers), about nine per worker; above about 2,000 workers that exceeds the
+  scrape jobs' `sample_limit: 20000`, which drops a whole scrape, so raise `max_workers` and `sample_limit` together. `sample_limit: 20000` stays as the last
+  line of defence.
 - Series with bounded label sets (`auth_rejections_total{status}`, `rate_limit_rejections_total{limit}`, the strategy's decision histogram, the
   registry heartbeat results, `redis_errors_total{kind}`) exist from the first scrape, so `rate()` and alerts work from a cold start. Series
   labelled by `model` or `worker_id` appear with traffic by nature.
@@ -98,6 +103,22 @@ an agent that reports its backend failed) and `ServerFlowWorkerHeartbeatStale` (
 The control plane is scraped every 5 s and the fleet rule group is evaluated every 5 s so detection fits the 10 s target of spec section 31.
 
 ## Consequences
+
+- **Running several instances on one host.** The default metrics ports (9100 gateway, 9101 control plane) belong to one instance each. A second gateway or control
+  plane on the same host exits with a fatal error before it announces start-up: `metrics listener: listen tcp 127.0.0.1:9100: bind: address already in use`. Give
+  each its own address with `SERVERFLOW_METRICS_LISTEN` or `metrics.listen` (`127.0.0.1:0` picks a free port, which the log line `metrics endpoint` reports; the
+  process tests do this), or switch the endpoint off with an empty value.
+- **The metrics listener outlives the shutdown signal.** After SIGTERM the gateway and the control plane keep serving `/metrics` while in-flight requests
+  drain (up to `gateway.shutdown_timeout`, 30 s by default) and stop it only after the drain, so a drain is visible in Prometheus. A test sends SIGTERM during
+  a request and scrapes.
+- **Cold-start blind spot.** A counter that first appears with value 1 has no earlier sample, so `rate()` and `increase()` see no increase: a lone first error
+  (or a first 5xx after a restart) is invisible to the burn-rate alerts and the dashboards' rates until a second sample follows. Series with bounded label sets are
+  created at zero for this reason; series labelled by `model` or `worker_id` cannot be, so the first event of a new model shows from the second scrape on.
+- **Failed-worker detection.** The realistic failure (the backend dies, its agent reports FAILED) is detected in about 5 s. A worker whose agent goes silent
+  takes 14.7 to 16.3 s end to end (heartbeat age past 10 s, then one 5 s scrape and one 5 s evaluation), so for that path the 10 s target of spec section 31 is
+  missed; measured in `docs/benchmarks/phase-10-observability.md`. Shortening it means a shorter heartbeat-age threshold, not faster scraping.
+- **Invalid `SERVERFLOW_METRICS_*` values are ignored silently**, like every other environment variable of the configuration (an unparsable number or boolean
+  keeps the previous value; structural validation then still applies). A typo in a cap does not stop the process.
 
 - An operator can watch a benchmark live, and the SLOs of spec section 31 are rules with tests. Alerts are visible in Prometheus and Grafana;
   there is no Alertmanager, so nothing pages.

@@ -36,6 +36,19 @@ Environment: `SERVERFLOW_METRICS_LISTEN`, `SERVERFLOW_METRICS_TOKEN`, `SERVERFLO
   in `observability/prometheus/prometheus.yml`.
 - Only `GET` (and `HEAD`) on exactly `/metrics` is served; any other path or method gets 404 or 405 and `//metrics` is redirected to `/metrics` by the standard library mux. At most 4 scrapes run at once and each is bounded to 10 s.
 
+### Several instances on one host
+
+The default ports belong to one gateway and one control plane. A second gateway (or control plane) on the same host exits at once with
+`metrics listener: listen tcp 127.0.0.1:9100: bind: address already in use`, before it logs that it is starting. Give each instance its own address
+(`SERVERFLOW_METRICS_LISTEN=127.0.0.1:9110`, or `metrics.listen`), use `127.0.0.1:0` for a free port (the `metrics endpoint` log line shows which), or turn it off
+with an empty value, and list each in the targets file. Invalid `SERVERFLOW_METRICS_*` values are ignored silently, like every other environment variable in the
+configuration; check the `metrics endpoint` log line for what took effect.
+
+### Shutdown
+
+After SIGTERM the gateway and the control plane keep serving `/metrics` while in-flight requests drain and stop the listener only afterwards, so Prometheus can
+watch a drain (`gateway.shutdown_timeout`, 30 s by default).
+
 ## Running the stack beside a local cluster
 
 ```sh
@@ -96,7 +109,12 @@ The full list and the divergences from the spec's names are in ADR-017. The rule
 - `model` is only a confirmed model (else `unknown`, and `other` beyond `max_models`). `worker_id` is bounded by the fleet (collectors) or
   `max_workers_label` (event series). `tenant` exists only with `tenant_labels`, capped at `max_tenants`, later tenants fold into `other`.
 - `reason`, `limit`, `outcome`, `kind` and `result` are Go constants, never formatted from input.
-- Series with a bounded label set are created at start-up so `rate()` and alerts work from the first scrape.
+- Series with a bounded label set are created at start-up so `rate()` and alerts work from the first scrape. Series labelled by model or worker cannot be:
+  a counter that first appears with value 1 has no earlier sample, so `rate()` and `increase()` do not see that first event, and the burn-rate alerts cannot see
+  a lone first error.
+- Ceilings: a gateway exports at most 4,500 series (3,667 measured with 1,000 models and 1,000 workers; `scheduler_selections_total` pairs share a budget of 1,024),
+  a control plane at most 10,500 at its default 1,000 workers. Both are tested. The scrape jobs' `sample_limit` is 20,000, which drops a whole scrape when exceeded,
+  so raise it together with `control_plane.max_workers` above about 2,000.
 
 ## Adding a metric or a panel
 
@@ -141,7 +159,7 @@ From request accepted to first dispatch the p95 is above 25 ms (authentication, 
 ### Worker not serving or silent (`ServerFlowWorkerNotServing`, `ServerFlowWorkerHeartbeatStale`)
 
 `NotServing`: the worker's agent reports it FAILED, UNHEALTHY or LOST (its backend is down); the gateway already routes around it. `HeartbeatStale`: no
-heartbeat for more than 10 s (the agent or the host is gone). Look at the agent's and the backend's logs for that `worker_id`; the registry removes a
+heartbeat for more than 10 s (the agent or the host is gone); this path takes 14.7 to 16.3 s from the failure to the alert (10 s of age plus a 5 s scrape and a 5 s evaluation), so it misses the 10 s failed-worker target of spec section 31, which the backend-failure path meets (about 5 s). Look at the agent's and the backend's logs for that `worker_id`; the registry removes a
 lost worker after `worker.retention`.
 
 <a id="runbook-ineligible-selection"></a>
