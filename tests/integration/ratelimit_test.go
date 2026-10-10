@@ -394,6 +394,11 @@ func TestKilledGatewaysLeasesExpireAndLongRequestsKeepTheirs(t *testing.T) {
 
 func TestLongStreamKeepsItsSlotThroughRenewal(t *testing.T) {
 	release := make(chan struct{})
+	// The held request only ends when release closes. A t.Fatalf below must not leave it open, or closing the
+	// test servers waits for it (httptest.Server.Close blocks on outstanding requests) and a failure turns
+	// into a ten minute hang instead of a failure message.
+	var releaseOnce sync.Once
+	closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
 	started := make(chan struct{}, 4)
 	c := newCluster(t, clusterOpts{n: 2, run: true, cfg: ratelimit.Config{LeaseTTL: 1500 * time.Millisecond}, upstream: func(w http.ResponseWriter, r *http.Request) {
 		started <- struct{}{}
@@ -403,6 +408,8 @@ func TestLongStreamKeepsItsSlotThroughRenewal(t *testing.T) {
 		}
 		okUpstream(w, r)
 	}})
+	// Registered after newCluster so it runs BEFORE the cluster's own cleanup (cleanups run last-in first-out).
+	t.Cleanup(closeRelease)
 	key := c.keys.add(redistest.Unique("ten"), nil, 0, 0, 1)
 	done := make(chan int, 1)
 	go func() { code, _, _ := c.gws[0].chat(key, model); done <- code }()
@@ -414,7 +421,7 @@ func TestLongStreamKeepsItsSlotThroughRenewal(t *testing.T) {
 		}
 		time.Sleep(60 * time.Millisecond)
 	}
-	close(release)
+	closeRelease()
 	if code := <-done; code != 200 {
 		t.Fatalf("long request: %d", code)
 	}
