@@ -117,6 +117,7 @@ func TestOverflowValuesAreOther(t *testing.T) {
 // of 20,000 (a scrape over the limit is dropped whole, so the ceiling is a promise about not blinding monitoring).
 const (
 	gatewaySeriesCeiling = 4500
+	gatewaySampleCeiling = 9000 // histograms expand: one sample per bucket plus sum and count
 	prometheusSampleCap  = 20000
 )
 
@@ -152,10 +153,11 @@ func TestGatewaySeriesCeilingWithAThousandModelsAndWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := telemetry.SeriesCount(fams)
-	t.Logf("%d series with 1,000 models x 1,000 workers", n)
-	if n > gatewaySeriesCeiling || n >= prometheusSampleCap {
-		t.Fatalf("%d series; the stated ceiling is %d (Prometheus sample_limit %d)", n, gatewaySeriesCeiling, prometheusSampleCap)
+	n, samples := telemetry.SeriesCount(fams), telemetry.SampleCount(fams)
+	t.Logf("%d series, %d samples per scrape with 1,000 models x 1,000 workers", n, samples)
+	if n > gatewaySeriesCeiling || samples > gatewaySampleCeiling || samples >= prometheusSampleCap {
+		t.Fatalf("%d series and %d samples; the stated ceilings are %d and %d (Prometheus sample_limit %d counts samples)",
+			n, samples, gatewaySeriesCeiling, gatewaySampleCeiling, prometheusSampleCap)
 	}
 	if bad := telemetry.LabelNamesOutsideAllowlist(fams); len(bad) != 0 {
 		t.Fatal(bad)

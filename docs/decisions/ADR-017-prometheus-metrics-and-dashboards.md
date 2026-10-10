@@ -68,13 +68,15 @@ the workers' counters and the heartbeat gauge, not from parsing response bodies 
 - `tenant` does not exist by default. With `metrics.tenant_labels: true` one extra series `tenant_requests_total{tenant,outcome}` keeps the first
   `metrics.max_tenants` (50) tenants and folds the rest into `other`. First-come-first-kept is a documented limitation: per-tenant analysis
   belongs to logs and the Phase 12 usage records.
-- Stated ceilings, each enforced by a test: a gateway exports at most **4,500 series** however many models and workers it sees (3,667 measured with
-  1,000 models each served by 1,000 workers, every status, outcome and failure class, tenant labels on); a hostile-traffic test (thousands of invented
-  models, keys, paths and request IDs from outside) stays far below that. The model and worker caps alone would allow 66 x 257 = 16,962 `scheduler_selections_total`
-  pairs, so those pairs also share a budget of 1,024; later pairs count under `worker_id="other"`. A control plane exports at most **10,500 series** at its default
-  `control_plane.max_workers` of 1,000 (9,108 measured, every worker reporting GPU numbers), about nine per worker; above about 2,000 workers that exceeds the
-  scrape jobs' `sample_limit: 20000`, which drops a whole scrape, so raise `max_workers` and `sample_limit` together. `sample_limit: 20000` stays as the last
-  line of defence.
+- Stated ceilings, each enforced by a test. Prometheus' `sample_limit` counts **samples**, not series, and a histogram series expands into one sample per
+  bucket plus its sum and count, so both are stated. A gateway exports at most **4,500 series and 9,000 samples per scrape** however many models and workers it
+  sees (the test load of 1,000 models each served by 1,000 workers, every status, outcome and failure class and tenant labels on, gives 3,667 series and 6,561
+  samples; lighter loads gave 2,952 series and about 5,850 samples). A hostile-traffic test (thousands of invented models, keys, paths and request IDs from
+  outside) stays far below that. The model and worker caps alone would allow 66 x 257 = 16,962 `scheduler_selections_total` pairs, so those pairs also share a
+  budget of 1,024, taken only when a series is created; later pairs count under `worker_id="other"`. A control plane exports at most **10,500 series and samples** at
+  its default `control_plane.max_workers` of 1,000 (9,108 series and 9,114 samples measured, every worker reporting GPU numbers): about 9.1 per worker, 8 without GPU
+  gauges. The 20,000 `sample_limit` of the scrape jobs, which drops a whole scrape, is therefore crossed at about 2,200 workers with GPU gauges (about 2,500
+  without); raise `max_workers` and `sample_limit` together. `sample_limit: 20000` stays as the last line of defence.
 - Series with bounded label sets (`auth_rejections_total{status}`, `rate_limit_rejections_total{limit}`, the strategy's decision histogram, the
   registry heartbeat results, `redis_errors_total{kind}`) exist from the first scrape, so `rate()` and alerts work from a cold start. Series
   labelled by `model` or `worker_id` appear with traffic by nature.
@@ -117,6 +119,11 @@ The control plane is scraped every 5 s and the fleet rule group is evaluated eve
 - **Failed-worker detection.** The realistic failure (the backend dies, its agent reports FAILED) is detected in about 5 s. A worker whose agent goes silent
   takes 14.7 to 16.3 s end to end (heartbeat age past 10 s, then one 5 s scrape and one 5 s evaluation), so for that path the 10 s target of spec section 31 is
   missed; measured in `docs/benchmarks/phase-10-observability.md`. Shortening it means a shorter heartbeat-age threshold, not faster scraping.
+- **How `redis_errors_total{kind}` is classified** (by error type, never by text): a refused dial is `timeout` under a short call timeout (the default
+  `redis.timeout` is 50 ms, which the driver's dial retries outlast, so it reports the deadline) and `connection` under a long one; a black hole (connections
+  accepted, nothing answered) is `timeout`; a connection cut, reset or closed (EOF, reset, broken pipe, client closed) is `connection`; a reply error from the
+  server, such as a script failure, is `script`; everything else is `other`. A call turned away by the backoff or by an exhausted pool never reached Redis and is
+  not counted. Read the counter together with `redis_up`.
 - **Invalid `SERVERFLOW_METRICS_*` values are ignored silently**, like every other environment variable of the configuration (an unparsable number or boolean
   keeps the previous value; structural validation then still applies). A typo in a cap does not stop the process.
 

@@ -112,9 +112,12 @@ The full list and the divergences from the spec's names are in ADR-017. The rule
 - Series with a bounded label set are created at start-up so `rate()` and alerts work from the first scrape. Series labelled by model or worker cannot be:
   a counter that first appears with value 1 has no earlier sample, so `rate()` and `increase()` do not see that first event, and the burn-rate alerts cannot see
   a lone first error.
-- Ceilings: a gateway exports at most 4,500 series (3,667 measured with 1,000 models and 1,000 workers; `scheduler_selections_total` pairs share a budget of 1,024),
-  a control plane at most 10,500 at its default 1,000 workers. Both are tested. The scrape jobs' `sample_limit` is 20,000, which drops a whole scrape when exceeded,
-  so raise it together with `control_plane.max_workers` above about 2,000.
+- Ceilings (ADR-017): a gateway exports at most 4,500 series and 9,000 samples per scrape (3,667 series and 6,561 samples measured with 1,000 models and 1,000
+  workers; `scheduler_selections_total` pairs share a budget of 1,024); a control plane about 9.1 series per worker, 10,500 at its default 1,000 workers. Both are
+  tested. The scrape jobs' `sample_limit` of 20,000 counts samples (a histogram series is one per bucket plus sum and count) and drops a whole scrape when exceeded, so
+  raise it together with `control_plane.max_workers` above about 2,200 workers (about 2,500 without GPU gauges).
+- `redis_errors_total{kind}` is classified by error type: a refused dial is `timeout` under a short call timeout (the 50 ms default) and `connection` under a long one,
+  a black hole is `timeout`, a cut, reset or closed connection is `connection`, a server reply error is `script`, and everything else is `other`.
 
 ## Adding a metric or a panel
 

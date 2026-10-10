@@ -46,3 +46,23 @@ func SeriesCount(fams []*dto.MetricFamily) int {
 	}
 	return n
 }
+
+// SampleCount is the number of samples one scrape carries, which is what Prometheus' sample_limit counts: a
+// histogram series expands into one sample per bucket plus its sum and count, a summary into its quantiles plus
+// sum and count.
+func SampleCount(fams []*dto.MetricFamily) int {
+	n := 0
+	for _, f := range fams {
+		for _, m := range f.GetMetric() {
+			switch {
+			case m.GetHistogram() != nil:
+				n += len(m.GetHistogram().GetBucket()) + 3 // buckets, +Inf, sum, count
+			case m.GetSummary() != nil:
+				n += len(m.GetSummary().GetQuantile()) + 2
+			default:
+				n++
+			}
+		}
+	}
+	return n
+}
