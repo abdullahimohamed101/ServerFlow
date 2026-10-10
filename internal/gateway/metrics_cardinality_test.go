@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"serverflow/internal/config"
 	"serverflow/internal/telemetry"
@@ -107,4 +108,60 @@ func TestOverflowValuesAreOther(t *testing.T) {
 	want(t, m, 9992, "inference_requests_total", "model=other", "status=200")        // all but the first 8 models
 	want(t, m, 9992, "scheduler_selections_total", "worker_id=other", "model=other") // ... and the first 6 workers
 	want(t, m, 9996, "tenant_requests_total", "tenant=other", "outcome=ok")          // ... and the first 4 tenants
+}
+
+// The series ceilings ADR-017 states, for a fleet with far more models and workers than the caps allow: every one of
+// 1,000 models is served by every one of 1,000 workers and every request outcome, status and failure class occurs
+// for each. The gateway must stay under gatewaySeriesCeiling, which in turn is well under Prometheus' sample_limit
+// of 20,000 (a scrape over the limit is dropped whole, so the ceiling is a promise about not blinding monitoring).
+const (
+	gatewaySeriesCeiling = 4500
+	prometheusSampleCap  = 20000
+)
+
+func TestGatewaySeriesCeilingWithAThousandModelsAndWorkers(t *testing.T) {
+	m := registryMetrics("least-active")
+	cfg := config.Default().Metrics
+	cfg.TenantLabels = true
+	m.configure(cfg)
+	statuses := []int{200, 400, 401, 403, 404, 413, 429, 499, 500, 502, 503, 504}
+	codes := []string{"NO_CAPACITY", "WORKER_UNAVAILABLE", "INFERENCE_FAILED", "UPSTREAM_TIMEOUT", "INTERNAL_ERROR", "RATE_LIMITED"}
+	classes := []string{"connect", "reset", "empty_stream", "status_502", "status_503"}
+	for i := 0; i < 1000; i++ {
+		model := fmt.Sprintf("model-%d", i)
+		for j := 0; j < 1000; j++ {
+			worker := fmt.Sprintf("worker-%d", j)
+			m.AttemptStarted(bg, AttemptStart{Number: 1, WorkerID: worker, Model: model, WorkerState: "READY", WorkerEligible: true, SelectDuration: time.Microsecond})
+			m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: worker, Model: model, Outcome: AttemptRetried, Class: classes[j%len(classes)], WillRetry: true})
+		}
+		for k, st := range statuses {
+			m.RequestCompleted(bg, Completion{Model: model, Status: st, ErrorCode: codes[k%len(codes)], TTFT: time.Millisecond, Duration: time.Second,
+				TenantID: fmt.Sprintf("ten_%d", i), Handled: true})
+		}
+		for _, o := range attemptOutcomes {
+			m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w", Model: model, Outcome: o})
+		}
+		m.RequestRejected(bg, Rejection{Kind: RejectCapacity, Reason: "no_capacity", Model: model, Status: 503})
+		m.RequestRejected(bg, Rejection{Kind: RejectCapacity, Reason: "worker_unavailable", Model: model, Status: 503})
+	}
+	for _, st := range []int{401, 403, 500, 503} {
+		m.RequestRejected(bg, Rejection{Kind: RejectAuth, Status: st})
+	}
+	fams, err := m.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := telemetry.SeriesCount(fams)
+	t.Logf("%d series with 1,000 models x 1,000 workers", n)
+	if n > gatewaySeriesCeiling || n >= prometheusSampleCap {
+		t.Fatalf("%d series; the stated ceiling is %d (Prometheus sample_limit %d)", n, gatewaySeriesCeiling, prometheusSampleCap)
+	}
+	if bad := telemetry.LabelNamesOutsideAllowlist(fams); len(bad) != 0 {
+		t.Fatal(bad)
+	}
+	for _, f := range fams {
+		if f.GetName() == "scheduler_selections_total" && len(f.GetMetric()) > maxSelectionSeries+66+1 {
+			t.Fatalf("%d selection series, budget %d", len(f.GetMetric()), maxSelectionSeries)
+		}
+	}
 }

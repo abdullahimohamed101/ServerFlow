@@ -310,3 +310,41 @@ func TestSlowScrapeDoesNotBlockHeartbeats(t *testing.T) {
 		}
 	}
 }
+
+// The control plane's series ceiling at its default cap of 1,000 workers (control_plane.max_workers), every worker
+// reporting GPU numbers and serving a model of its own: the per-worker gauges dominate, ten each. ADR-017 states the
+// ceiling; above about 2,000 workers the 20,000 sample_limit on the scrape job would drop the whole scrape, so a
+// larger max_workers needs a larger sample_limit.
+const (
+	controlPlaneSeriesCeiling = 10500
+	prometheusSampleCap       = 20000
+)
+
+func TestControlPlaneSeriesCeilingAtTheDefaultWorkerCap(t *testing.T) {
+	r, _ := newTest(t, func(c *Config) { c.MaxWorkers = 1000 })
+	util, mem := 50.0, int64(1024)
+	for i := 0; i < 1000; i++ {
+		id := fmt.Sprintf("worker-%04d", i)
+		reg, err := r.Register(info(id, fmt.Sprintf("model-%d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Heartbeat(id, reg, protocol.Heartbeat{RegistrationID: reg, State: protocol.StateReady,
+			Metrics: protocol.Metrics{GPUUtilization: &util, GPUMemoryUsedMB: &mem}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pr := NewMetricsRegistry(r, 64)
+	fams, err := pr.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := telemetry.SeriesCount(fams)
+	t.Logf("%d series with 1,000 workers", n)
+	if n > controlPlaneSeriesCeiling || n >= prometheusSampleCap {
+		t.Fatalf("%d series; the stated ceiling is %d (Prometheus sample_limit %d)", n, controlPlaneSeriesCeiling, prometheusSampleCap)
+	}
+	if n < 9000 {
+		t.Fatalf("only %d series: the test no longer exercises the per-worker gauges", n)
+	}
+}

@@ -44,14 +44,15 @@ type metrics struct {
 	rateDecision prometheus.Histogram
 
 	// Phase 10 additions.
-	failures    *prometheus.CounterVec   // model, reason: requests that ended with a gateway error code
-	overhead    *prometheus.HistogramVec // model: request start to the first dispatch
-	decisions   *prometheus.CounterVec   // strategy, model, result
-	decisionDur *prometheus.HistogramVec // strategy
-	noCapacity  *prometheus.CounterVec   // model, reason
-	selections  *prometheus.CounterVec   // model, worker_id
-	ineligible  prometheus.Counter
-	tenantReqs  *prometheus.CounterVec // nil unless metrics.tenant_labels
+	failures        *prometheus.CounterVec   // model, reason: requests that ended with a gateway error code
+	overhead        *prometheus.HistogramVec // model: request start to the first dispatch
+	decisions       *prometheus.CounterVec   // strategy, model, result
+	decisionDur     *prometheus.HistogramVec // strategy
+	noCapacity      *prometheus.CounterVec   // model, reason
+	selections      *prometheus.CounterVec   // model, worker_id
+	selectionSeries atomic.Int64             // children of selections created, against maxSelectionSeries
+	ineligible      prometheus.Counter
+	tenantReqs      *prometheus.CounterVec // nil unless metrics.tenant_labels
 
 	models  *telemetry.LabelGuard
 	workers *telemetry.LabelGuard
@@ -294,6 +295,24 @@ func (c *counterCache) pair(vec *prometheus.CounterVec, model, value string) pro
 	return x
 }
 
+// maxSelectionSeries bounds scheduler_selections_total across all models: each (model, worker) pair is a series,
+// and capping models and workers separately would still allow models x workers of them (66 x 257 = 16,962 at the
+// default caps, close to Prometheus' sample_limit). Pairs beyond this budget count under worker_id="other".
+const maxSelectionSeries = 1024
+
+// budgeted is pair for a series family with a global budget: while the budget lasts each new value gets its own
+// child; after that, new values share the model's "other" child.
+func (c *counterCache) budgeted(vec *prometheus.CounterVec, model, value string, used *atomic.Int64) prometheus.Counter {
+	if x := c.load(value); x != nil {
+		return x
+	}
+	if used.Add(1) > maxSelectionSeries {
+		used.Add(-1)
+		return c.pair(vec, model, "other")
+	}
+	return c.pair(vec, model, value)
+}
+
 // model returns the instruments for a model. An empty (unconfirmed) model is "unknown"; a model beyond the cap
 // is "other".
 func (m *metrics) model(raw string) *modelInst {
@@ -416,7 +435,7 @@ func (m *metrics) AttemptStarted(ctx context.Context, e AttemptStart) context.Co
 	if m.decisionDurChild != nil {
 		m.decisionDurChild.Observe(e.SelectDuration.Seconds())
 	}
-	mi.selections.pair(m.selections, mi.label, m.workers.Value(e.WorkerID)).Inc()
+	mi.selections.budgeted(m.selections, mi.label, m.workers.Value(e.WorkerID), &m.selectionSeries).Inc()
 	if !e.WorkerEligible || e.WorkerState != "READY" {
 		m.ineligible.Inc()
 	}
