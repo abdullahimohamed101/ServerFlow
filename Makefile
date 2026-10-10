@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis bench bench-compare quality quality-fast
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis dev-kafka test-kafka bench bench-compare quality quality-fast
 
 fmt:
 	gofmt -w .
@@ -79,6 +79,17 @@ dev-redis:
 test-redis:
 	scripts/dev-redis.sh start >/dev/null
 	SERVERFLOW_TEST_REDIS_ADDR="$$(scripts/dev-redis.sh addr)" SERVERFLOW_TEST_REDIS_PASSWORD="$$(scripts/dev-redis.sh password)" go test -race -count=1 ./internal/redis/... ./internal/ratelimit/... ./internal/gateway/... ./tests/integration/...
+
+# A throwaway Kafka-compatible broker (Redpanda) on 127.0.0.1:59092 that requires SASL/SCRAM, like CI's. Stop it with
+# scripts/dev-kafka.sh stop. The usage tests also need a PostgreSQL (make dev-postgres).
+dev-kafka:
+	scripts/dev-kafka.sh start
+
+# The Kafka-backed tests, against the throwaway broker (started if needed). Set SERVERFLOW_TEST_POSTGRES_DSN for the
+# usage tests.
+test-kafka:
+	scripts/dev-kafka.sh start >/dev/null
+	SERVERFLOW_TEST_KAFKA_BROKERS="$$(scripts/dev-kafka.sh brokers)" SERVERFLOW_TEST_KAFKA_USER="$$(scripts/dev-kafka.sh user)" SERVERFLOW_TEST_KAFKA_PASSWORD="$$(scripts/dev-kafka.sh password)" go test -race -count=1 ./internal/kafka/... ./internal/events/... ./internal/usage/... ./tests/integration/...
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
 #   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"

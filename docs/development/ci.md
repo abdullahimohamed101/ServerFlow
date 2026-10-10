@@ -18,15 +18,22 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed) |
 | `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
 
-`integration` needs a PostgreSQL and a Redis that both require a password, exactly like the CI services. Locally:
+`integration` needs a PostgreSQL, a Redis and a Kafka-compatible broker that all require credentials, exactly like the CI services. Locally:
 
 ```bash
 scripts/dev-postgres.sh start                   # throwaway Postgres 16, password auth, 127.0.0.1:55432
 export SERVERFLOW_TEST_POSTGRES_DSN="$(scripts/dev-postgres.sh dsn)"
 scripts/dev-redis.sh start                      # throwaway Redis 7, password auth, 127.0.0.1:56379
 export SERVERFLOW_TEST_REDIS_ADDR="$(scripts/dev-redis.sh addr)" SERVERFLOW_TEST_REDIS_PASSWORD="$(scripts/dev-redis.sh password)"
+scripts/dev-kafka.sh start                      # throwaway Redpanda, SASL/SCRAM required, 127.0.0.1:59092
+export SERVERFLOW_TEST_KAFKA_BROKERS="$(scripts/dev-kafka.sh brokers)" SERVERFLOW_TEST_KAFKA_USER="$(scripts/dev-kafka.sh user)" SERVERFLOW_TEST_KAFKA_PASSWORD="$(scripts/dev-kafka.sh password)"
 scripts/quality.sh full
 ```
+
+The Kafka tests are named in `quality.sh integration` (`must_run kafka`), so a skipped one fails the gate. The broker is
+Redpanda from `docker.redpanda.com` (not Docker Hub, which rate-limits shared runners); it is Kafka API compatible,
+not Apache Kafka (ADR-019). The outage test starts a second, private broker on `SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE`
+and needs Docker.
 
 A local server that trusts everyone hides a missing password until CI fails (this happened once), so the
 local server deliberately requires one.
@@ -39,7 +46,7 @@ local server deliberately requires one.
 | --- | --- | --- |
 | `lint` | `quality.sh lint` | golangci-lint installed by the official action |
 | `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod`, and current stable |
-| `integration` | `quality.sh integration` | PostgreSQL 16 service and a password-protected Redis 7; test log uploaded on failure |
+| `integration` | `quality.sh integration` | PostgreSQL 16 service, a password-protected Redis 7 and a SASL-protected Redpanda (`Start Kafka` step); test log uploaded on failure |
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 

@@ -13,6 +13,7 @@
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
 #   SERVERFLOW_TEST_REDIS_ADDR and SERVERFLOW_TEST_REDIS_PASSWORD  (scripts/dev-redis.sh start; addr; password)
+#   SERVERFLOW_TEST_KAFKA_BROKERS, _USER and _PASSWORD  (scripts/dev-kafka.sh start; brokers; user; password)
 # Unset variables make `integration` fail; `full` skips it with a loud notice instead, so a laptop
 # without the servers can still run everything else.
 set -euo pipefail
@@ -88,6 +89,11 @@ integration() {
     TestRunAndPingWithPassword TestRequestsBoundaryAgainstRedis TestScriptMatchesModelOnRandomSequences \
     TestFailureClosedAcrossTheMatrix TestThreeGatewaysShareOneRequestQuota \
     TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd
+  # Kafka (Phase 12). The usage tests also need the database, so they run after the Postgres block has set it up.
+  must_run kafka SERVERFLOW_TEST_KAFKA_BROKERS "SERVERFLOW_TEST_KAFKA_BROKERS is not set" \
+    "./internal/kafka/... ./internal/events/... ./internal/usage/... ./tests/integration/..." \
+    TestProducerDeliversToRealBroker TestBrokerOutageDoesNotBlockAndDropsAreCounted \
+    TestConsumerGroupCommitsAfterDatabase TestUsageStopAndReplay TestGatewayEventsEndToEnd
 }
 
 build() {
@@ -118,10 +124,10 @@ full() {
   lint
   unit
   race
-  if [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ] && [ -n "${SERVERFLOW_TEST_REDIS_ADDR:-}" ]; then
+  if [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ] && [ -n "${SERVERFLOW_TEST_REDIS_ADDR:-}" ] && [ -n "${SERVERFLOW_TEST_KAFKA_BROKERS:-}" ]; then
     integration
   else
-    printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN or SERVERFLOW_TEST_REDIS_ADDR is not set). CI will run it.\n'
+    printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN, SERVERFLOW_TEST_REDIS_ADDR or SERVERFLOW_TEST_KAFKA_BROKERS is not set). CI will run it.\n'
   fi
   build
 }

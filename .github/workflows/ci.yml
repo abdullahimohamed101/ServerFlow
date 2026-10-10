@@ -90,6 +90,10 @@ jobs:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       SERVERFLOW_TEST_REDIS_ADDR: 127.0.0.1:6379
       SERVERFLOW_TEST_REDIS_PASSWORD: ci-redis-test-password
+      SERVERFLOW_TEST_KAFKA_BROKERS: 127.0.0.1:59092
+      SERVERFLOW_TEST_KAFKA_USER: serverflow-test
+      SERVERFLOW_TEST_KAFKA_PASSWORD: serverflow-test-kafka-password
+      SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE: "59100"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,13 +109,22 @@ jobs:
             sleep 1
           done
           echo "Redis did not start"; exit 1
+      # A Kafka-compatible broker with SASL/SCRAM, started by the same script developers use
+      # (docker.redpanda.com/redpandadata/redpanda:v25.1.1: not Docker Hub, which rate-limits shared runners). The
+      # script waits until the broker answers an authenticated request and creates inference.lifecycle.v1. Redpanda
+      # is Kafka API compatible, not Apache Kafka (ADR-019). The job name stays unchanged.
+      - name: Start Kafka
+        run: scripts/dev-kafka.sh start
+      - name: Keep the Kafka log on failure
+        if: failure()
+        run: docker logs --tail 200 serverflow-test-kafka-59092 || true
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Keep test logs in the runner's temp directory
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Database and Redis tests must run, not skip
+      - name: Database, Redis and Kafka tests must run, not skip
         run: scripts/quality.sh integration
       - name: Keep the test log on failure
         if: failure()
