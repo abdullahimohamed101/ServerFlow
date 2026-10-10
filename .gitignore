@@ -41,3 +41,12 @@ benchmark/reports/*.html
 
 # Temporary promtool inputs written by internal/observability tests
 .promtool-*/
+
+# Binaries built in the repository root by a bare `go build ./cmd/<name>` (one was committed by accident)
+/gateway
+/control-plane
+/mock-worker
+/worker-agent
+/benchmark
+/usage-consumer
+/admin
