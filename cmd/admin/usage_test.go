@@ -46,3 +46,28 @@ func TestUsageSummaryReadsTheView(t *testing.T) {
 		t.Fatalf("unknown subcommand: %+v", r)
 	}
 }
+
+// --since is exact: a window that starts in the middle of an hour counts only the requests after that instant.
+func TestUsageSummarySinceIsNotRoundedToTheHour(t *testing.T) {
+	setupDB(t)
+	st := openStore(t)
+	now := time.Now().UTC()
+	// Two requests in the same clock hour on either side of the boundary, built so the hour is shared.
+	boundary := now.Truncate(time.Hour).Add(30 * time.Minute)
+	var rows []usagepkg.Row
+	for i, at := range []time.Time{boundary.Add(-10 * time.Minute), boundary.Add(10 * time.Minute)} {
+		rows = append(rows, usagepkg.Row{EventID: fmt.Sprintf("evt_%032x", i), RequestID: fmt.Sprintf("req_%016x", i), Model: "m", Outcome: "completed",
+			HTTPStatus: 200, TokensSource: "estimate", OccurredAt: at})
+	}
+	if _, err := st.InsertUsage(context.Background(), rows); err != nil {
+		t.Fatal(err)
+	}
+	r := mustOK(t, "usage", "summary", "--since", boundary.Format(time.RFC3339))
+	if !strings.Contains(r.out, "requests=1\t") {
+		t.Fatalf("only the request after the boundary should count:\n%s", r.out)
+	}
+	r = mustOK(t, "usage", "summary", "--since", boundary.Add(-time.Hour).Format(time.RFC3339))
+	if !strings.Contains(r.out, "requests=2\t") {
+		t.Fatalf("both requests should count:\n%s", r.out)
+	}
+}

@@ -72,6 +72,16 @@ hard to reverse or easy to misread, and the findings made while building it.
 - **The Kafka consumer holds rebalances between a poll and its commit** (`BlockRebalanceOnPoll`), so a member never works on partitions
   another has been given; `Close` must allow rebalances or it blocks (found when a test hung).
 
+## Fix-round additions
+
+- **Numbers in events are bounded**: every token count at most 10^10 (`protocol.MaxEventTokens`), durations at most 10^12 ms. A larger value is
+  a forged or corrupt event and is rejected as poison (coordinates only). The summary query sums as numeric and returns decimal strings,
+  so even rows written outside the bounds cannot make `serverflow-admin usage summary` fail.
+- **The scanner never repairs a usage object.** Exactly one `usage` object, each count present once as a plain integer up to the bound;
+  fractions, exponents, signs, leading zeros, strings, duplicate keys and oversize numbers all fall back to `chunks` or `estimate`. Counts
+  far above `max_tokens` are deliberately not rejected (reasoning tokens, other tokenizers, requests without `max_tokens`; workers are
+  registered, authenticated components); `tokens_source=usage` means "as the worker reported it", not "audited".
+
 ## Consequences
 
 - Operators get a content-free event stream and per-request usage rows; the gateway behaves identically with events off (the default) or

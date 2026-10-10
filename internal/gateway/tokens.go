@@ -1,6 +1,10 @@
 package gateway
 
-import "bytes"
+import (
+	"bytes"
+
+	"serverflow/pkg/protocol"
+)
 
 // tokenScanner extracts token counts from a response that is already flowing to the client (Phase 12, D8). It
 // never changes the bytes and never stores or logs text: it keeps a small sliding window of the most recent bytes
@@ -91,20 +95,19 @@ func countKeys(b []byte, limit int) int64 {
 	}
 }
 
-// result returns the source (TokensUsage, TokensChunks or "") and the counts.
+// result returns the source (TokensUsage, TokensChunks or "") and the counts. A usage object is used only if it is
+// unambiguous: exactly one "usage" object in the window, each of prompt_tokens and completion_tokens present
+// exactly once with a plain non-negative integer no larger than protocol.MaxEventTokens. Anything else (a fraction,
+// an exponent, a sign, a leading zero, a number too large, a duplicate key, a string) is not guessed at or
+// truncated: the request falls back to chunks or to "estimate".
+//
+// Decision (fix round): counts far above the request's max_tokens are NOT rejected. A worker may count more than
+// max_tokens (reasoning tokens, a different tokenizer) or the request may carry no max_tokens; the workers are
+// registered, authenticated parts of the system, and the absolute bound already stops absurd values from reaching
+// the database. The label tokens_source=usage means "as the worker reported it", not "audited".
 func (t *tokenScanner) result(stream bool) (source string, in, out int64) {
-	if i := bytes.LastIndex(t.tail, usageKey); i >= 0 {
-		rest := t.tail[i+len(usageKey):]
-		for len(rest) > 0 && (rest[0] == ' ' || rest[0] == ':') {
-			rest = rest[1:]
-		}
-		if len(rest) > 0 && rest[0] == '{' {
-			p, okp := intAfter(rest, promptKey)
-			c, okc := intAfter(rest, completionKey)
-			if okp && okc {
-				return TokensUsage, p, c
-			}
-		}
+	if p, c, ok := parseUsage(t.tail); ok {
+		return TokensUsage, p, c
 	}
 	if stream && t.chunks > 0 {
 		return TokensChunks, 0, t.chunks
@@ -112,24 +115,97 @@ func (t *tokenScanner) result(stream bool) (source string, in, out int64) {
 	return "", 0, 0
 }
 
-// intAfter reads the non-negative integer that follows key and a colon.
-func intAfter(b, key []byte) (int64, bool) {
-	i := bytes.Index(b, key)
-	if i < 0 {
-		return 0, false
-	}
-	b = b[i+len(key):]
-	for len(b) > 0 && (b[0] == ' ' || b[0] == ':') {
-		b = b[1:]
-	}
-	var n int64
-	digits := 0
-	for _, c := range b {
-		if c < '0' || c > '9' || digits >= 12 {
+// parseUsage finds the one usage object in b and reads its two counts.
+func parseUsage(b []byte) (prompt, completion int64, ok bool) {
+	objStart := -1
+	for off := 0; ; {
+		i := bytes.Index(b[off:], usageKey)
+		if i < 0 {
 			break
 		}
-		n = n*10 + int64(c-'0')
+		pos := off + i + len(usageKey)
+		rest := b[pos:]
+		for len(rest) > 0 && (rest[0] == ' ' || rest[0] == ':' || rest[0] == '\t' || rest[0] == '\n' || rest[0] == '\r') {
+			rest = rest[1:]
+		}
+		if len(rest) > 0 && rest[0] == '{' {
+			if objStart >= 0 {
+				return 0, 0, false // two usage objects: ambiguous
+			}
+			objStart = len(b) - len(rest)
+		}
+		off = pos
+	}
+	if objStart < 0 {
+		return 0, 0, false
+	}
+	obj, closed := balanced(b[objStart:])
+	if !closed {
+		return 0, 0, false
+	}
+	var ok1, ok2 bool
+	prompt, ok1 = uniqueCount(obj, promptKey)
+	completion, ok2 = uniqueCount(obj, completionKey)
+	return prompt, completion, ok1 && ok2
+}
+
+// balanced returns the object that starts at b[0] == '{' up to its matching brace, skipping braces inside strings.
+func balanced(b []byte) (obj []byte, closed bool) {
+	depth, inStr := 0, false
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		switch {
+		case inStr:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return b[:i+1], true
+			}
+		}
+	}
+	return nil, false
+}
+
+// uniqueCount reads the integer that follows key, which must occur exactly once in obj.
+func uniqueCount(obj, key []byte) (int64, bool) {
+	i := bytes.Index(obj, key)
+	if i < 0 || bytes.Contains(obj[i+len(key):], key) {
+		return 0, false
+	}
+	b := obj[i+len(key):]
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r') {
+		b = b[1:]
+	}
+	if len(b) == 0 || b[0] != ':' {
+		return 0, false
+	}
+	b = b[1:]
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r') {
+		b = b[1:]
+	}
+	n, digits := int64(0), 0
+	for digits < len(b) && b[digits] >= '0' && b[digits] <= '9' {
+		if digits >= 11 { // more digits than the largest allowed value has
+			return 0, false
+		}
+		n = n*10 + int64(b[digits]-'0')
 		digits++
 	}
-	return n, digits > 0
+	if digits == 0 || (digits > 1 && b[0] == '0') || n > protocol.MaxEventTokens || digits == len(b) {
+		return 0, false
+	}
+	switch b[digits] { // the number must end here: not a fraction, an exponent or anything else
+	case ',', '}', ' ', '\t', '\n', '\r':
+		return n, true
+	}
+	return 0, false
 }

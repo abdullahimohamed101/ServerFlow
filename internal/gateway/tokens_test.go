@@ -178,3 +178,81 @@ func TestScannerCountsAreIndependentOfHowTheBodyIsCut(t *testing.T) {
 		}
 	}
 }
+
+// Hostile or odd usage objects are never "repaired": the request falls back to estimate instead.
+func TestScannerRefusesAmbiguousOrMangledUsage(t *testing.T) {
+	usage := func(inner string) string { return `{"choices":[],"usage":{` + inner + `}}` }
+	bad := map[string]string{
+		"13 digits":          usage(`"prompt_tokens":1234567890123,"completion_tokens":5`),
+		"just over the cap":  usage(`"prompt_tokens":10000000001,"completion_tokens":5`),
+		"fraction":           usage(`"prompt_tokens":5.5,"completion_tokens":5`),
+		"exponent":           usage(`"prompt_tokens":7.9e3,"completion_tokens":5`),
+		"capital exponent":   usage(`"prompt_tokens":2E3,"completion_tokens":5`),
+		"negative":           usage(`"prompt_tokens":-3,"completion_tokens":5`),
+		"plus sign":          usage(`"prompt_tokens":+3,"completion_tokens":5`),
+		"leading zero":       usage(`"prompt_tokens":007,"completion_tokens":5`),
+		"string value":       usage(`"prompt_tokens":"5","completion_tokens":5`),
+		"null value":         usage(`"prompt_tokens":null,"completion_tokens":5`),
+		"duplicate prompt":   usage(`"prompt_tokens":5,"prompt_tokens":6,"completion_tokens":5`),
+		"duplicate complete": usage(`"prompt_tokens":5,"completion_tokens":5,"completion_tokens":9`),
+		"missing completion": usage(`"prompt_tokens":5`),
+		"two usage objects":  `{"usage":{"prompt_tokens":1,"completion_tokens":2},"usage":{"prompt_tokens":3,"completion_tokens":4}}`,
+		"unterminated":       `{"usage":{"prompt_tokens":1,"completion_tokens":2`,
+		"number at the end":  `{"usage":{"prompt_tokens":1,"completion_tokens":2`,
+	}
+	for name, body := range bad {
+		for _, split := range []int{1, 9, 1 << 20} {
+			if src, in, out := scanAll(false, body, split); src != "" {
+				t.Errorf("%s (split %d): accepted as %s %d/%d", name, split, src, in, out)
+			}
+		}
+	}
+	good := map[string]string{
+		"plain":              usage(`"prompt_tokens":18,"completion_tokens":120,"total_tokens":138`),
+		"spaces and newline": usage("\"prompt_tokens\" : 18 ,\n\"completion_tokens\":\t120"),
+		"at the cap":         usage(`"prompt_tokens":10000000000,"completion_tokens":0`),
+		"nested details":     usage(`"prompt_tokens":18,"completion_tokens":120,"completion_tokens_details":{"reasoning_tokens":4},"prompt_tokens_details":{"cached_tokens":2}`),
+	}
+	for name, body := range good {
+		if src, _, _ := scanAll(false, body, 7); src != TokensUsage {
+			t.Errorf("%s: not accepted", name)
+		}
+	}
+	// A hostile usage chunk in a stream falls back to the chunk count, not to a number.
+	hostile := sseBody(10, false) + "data: {\"usage\":{\"prompt_tokens\":1.5,\"completion_tokens\":2}}\n\n"
+	if src, _, out := scanAll(true, hostile, 13); src != TokensChunks || out != 10 {
+		t.Errorf("stream with a hostile usage chunk: %s %d", src, out)
+	}
+}
+
+// The scanner must not change a byte of what the client receives, whatever the worker sends.
+func TestHostileUsageBodiesReachTheClientByteIdentical(t *testing.T) {
+	for _, body := range []string{
+		`{"usage":{"prompt_tokens":1234567890123,"completion_tokens":5.5}}`,
+		`{"usage":{"prompt_tokens":1,"prompt_tokens":2,"completion_tokens":7.9e3}}`,
+		sseBody(5, false) + "data: {\"usage\":{\"prompt_tokens\":-1}}\n\n",
+	} {
+		stream := strings.HasPrefix(body, "data:")
+		rec := &recObserver{}
+		url, c, _ := staticObsServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if stream {
+				w.Header().Set("Content-Type", "text/event-stream")
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+			}
+			_, _ = w.Write([]byte(body))
+		}), WithObserver(rec))
+		req := plainBody
+		if stream {
+			req = streamBody
+		}
+		_, got := postChat(t, c, url, req)
+		if got != body {
+			t.Fatalf("the client received different bytes:\n got %q\nwant %q", got, body)
+		}
+		rec.await(t)
+		if d := rec.done[0]; d.TokensSource == TokensUsage {
+			t.Fatalf("hostile usage accepted: %+v", d)
+		}
+	}
+}
