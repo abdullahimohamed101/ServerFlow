@@ -150,6 +150,24 @@ tests:
               summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
               runbook: "docs/operations/observability.md#runbook-availability-burn"
 
+  - name: the fast burn holds for 2 minutes before it fires
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      # clean for 100 minutes, then a third of all requests fail. Both windows exceed 1.44% about 1m45s in.
+      - {series: 'inference_requests_total{status="503"}', values: '0x400 0+500x80'}
+    alert_rule_test:
+      - {eval_time: 100m30s, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      # the condition has held for well under 2 minutes: pending, not firing
+      - {eval_time: 102m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      - eval_time: 106m
+        alertname: ServerFlowAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 14.4x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+
   # --- latency ---------------------------------------------------------------------------------------------------
   - name: routing decision p95 above 10 ms fires after 5 minutes; below it does not
     interval: 15s
