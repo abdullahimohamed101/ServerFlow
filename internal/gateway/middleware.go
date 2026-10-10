@@ -40,7 +40,11 @@ type reqInfo struct {
 	rateBypassed bool
 	// rateChecked and rateDuration say whether a limiter decided the request and how long it took.
 	rateChecked  bool
+	rateStart    time.Time
 	rateDuration time.Duration
+	// selectStart and selectDuration time the last worker selection (registry mode), for refusals.
+	selectStart    time.Time
+	selectDuration time.Duration
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
@@ -151,6 +155,7 @@ func (s *Server) logRequest(r *http.Request, info *reqInfo, status int, d time.D
 		"status", status,
 		"duration_ms", d.Milliseconds(),
 	}
+	attrs = append(attrs, traceAttrs(r.Context())...)
 	if info.inference {
 		attrs = append(attrs, "attempt_id", info.attemptID, "model", info.model, "stream", info.stream)
 		if info.ttft > 0 {

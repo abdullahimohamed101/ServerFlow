@@ -25,10 +25,11 @@ func capHeader(v string) string {
 
 func requestStartFrom(r *http.Request, id string, at time.Time) RequestStart {
 	e := RequestStart{ID: id, Method: r.Method, Path: r.URL.Path, Time: at}
-	if v := r.Header["Traceparent"]; len(v) > 0 {
+	// A repeated header is ambiguous (W3C: the traceparent is then invalid), so it is dropped, not guessed at.
+	if v := r.Header["Traceparent"]; len(v) == 1 {
 		e.TraceHeaders.Traceparent = capHeader(v[0])
 	}
-	if v := r.Header["Tracestate"]; len(v) > 0 {
+	if v := r.Header["Tracestate"]; len(v) == 1 {
 		e.TraceHeaders.Tracestate = capHeader(v[0])
 	}
 	return e
@@ -37,17 +38,21 @@ func requestStartFrom(r *http.Request, id string, at time.Time) RequestStart {
 func (s *Server) admitted(ctx context.Context, info *reqInfo) {
 	s.obs.RequestAdmitted(ctx, Admission{
 		RequestID: info.id, Model: info.requested, Stream: info.stream, TenantID: info.tenantID,
-		EstimatedCost: info.cost, RateLimitChecked: info.rateChecked, RateLimitDuration: info.rateDuration,
+		EstimatedCost: info.cost, RateLimitChecked: info.rateChecked, RateLimitStart: info.rateStart, RateLimitDuration: info.rateDuration,
 		RateLimitBypassed: info.rateBypassed,
 	})
 }
 
 // rejected tells the observers a request was refused before it reached a worker.
 func (s *Server) rejected(ctx context.Context, info *reqInfo, kind, reason string, status int) {
-	s.obs.RequestRejected(ctx, Rejection{
-		RequestID: info.id, TenantID: info.tenantID, Kind: kind, Reason: reason, Status: status,
-		DecisionDuration: info.rateDuration,
-	})
+	e := Rejection{RequestID: info.id, TenantID: info.tenantID, Kind: kind, Reason: reason, Status: status}
+	switch kind {
+	case RejectRateLimit:
+		e.DecisionStart, e.DecisionDuration = info.rateStart, info.rateDuration
+	case RejectCapacity, RejectModel:
+		e.DecisionStart, e.DecisionDuration = info.selectStart, info.selectDuration
+	}
+	s.obs.RequestRejected(ctx, e)
 }
 
 // rejectedAPI is rejected for a refusal that is an *api.Error: the kind follows the error code.

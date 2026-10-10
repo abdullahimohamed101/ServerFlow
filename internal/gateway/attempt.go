@@ -149,6 +149,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *api.Error) {
 	selecting := time.Now()
 	target, apiErr := s.router.Route(r.Context(), ireq, exclude...)
+	info.selectStart, info.selectDuration = selecting, time.Since(selecting)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -175,8 +176,8 @@ func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info
 	if err != nil {
 		run.err = err
 		if r.Context().Err() == nil {
-			s.log.Warn("worker request failed", "request_id", info.id, "attempt_id", info.attemptID,
-				"worker_id", run.target.worker.WorkerID, "error", errText(err))
+			s.log.Warn("worker request failed", append([]any{"request_id", info.id, "attempt_id", info.attemptID,
+				"worker_id", run.target.worker.WorkerID, "error", errText(err)}, traceAttrs(run.octx)...)...)
 			run.class, run.retryable = s.retry.transportError(err)
 		}
 		return
@@ -268,6 +269,7 @@ func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	if run.resp != nil {
 		attrs = append(attrs, "worker_status", run.resp.StatusCode)
 	}
+	attrs = append(attrs, traceAttrs(run.octx)...)
 	attrs = append(attrs, tenantAttrs(info)...)
 	s.log.Log(context.Background(), level, "attempt finished", attrs...)
 }
