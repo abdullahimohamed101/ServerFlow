@@ -87,7 +87,10 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 		// A long linger holds the last events in the client until the flush: without Close they would be lost. The flush
 		// gets the production default of 5s: it has to connect, authenticate and produce, and on a machine running the
 		// whole suite at once 2s was not always enough (the first full-suite run of the fix round lost 18 of 20 events).
-		"SERVERFLOW_EVENTS_LINGER=1500ms", "SERVERFLOW_EVENTS_SHUTDOWN_FLUSH_TIMEOUT=5s"))
+		"SERVERFLOW_EVENTS_LINGER=1500ms", "SERVERFLOW_EVENTS_SHUTDOWN_FLUSH_TIMEOUT=5s",
+		// The base environment uses a 2s delivery timeout for the broker-down test; here the first connection and SASL
+		// handshake may take longer than that on a busy machine (the failure that led here dropped the first events).
+		"SERVERFLOW_EVENTS_DELIVERY_TIMEOUT=30s"))
 	const inflight = 5
 	var wg sync.WaitGroup
 	started := make(chan struct{}, inflight)
@@ -128,6 +131,9 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 		}
 	}
 	// received, routed, first_token and completed for each of the five requests
+	if n, err := kafkatest.Admin(t, kcfg).Records(context.Background(), topic); err != nil || n != inflight*4 {
+		t.Fatalf("the topic holds %d events (%v), want %d; the gateway log:\n%s", n, err, inflight*4, p.stderr.String())
+	}
 	msgs := kafkatest.ReadN(t, kcfg, topic, inflight*4, 30*time.Second)
 	done := map[string]bool{}
 	for _, m := range msgs {
