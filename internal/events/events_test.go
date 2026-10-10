@@ -288,7 +288,7 @@ func TestStuckSinkNeverBlocksAndDropsAreCounted(t *testing.T) {
 		}
 	}
 	elapsed := time.Since(start)
-	if elapsed > 10*time.Second { // typically ~0.2s; the bound catches a blocking send
+	if elapsed > 60*time.Second { // typically ~0.2s; a blocking send never finishes, and 10s was too tight on a machine running three agents' suites
 		t.Fatalf("%d observer calls took %v", calls, elapsed)
 	}
 	if maxDepth > buffer {
