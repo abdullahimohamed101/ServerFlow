@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -303,5 +304,56 @@ func TestUnsampledRequestsLeaveNoWorkerSpans(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if n := len(all(gwp, wp)); n != 0 {
 		t.Fatalf("ratio 0 must record nothing in either process, got %d spans", n)
+	}
+}
+
+func TestNoCapacityShowsAFailedSelectionUnderTheRoot(t *testing.T) {
+	c := startControlPlane(t)
+	gwp, wp := newTracedProc(t, "serverflow-gateway", tracing.SamplerRatio), newTracedProc(t, "serverflow-mock-worker", tracing.SamplerParentOnly)
+	n := c.startTracedNode(t, "w1", wp, nil)
+	gw := startTracedGateway(t, c, gwp)
+	waitFor(t, 5*time.Second, "worker eligible", func() bool { return c.eligible("w1") })
+	waitReady(t, gw)
+	if resp, _ := tracedPost(t, gw, false); resp.StatusCode != 200 {
+		t.Fatalf("baseline %d", resp.StatusCode)
+	}
+
+	n.stop() // the agent dies: the worker stops being eligible but is still known, so the answer is NO_CAPACITY
+	var body string
+	waitFor(t, 10*time.Second, "a NO_CAPACITY refusal", func() bool {
+		resp, b := tracedPost(t, gw, false)
+		body = b
+		return resp.StatusCode == 503 && strings.Contains(b, "NO_CAPACITY")
+	})
+	settle(t, gwp)
+	spans := all(gwp)
+	var root tracetest.SpanStub
+	for _, s := range named(spans, "gateway.receive") {
+		if attrString(s, tracing.KeyErrorCode) == "NO_CAPACITY" {
+			root = s
+		}
+	}
+	if !root.SpanContext.IsValid() {
+		t.Fatalf("no root with error code NO_CAPACITY (body %s):\n%s", body, tracingtest.Dump(spans))
+	}
+	if attrString(root, tracing.KeyRejectKind) != "capacity" || attrString(root, tracing.KeyHTTPStatusCode) != "503" {
+		t.Errorf("root attributes:\n%s", tracingtest.Dump(tracetest.SpanStubs{root}))
+	}
+	var sel tracetest.SpanStub
+	for _, s := range named(spans, "scheduler.select") {
+		if s.SpanContext.TraceID() == root.SpanContext.TraceID() {
+			sel = s
+		}
+	}
+	if !sel.SpanContext.IsValid() {
+		t.Fatalf("a refused selection must still have a scheduler.select span:\n%s", tracingtest.Dump(spans))
+	}
+	if sel.Parent.SpanID() != root.SpanContext.SpanID() || sel.Status.Code != codes.Error || attrString(sel, tracing.KeySelectOutcome) != "no_capacity" {
+		t.Errorf("scheduler.select: parent %v status %v attrs %v", sel.Parent.SpanID(), sel.Status, sel.Attributes)
+	}
+	for _, s := range named(spans, "worker.forward") {
+		if s.SpanContext.TraceID() == root.SpanContext.TraceID() {
+			t.Errorf("a refused request must not start a worker.forward span:\n%s", tracingtest.Dump(spans))
+		}
 	}
 }
