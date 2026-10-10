@@ -207,7 +207,10 @@ func TestEventsAfterARetryListEveryAttemptInOrder(t *testing.T) {
 	go func() { done <- gw.Serve(ctx, ln) }()
 	t.Cleanup(func() { cancel(); <-done })
 	url := "http://" + ln.Addr().String()
-	waitReady(t, url, model)
+	waitFor(t, 10*time.Second, "both workers eligible", func() bool { return c.eligible("q1") && c.eligible("q2") })
+	// The gateway's own view of the registry lags the control plane's by a refresh or two: the first requests
+	// can still be refused for capacity on a loaded machine.
+	eventually(t, 15*time.Second, func() bool { code, _ := gwPost(url, false); return code == 200 }, "the gateway to route a request")
 
 	var retried []protocol.Event
 	for i := 0; i < 12 && retried == nil; i++ {
