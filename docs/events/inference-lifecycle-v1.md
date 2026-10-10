@@ -8,7 +8,7 @@ default (`events.mode`). Why and how: ADR-019.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `event_id` | string | `evt_` + 32 hex, deterministic: SHA-256 of request ID, event type and attempt ID. Same logical event, same ID |
+| `event_id` | string | `evt_` + 32 hex, deterministic: SHA-256 of `request_id`, `event_type` and `attempt_id` joined by single NUL (0x00) bytes, first 32 hex characters. Same logical event, same ID. Reference code and a test vector: `docs/operations/kafka-and-usage.md` |
 | `event_type` | string | one of the five types below |
 | `schema_version` | int | `1` |
 | `timestamp` | RFC 3339, UTC, nanoseconds | when it happened on the gateway |
@@ -19,7 +19,7 @@ default (`events.mode`). Why and how: ADR-019.
 | `api_key_id` | string, optional | `key_...`, never the key or its prefix |
 | `model` | string, optional | only ever a model the gateway has confirmed (configured in static mode, registered in registry mode). **Absent on `received`** (in registry mode the request is admitted before the model is matched, so it would be client text). Present on `routed`, `first_token` and the terminal event; the terminal event of a request that never reached a worker (for example an unknown model) has none. Older producers of this schema version put the client's string on `received`; consumers must treat that field as unverified |
 | `worker_id` | string, optional | absent before routing |
-| `payload` | object | by type |
+| `payload` | object | by type. The spec's example is flat; the envelope/payload split is a deliberate choice so every type shares one envelope |
 
 ## Types and payloads
 
