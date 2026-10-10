@@ -179,7 +179,7 @@ func (c *Consumer) Close() {
 	if c.closed.Swap(true) {
 		return
 	}
-	c.cl.Close()
+	c.cl.CloseAllowingRebalance()
 }
 
 type (

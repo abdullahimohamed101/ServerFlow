@@ -51,6 +51,10 @@ func NewProducer(cfg Config) (*Producer, error) {
 		// The client's own limit sits above ours so that Produce, not the client, decides when to refuse.
 		kgo.MaxBufferedRecords(maxRecs+1024),
 		kgo.RecordDeliveryTimeout(delivery),
+		// Without this, a record whose produce request was in flight when the broker died is never failed, so a dead
+		// broker would pin memory for ever. Bounded delivery matters more here than duplicate avoidance: a failed
+		// record is counted and not re-sent by us, and the usage consumer absorbs duplicates (D9).
+		kgo.AllowIdempotentProduceCancellation(),
 		kgo.UnknownTopicRetries(1),
 	)
 	if cfg.Linger > 0 {

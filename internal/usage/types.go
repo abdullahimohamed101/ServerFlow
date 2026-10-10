@@ -90,3 +90,8 @@ type Store interface {
 
 // ErrClosed is returned by a Source after Close.
 var ErrClosed = errors.New("usage: source closed")
+
+// ErrBadData is wrapped by a Store when the database refused a row's content (a constraint or type error), as
+// opposed to being unreachable. A batch that fails this way is retried row by row so one bad row is rejected on
+// its own instead of blocking everything behind it.
+var ErrBadData = errors.New("usage: the database refused the row's content")
