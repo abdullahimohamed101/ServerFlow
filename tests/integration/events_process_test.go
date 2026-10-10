@@ -84,8 +84,10 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 		"SERVERFLOW_EVENTS_BROKERS="+strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC="+topic,
 		"SERVERFLOW_EVENTS_SASL_MECHANISM="+kcfg.SASLMechanism, "SERVERFLOW_EVENTS_SASL_USERNAME="+kcfg.SASLUsername,
 		"SERVERFLOW_EVENTS_SASL_PASSWORD="+kcfg.SASLPassword,
-		// A long linger holds the last events in the client until the flush: without Close they would be lost.
-		"SERVERFLOW_EVENTS_LINGER=1500ms"))
+		// A long linger holds the last events in the client until the flush: without Close they would be lost. The flush
+		// gets the production default of 5s: it has to connect, authenticate and produce, and on a machine running the
+		// whole suite at once 2s was not always enough (the first full-suite run of the fix round lost 18 of 20 events).
+		"SERVERFLOW_EVENTS_LINGER=1500ms", "SERVERFLOW_EVENTS_SHUTDOWN_FLUSH_TIMEOUT=5s"))
 	const inflight = 5
 	var wg sync.WaitGroup
 	started := make(chan struct{}, inflight)
