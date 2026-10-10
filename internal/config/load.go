@@ -289,6 +289,7 @@ func applyEnv(cfg *Config) {
 			}
 		}
 	}
+	applyMetricsEnv(&cfg.Metrics, env)
 	if v, ok := env("LOG_LEVEL"); ok {
 		cfg.Log.Level = strings.ToLower(v)
 	}
@@ -303,4 +304,36 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// applyMetricsEnv overlays the SERVERFLOW_METRICS_* variables. An empty SERVERFLOW_METRICS_LISTEN switches the
+// endpoint off; leaving it unset keeps the binary's default.
+func applyMetricsEnv(m *MetricsConfig, env func(string) (string, bool)) {
+	if v, ok := env("METRICS_LISTEN"); ok {
+		m.Listen = &v
+	}
+	if v, ok := env("METRICS_TOKEN"); ok {
+		m.Token = v
+	}
+	for key, dst := range map[string]*bool{
+		"METRICS_ALLOW_NON_LOOPBACK": &m.AllowNonLoopback,
+		"METRICS_TENANT_LABELS":      &m.TenantLabels,
+	} {
+		if v, ok := env(key); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				*dst = b
+			}
+		}
+	}
+	for key, dst := range map[string]*int{
+		"METRICS_MAX_MODELS":        &m.MaxModels,
+		"METRICS_MAX_WORKERS_LABEL": &m.MaxWorkersLabel,
+		"METRICS_MAX_TENANTS":       &m.MaxTenants,
+	} {
+		if v, ok := env(key); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				*dst = n
+			}
+		}
+	}
 }
