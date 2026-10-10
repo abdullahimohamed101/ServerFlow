@@ -154,3 +154,5 @@ priority and carries them, nothing more.
 
 **Update:** pgx was bumped to v5.9.2 and `golang.org/x/text` to v0.41.0 to fix GO-2026-5004, GO-2026-6629 and GO-2026-5970 (reported by govulncheck). These
 releases require Go 1.25, so the repository's Go floor, `go.work` and the documented minimum are now 1.25.
+
+**Update (2026-10-09):** the Go floor is now 1.26 (`go 1.26.0` in `go.mod` and `go.work`) because Go 1.25 is out of support and the dependency fixes for GO-2026-6617, 6612, 6611, 6610 and 6603 (golang.org/x/net v0.60.0+) and OpenTelemetry v1.47+ need it. See docs/plans/completed/chore-go-floor-1.26.md.

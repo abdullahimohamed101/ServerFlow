@@ -1,0 +1,24 @@
+=== base run 1
+    ratelimit_bench_test.go:169: no tenant, nothing to enforce      p50 390µs     p95 1.137ms   p99 1.292ms
+    ratelimit_bench_test.go:170: tenant with no quotas              p50 351µs     p95 768µs     p99 1.266ms
+    ratelimit_bench_test.go:171: tenant with 3 quotas (1 round trip) p50 1.094ms   p95 2.039ms   p99 2.65ms
+    ratelimit_bench_test.go:172: added by one Redis round trip: p50 743µs, p95 1.271ms
+ok  	serverflow/tests/integration	51.101s
+=== new run 1
+    ratelimit_bench_test.go:169: no tenant, nothing to enforce      p50 400µs     p95 1.149ms   p99 1.35ms
+    ratelimit_bench_test.go:170: tenant with no quotas              p50 377µs     p95 866µs     p99 1.321ms
+    ratelimit_bench_test.go:171: tenant with 3 quotas (1 round trip) p50 1.015ms   p95 1.555ms   p99 1.895ms
+    ratelimit_bench_test.go:172: added by one Redis round trip: p50 638µs, p95 689µs
+ok  	serverflow/tests/integration	51.083s
+=== base run 2
+    ratelimit_bench_test.go:169: no tenant, nothing to enforce      p50 407µs     p95 1.19ms    p99 1.427ms
+    ratelimit_bench_test.go:170: tenant with no quotas              p50 390µs     p95 905µs     p99 1.31ms
+    ratelimit_bench_test.go:171: tenant with 3 quotas (1 round trip) p50 1.096ms   p95 1.641ms   p99 2.064ms
+    ratelimit_bench_test.go:172: added by one Redis round trip: p50 706µs, p95 736µs
+ok  	serverflow/tests/integration	51.173s
+=== new run 2
+    ratelimit_bench_test.go:169: no tenant, nothing to enforce      p50 372µs     p95 1.052ms   p99 1.293ms
+    ratelimit_bench_test.go:170: tenant with no quotas              p50 348µs     p95 799µs     p99 1.323ms
+    ratelimit_bench_test.go:171: tenant with 3 quotas (1 round trip) p50 1.072ms   p95 1.586ms   p99 1.985ms
+    ratelimit_bench_test.go:172: added by one Redis round trip: p50 723µs, p95 788µs
+ok  	serverflow/tests/integration	51.068s

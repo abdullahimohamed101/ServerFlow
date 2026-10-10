@@ -44,7 +44,7 @@ func testConfig() Config {
 
 func quiet() *slog.Logger { return slog.New(slog.NewJSONHandler(io.Discard, nil)) }
 
-func newTest(t *testing.T, mutate ...func(*Config)) (*Registry, *fakeClock) {
+func newTest(t testing.TB, mutate ...func(*Config)) (*Registry, *fakeClock) {
 	t.Helper()
 	cfg := testConfig()
 	for _, m := range mutate {

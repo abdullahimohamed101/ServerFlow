@@ -1,0 +1,101 @@
+# SLO alerts (spec section 31). Thresholds are defaults and tunable. There is no Alertmanager (ADR-017): the
+# alerts show in Prometheus and Grafana. Every alert has a summary, a severity and a runbook section in
+# docs/operations/observability.md.
+groups:
+  - name: serverflow-slo
+    rules:
+      # Availability SLO 99.9%: the error budget is 0.1%. Burn rates 14.4 (5m and 1h windows) and 6 (30m and 6h).
+      - alert: ServerFlowAvailabilityBurnFast
+        expr: cluster:inference_errors:ratio_rate5m > (14.4 * 0.001) and cluster:inference_errors:ratio_rate1h > (14.4 * 0.001)
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Inference 5xx ratio is burning the 99.9% availability budget 14.4x too fast"
+          runbook: "docs/operations/observability.md#runbook-availability-burn"
+      - alert: ServerFlowAvailabilityBurnSlow
+        expr: cluster:inference_errors:ratio_rate30m > (6 * 0.001) and cluster:inference_errors:ratio_rate6h > (6 * 0.001)
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
+          runbook: "docs/operations/observability.md#runbook-availability-burn"
+      - alert: ServerFlowRoutingDecisionSlow
+        expr: cluster:scheduler_decision_duration_seconds:p95_rate5m > 0.010
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Scheduler routing decision p95 is above 10 ms"
+          runbook: "docs/operations/observability.md#runbook-routing-decision-slow"
+      - alert: ServerFlowGatewayOverheadHigh
+        expr: cluster:inference_gateway_overhead_seconds:p95_rate5m > 0.025
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Gateway overhead (request start to dispatch) p95 is above 25 ms"
+          runbook: "docs/operations/observability.md#runbook-gateway-overhead-high"
+
+  - name: serverflow-fleet
+    interval: 5s # failed-worker detection must fit the 10 s target: see prometheus.yml
+    rules:
+      # A worker that stopped heartbeating is detected from the control plane's heartbeat age. 10 s is the
+      # worker.unhealthy_timeout default: after it the registry already treats the worker as UNHEALTHY.
+      - alert: ServerFlowWorkerHeartbeatStale
+        expr: worker_heartbeat_age_seconds > 10
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Worker {{ $labels.worker_id }} has not sent a heartbeat for more than 10 s"
+          runbook: "docs/operations/observability.md#runbook-worker-down"
+      # A worker whose agent still reports in but says it failed (for example its backend stopped).
+      - alert: ServerFlowWorkerNotServing
+        expr: worker_health{state=~"FAILED|UNHEALTHY|LOST"} == 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Worker {{ $labels.worker_id }} is {{ $labels.state }} and takes no traffic"
+          runbook: "docs/operations/observability.md#runbook-worker-down"
+      - alert: ServerFlowIneligibleWorkerSelected
+        expr: increase(scheduler_ineligible_selections_total[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "The scheduler routed a request to a worker that was not eligible (must never happen)"
+          runbook: "docs/operations/observability.md#runbook-ineligible-selection"
+      - alert: ServerFlowWorkerQueueOverCapacity
+        expr: worker_queue_depth > worker_queue_capacity
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Worker {{ $labels.worker_id }} queue is deeper than its configured size (no unbounded queues)"
+          runbook: "docs/operations/observability.md#runbook-queue-over-capacity"
+      # The gateway fails closed when its registry snapshot is older than gateway.registry_max_staleness (10 s default).
+      - alert: ServerFlowRegistrySnapshotStale
+        expr: gateway_registry_snapshot_age_seconds > 10
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "The gateway's view of the worker registry is older than registry_max_staleness"
+          runbook: "docs/operations/observability.md#runbook-registry-snapshot-stale"
+      - alert: ServerFlowTargetDown
+        expr: up{job=~"serverflow-.*"} == 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}"
+          runbook: "docs/operations/observability.md#runbook-target-down"
+
+  - name: serverflow-dependencies
+    rules:
+      - alert: ServerFlowRedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "The gateway is backing off from Redis; rate limits fail per redis.on_failure"
+          runbook: "docs/operations/observability.md#runbook-redis-down"
+      - alert: ServerFlowPostgresPoolExhausted
+        expr: increase(postgres_pool_empty_acquires_total[5m]) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Requests are waiting for a PostgreSQL connection (pool exhausted)"
+          runbook: "docs/operations/observability.md#runbook-postgres-pool-exhausted"

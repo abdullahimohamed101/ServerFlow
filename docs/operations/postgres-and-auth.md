@@ -54,7 +54,7 @@ unreachable or a migration is pending.
 | Database down or lookups saturated, key not cached | `503 AUTH_UNAVAILABLE`, `Retry-After` |
 | One key's database row is unreadable | `500 INTERNAL_ERROR` for that key |
 
-`/healthz`, `/readyz` and `/metrics` stay open. The client's `Authorization` header is never sent
+`/healthz` and `/readyz` stay open (`/metrics` is not on this listener at all; see `observability.md`). The client's `Authorization` header is never sent
 to a worker.
 
 ## Reading the logs

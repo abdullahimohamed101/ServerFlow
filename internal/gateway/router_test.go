@@ -197,7 +197,7 @@ func TestUnknownModelIsA404AndNeverBecomesAMetricLabel(t *testing.T) {
 	if a.hits.Load() != 0 {
 		t.Fatal("no worker may see a request for a model it does not serve")
 	}
-	_, metrics := e.get(t, "/metrics")
+	metrics := scrape(t, e.gw)
 	if strings.Contains(metrics, "attacker-chosen-model-name") {
 		t.Fatal("client-chosen model names must not become Prometheus labels (unbounded cardinality)")
 	}
@@ -226,7 +226,7 @@ func TestNoCapacityIsA503WithRetryAfterAndTheSpecDetail(t *testing.T) {
 	if v.Error.Model != "qwen-7b" || v.Error.EligibleWorkers == nil || *v.Error.EligibleWorkers != 0 {
 		t.Fatalf("detail: %s", body)
 	}
-	_, metrics := e.get(t, "/metrics")
+	metrics := scrape(t, e.gw)
 	if !strings.Contains(metrics, `model="qwen-7b"`) {
 		t.Fatal("a confirmed model is a safe label")
 	}

@@ -1,0 +1,14 @@
+# The one datasource, with a fixed uid the dashboards rely on. The URL comes from the environment of the Grafana
+# container (compose sets PROMETHEUS_URL), so the same file serves the local and the compose stacks.
+apiVersion: 1
+datasources:
+  - name: ServerFlow Prometheus
+    uid: serverflow-prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s

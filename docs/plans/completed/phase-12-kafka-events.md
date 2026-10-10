@@ -254,7 +254,7 @@ killed from outside; a third found a flaky start-up assumption in my retry-event
 - `events.batch_max_bytes` (default 1 MiB) replaces `batch_max_records`: the client has no record-count cap.
 - `AllowIdempotentProduceCancellation` is set on the producer. Without it the client never fails a record whose request may have reached the
   broker, so a dead broker kept 100 buffered records pending for over 40 seconds against a 4 second delivery timeout. See ADR-019.
-- Metrics are registered through a new option `gateway.WithExtraCollectors` because each gateway Server owns a private registry.
+- Metrics are registered through `gateway.WithCollector` (this phase first added `WithExtraCollectors`; folded into Phase 10's option in the merge with master) because each gateway Server owns a private registry.
   Phase 10's registry changes may fold this in.
 - Per-request observer state is on the request context (no map). `NewObserver` takes no registerer; `Collectors()` is used instead.
 - The terminal event's model is the gateway-confirmed one only; `received` carries the model as asked (bounded).
@@ -329,3 +329,7 @@ After the first completion an independent verifier found the items below; each w
   `close(release)` and then hangs `httptest.Server.Close`) and my own SIGTERM test (which now uses a 5 minute delivery timeout and the 5 s
   production flush timeout). The tenth gate passed: lint 0 issues, unit, race, postgres 4, redis 7, kafka 8 named tests, build, mod verify,
   tidy unchanged.
+
+### Merge with master (PR #16, #17, #20)
+
+The repository's Go floor is now 1.26.0, so references above to a `go 1.25.0` floor describe the state when this phase was built. franz-go v1.22.x would now fit the floor; the branch stays on v1.21.7 as a deliberate no-bump (judge the dependency update on its own). Phase 10's metrics listener serves the gateway registry, which now also holds the event series when `events.mode` is on.

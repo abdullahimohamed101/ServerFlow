@@ -355,7 +355,7 @@ func TestRejectedRequestsAreLoggedWithoutKeyMaterial(t *testing.T) {
 
 func TestOperationalEndpointsStayOpen(t *testing.T) {
 	e := newStaticAuthEnv(t)
-	for _, p := range []string{"/healthz", "/metrics"} {
+	for _, p := range []string{"/healthz"} {
 		if resp, _ := e.do(t, http.MethodGet, p, ""); resp.StatusCode != 200 {
 			t.Errorf("%s: %d", p, resp.StatusCode)
 		}
@@ -374,7 +374,7 @@ func TestAuthRejectionMetricHasBoundedLabels(t *testing.T) {
 	e.store.down.Store(true)
 	k, _, _ := auth.GenerateKey()
 	e.chat(t, k, "qwen-7b")
-	_, m := e.do(t, http.MethodGet, "/metrics", "")
+	m := scrape(t, e.gw)
 	for _, want := range []string{`auth_rejections_total{status="401"} 3`, `auth_rejections_total{status="503"} 1`} {
 		if !strings.Contains(m, want) {
 			t.Errorf("metrics lack %s", want)
@@ -616,7 +616,7 @@ func TestUnreadableKeyRecordIsA500ForThatKeyOnly(t *testing.T) {
 	if !found {
 		t.Fatal("the fault was not logged with its reason")
 	}
-	if _, m := e.do(t, http.MethodGet, "/metrics", ""); !strings.Contains(m, `auth_rejections_total{status="500"} 1`) || !strings.Contains(m, "500") {
+	if m := scrape(t, e.gw); !strings.Contains(m, `auth_rejections_total{status="500"} 1`) || !strings.Contains(m, "500") {
 		t.Fatalf("an unreadable key record must be counted under status 500:\n%s", m)
 	}
 	// It was not an outage: no global backoff, so the next key is looked up at once.

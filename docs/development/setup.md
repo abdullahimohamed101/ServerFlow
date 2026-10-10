@@ -6,7 +6,7 @@ Tooling requirements for ServerFlow development.
 
 | Tool | Version | Purpose |
 | --- | --- | --- |
-| Go | 1.25+ | primary language |
+| Go | 1.26+ | primary language |
 | Git | any | version control |
 
 ## Optional / Later Phases

@@ -1,5 +1,9 @@
 auth_rejections_total | COUNTER | Requests refused by API key authentication, by HTTP status (401, 403, 500 or 503). | labels=status | buckets=
+gateway_registry_refresh_failures_total | COUNTER | Failed attempts to refresh the worker registry snapshot. | labels= | buckets=
+gateway_registry_snapshot_age_seconds | GAUGE | Seconds since the gateway last fetched the worker registry (since start before the first fetch). Above gateway.registry_max_staleness the gateway fails closed. | labels= | buckets=
 inference_attempts_total | COUNTER | Attempts to serve a request on a worker (registry mode), by model and outcome. | labels=model,outcome | buckets=
+inference_failures_total | COUNTER | Inference requests that ended with a gateway error, by model and API error code. | labels=model,reason | buckets=
+inference_gateway_overhead_seconds | HISTOGRAM | Time from request accepted to the first dispatch to a worker (authentication, rate limit, parsing and worker selection), by model. | labels=model | buckets=5e-05,0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,1
 inference_request_duration_seconds | HISTOGRAM | Total inference request duration as seen by the gateway. | labels=model | buckets=0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30,60,120
 inference_requests_active | GAUGE | Inference requests currently in flight. | labels= | buckets=
 inference_requests_total | COUNTER | Inference requests handled by the gateway, by model and HTTP status. | labels=model,status | buckets=
@@ -10,3 +14,9 @@ rate_limit_decision_seconds | HISTOGRAM | Time the rate limiter took to decide a
 rate_limit_dropped_releases_total | COUNTER | Concurrency slot releases that were not sent to Redis (queue full or Redis unavailable); the slot is held until lease_ttl. | labels= | buckets=
 rate_limit_local_leases | GAUGE | Concurrency leases this gateway currently tracks (requests in flight that hold a slot). | labels= | buckets=
 rate_limit_rejections_total | COUNTER | Requests refused by rate limiting, by limit: requests, tokens, concurrency, model or unavailable (the check could not be made). | labels=limit | buckets=
+scheduler_decision_duration_seconds | HISTOGRAM | Time the scheduler took to choose a worker, by strategy. | labels=strategy | buckets=5e-05,0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,1
+scheduler_decisions_total | COUNTER | Scheduling decisions in registry mode, by strategy, model and result (selected, no_capacity, no_model or error). | labels=model,result,strategy | buckets=
+scheduler_ineligible_selections_total | COUNTER | Selections of a worker the registry view did not judge eligible (not READY, or past the heartbeat bound). Must stay 0: the scheduler never routes to a known-unhealthy worker. | labels= | buckets=
+scheduler_no_capacity_total | COUNTER | Requests refused because no worker could be chosen, by model and reason (no_capacity or worker_unavailable). | labels=model,reason | buckets=
+scheduler_selections_total | COUNTER | Workers chosen by the scheduler, by model and worker (worker_id is capped; later workers are "other"). | labels=model,worker_id | buckets=
+serverflow_build_info | GAUGE | A constant 1, labelled with the version, VCS revision and Go version of this binary. | labels=commit,go_version,version | buckets=

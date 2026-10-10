@@ -1,0 +1,48 @@
+# Recording rules (naming: level:metric:operation, per the Prometheus convention). Dashboards and alerts query
+# these, so a PromQL change is made once. Error ratio counts 5xx only: 429 (rate limited) and 499 (client left)
+# are not the service failing.
+groups:
+  - name: serverflow-recording
+    interval: 15s
+    rules:
+      - record: cluster:inference_requests:rate1m
+        expr: sum(rate(inference_requests_total[1m]))
+      - record: model:inference_requests:rate1m
+        expr: sum by (model) (rate(inference_requests_total[1m]))
+      - record: cluster:inference_errors:ratio_rate5m
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[5m])) or vector(0)) / sum(rate(inference_requests_total[5m]))
+      - record: cluster:inference_errors:ratio_rate30m
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[30m])) or vector(0)) / sum(rate(inference_requests_total[30m]))
+      - record: cluster:inference_errors:ratio_rate1h
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[1h])) or vector(0)) / sum(rate(inference_requests_total[1h]))
+      - record: cluster:inference_errors:ratio_rate6h
+        expr: (sum(rate(inference_requests_total{status=~"5.."}[6h])) or vector(0)) / sum(rate(inference_requests_total[6h]))
+      - record: cluster:inference_request_duration_seconds:p50_rate5m
+        expr: histogram_quantile(0.50, sum by (le) (rate(inference_request_duration_seconds_bucket[5m])))
+      - record: cluster:inference_request_duration_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(inference_request_duration_seconds_bucket[5m])))
+      - record: cluster:inference_request_duration_seconds:p99_rate5m
+        expr: histogram_quantile(0.99, sum by (le) (rate(inference_request_duration_seconds_bucket[5m])))
+      - record: model:inference_request_duration_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (model, le) (rate(inference_request_duration_seconds_bucket[5m])))
+      - record: cluster:inference_ttft_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(inference_ttft_seconds_bucket[5m])))
+      - record: model:inference_ttft_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (model, le) (rate(inference_ttft_seconds_bucket[5m])))
+      # Tokens per second from the workers' output token counters, not from parsing response bodies.
+      - record: cluster:worker_output_tokens:rate1m
+        expr: sum(rate(worker_output_tokens_total[1m]))
+      - record: worker:worker_output_tokens:rate1m
+        expr: sum by (worker_id) (rate(worker_output_tokens_total[1m]))
+      - record: cluster:scheduler_decision_duration_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(scheduler_decision_duration_seconds_bucket[5m])))
+      - record: cluster:inference_gateway_overhead_seconds:p95_rate5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(inference_gateway_overhead_seconds_bucket[5m])))
+      # Queue imbalance: how much deeper the longest worker queue is than the shortest, per model.
+      - record: model:worker_queue_depth:imbalance
+        expr: max by (model) (worker_queue_depth) - min by (model) (worker_queue_depth)
+      # Eligible workers (active replicas) per model.
+      - record: model:worker_health:sum
+        expr: sum by (model) (worker_health)
+      - record: model:worker_tokens_per_second:sum
+        expr: sum by (model) (worker_tokens_per_second)

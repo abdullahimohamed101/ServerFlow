@@ -37,6 +37,10 @@ type snapshotCache struct {
 
 	cur    atomic.Pointer[snapshot]
 	failed atomic.Bool // the last refresh failed; logged once per change
+	// refreshFailures counts failed refreshes (not ones cut short by shutdown); created is when the cache began,
+	// the age reported before any snapshot exists. Both feed the Prometheus collector.
+	refreshFailures atomic.Int64
+	created         time.Time
 }
 
 type snapshot struct {
@@ -45,7 +49,7 @@ type snapshot struct {
 }
 
 func newSnapshotCache(src workerLister, refresh, maxStale, suspectAfter time.Duration, log *slog.Logger) *snapshotCache {
-	return &snapshotCache{src: src, refresh: refresh, maxStale: maxStale, suspectAfter: suspectAfter, now: time.Now, log: log}
+	return &snapshotCache{src: src, refresh: refresh, maxStale: maxStale, suspectAfter: suspectAfter, now: time.Now, log: log, created: time.Now()}
 }
 
 // Run refreshes immediately and then every refresh interval until ctx ends.
@@ -69,6 +73,9 @@ func (c *snapshotCache) Refresh(ctx context.Context) error {
 	defer cancel()
 	ws, err := c.src.Workers(rctx, client.Query{})
 	if err != nil {
+		if ctx.Err() == nil {
+			c.refreshFailures.Add(1)
+		}
 		if ctx.Err() == nil && !c.failed.Swap(true) {
 			c.log.Warn("could not refresh the worker registry; any earlier snapshot keeps serving until it is too old", "error", errText(err))
 		}

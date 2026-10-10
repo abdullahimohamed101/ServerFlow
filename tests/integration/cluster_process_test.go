@@ -63,6 +63,28 @@ func binary(t *testing.T, name string) string {
 	return path
 }
 
+// testMetricsEnv gives every launched binary an ephemeral metrics listener: the default ports (9100 and 9101)
+// would collide between processes started by parallel tests and with a developer's own cluster. A test that
+// wants a different setting passes its own SERVERFLOW_METRICS_* entry, which comes later and wins.
+var testMetricsEnv = []string{"SERVERFLOW_METRICS_LISTEN=127.0.0.1:0"}
+
+// metricsURL returns the base URL of the process's metrics listener, read from its startup log.
+func (p *proc) metricsURL(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range strings.Split(p.stderr.String(), "\n") {
+			var rec struct{ Msg, Addr string }
+			if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "metrics endpoint" && rec.Addr != "" {
+				return "http://" + rec.Addr
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s did not report a metrics endpoint: %s", p.name, p.stderr.String())
+	return ""
+}
+
 type proc struct {
 	name   string
 	cmd    *exec.Cmd
@@ -76,7 +98,7 @@ type proc struct {
 func startProc(t *testing.T, name, startMsg string, env []string, args ...string) *proc {
 	t.Helper()
 	cmd := exec.Command(binary(t, name), args...)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(append(os.Environ(), testMetricsEnv...), env...)
 	pipe, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +387,7 @@ func runBin(t *testing.T, name string, env []string, args ...string) (int, strin
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary(t, name), args...)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(append(os.Environ(), testMetricsEnv...), env...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf("%s did not exit within 10s (it should have failed fast); output: %s", name, out)

@@ -1,0 +1,13 @@
+# Targets for the local stack: ServerFlow processes on the host (make dev-cluster), scraped from the Prometheus
+# container through host.docker.internal. Defaults match the binaries' default ports; edit or replace this file
+# (OBS_TARGETS_FILE in observability/.env) when your processes listen elsewhere.
+- targets: ["host.docker.internal:9100"]
+  labels: {component: gateway}
+- targets: ["host.docker.internal:9101"]
+  labels: {component: control-plane}
+- targets: ["host.docker.internal:9001"]
+  labels: {component: mock-worker, worker_id: mock-9001}
+- targets: ["host.docker.internal:9002"]
+  labels: {component: mock-worker, worker_id: mock-9002}
+- targets: ["host.docker.internal:9003"]
+  labels: {component: mock-worker, worker_id: mock-9003}

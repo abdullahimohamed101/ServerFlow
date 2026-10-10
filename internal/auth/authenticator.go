@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,6 +71,9 @@ type Authenticator struct {
 	outage    bool      // guarded by mu: true between the first failed lookup and the next success
 	downUntil time.Time // guarded by mu: after a failed lookup, the store is not asked again until then
 	touches   chan touchReq
+
+	// Key cache lookups for the Prometheus collector (metrics.go).
+	cacheHits, cacheMisses atomic.Int64
 
 	reserve         int       // lookup slots kept for refreshing cached keys
 	inflightRefresh int       // guarded by mu
@@ -220,8 +224,10 @@ func (a *Authenticator) record(ctx context.Context, prefix string) (KeyRecord, e
 	down := now.Before(a.downUntil)
 	a.mu.Unlock()
 	if hit {
+		a.cacheHits.Add(1)
 		return rec, err
 	}
+	a.cacheMisses.Add(1)
 
 	if down {
 		err = fmt.Errorf("%w: the key store failed moments ago", ErrUnavailable)

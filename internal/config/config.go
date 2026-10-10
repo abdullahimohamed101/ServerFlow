@@ -27,6 +27,7 @@ type Config struct {
 	Auth         AuthConfig         `yaml:"auth"`
 	Events       EventsConfig       `yaml:"events"`
 	Log          LogConfig          `yaml:"log"`
+	Metrics      MetricsConfig      `yaml:"metrics"`
 
 	configFilePath string
 }
@@ -101,6 +102,7 @@ func Default() Config {
 		Log: LogConfig{
 			Level: "info",
 		},
+		Metrics: defaultMetrics(),
 	}
 }
 
@@ -155,6 +157,9 @@ func (c *Config) Validate() error {
 	}
 	// Event publishing settings only matter while events.mode is on (the Redis rule).
 	if err := c.Events.validate(c.Gateway.ShutdownTimeout); err != nil {
+		return err
+	}
+	if err := c.Metrics.validate(); err != nil {
 		return err
 	}
 	switch c.Log.Level {

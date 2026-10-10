@@ -1,0 +1,13 @@
+# The targets file used for the recorded Phase 10 live run (docs/benchmarks/phase-10-observability.md): processes on
+# the Mac's loopback in the 58000-58099 port range, scraped from the Prometheus container through
+# host.docker.internal. Select it with OBS_TARGETS_FILE in observability/.env.
+- targets: ["host.docker.internal:58003"]
+  labels: {component: gateway}
+- targets: ["host.docker.internal:58002"]
+  labels: {component: control-plane}
+- targets: ["host.docker.internal:58011"]
+  labels: {component: mock-worker, worker_id: mock-1}
+- targets: ["host.docker.internal:58012"]
+  labels: {component: mock-worker, worker_id: mock-2}
+- targets: ["host.docker.internal:58013"]
+  labels: {component: mock-worker, worker_id: mock-3}

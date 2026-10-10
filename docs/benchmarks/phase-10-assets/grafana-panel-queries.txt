@@ -1,0 +1,44 @@
+dashboard panel queries replayed through Grafana (/api/ds/query, datasource uid serverflow-prometheus), range last 20m
+
+== ServerFlow Cluster Overview (sf-cluster-overview)
+  [ 1] Requests per second                    1 series, 34 samples
+  [ 2] Tokens per second                      1 series, 44 samples
+  [ 3] Request latency p50 / p95 / p99        3 series, 105 samples
+  [ 4] Time to first token p95                1 series, 35 samples
+  [ 5] Error rate (5xx)                       1 series, 27 samples
+  [ 6] Healthy workers                        2 series, 94 samples
+  [ 7] In-flight requests                     1 series, 46 samples
+  [ 8] GPU utilisation                        no data
+  [ 9] Alerts firing                          4 series, 40 samples
+
+== ServerFlow Model (sf-model)
+  [ 1] Requests per second                    1 series, 34 samples
+  [ 2] Tokens per second                      1 series, 46 samples
+  [ 3] Active replicas                        1 series, 46 samples
+  [ 4] Queue depth                            1 series, 47 samples
+  [ 5] Request latency p50 / p95 / p99        3 series, 107 samples
+  [ 6] Time to first token p95                1 series, 35 samples
+  [ 7] Error rate (5xx)                       1 series, 27 samples
+
+== ServerFlow Scheduler (sf-scheduler)
+  [ 1] Routed requests per second             3 series, 105 samples
+  [ 2] Selection distribution                 3 series, 108 samples
+  [ 3] Queue imbalance                        1 series, 46 samples
+  [ 4] Scheduling decisions per second        2 series, 46 samples
+  [ 5] Routing decision p95                   1 series, 36 samples
+  [ 6] No-capacity events                     1 series, 27 samples
+  [ 7] Retries                                2 series, 14 samples
+  [ 8] Ineligible selections                  1 series, 45 samples
+  [ 9] Gateway overhead p95                   1 series, 35 samples
+
+== ServerFlow Worker (sf-worker)
+  [ 1] Queue depth                            6 series, 282 samples
+  [ 2] Active requests                        3 series, 141 samples
+  [ 3] GPU utilisation                        no data
+  [ 4] Tokens per second                      6 series, 268 samples
+  [ 5] Request latency p95                    3 series, 111 samples
+  [ 6] Time to first token p95                3 series, 111 samples
+  [ 7] Error rate                             3 series, 111 samples
+  [ 8] Health and heartbeat age               9 series, 282 samples
+
+33 panels queried; panels with no data: GPU utilisation, GPU utilisation

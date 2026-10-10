@@ -56,6 +56,8 @@ type reqInfo struct {
 	scan          *tokenScanner
 	tokSource     string
 	tokIn, tokOut int64
+	// selectDuration is how long the last worker selection took, whether or not it found a worker.
+	selectDuration time.Duration
 }
 
 type ctxKey struct{}

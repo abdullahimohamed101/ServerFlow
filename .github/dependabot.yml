@@ -18,8 +18,9 @@ updates:
       go-dependencies:
         patterns: ["*"]
     ignore:
-      # These releases raise the module's Go floor (go.mod says go 1.24.0). Bumping the floor is a
+      # These releases raise the module's Go floor above what go.mod says. Bumping the floor is a
       # deliberate project decision, not something a dependency bot should do (see ADR-014, ADR-015).
+      # Revisit these ignores: the floor is 1.26 now, so they are probably unnecessary.
       - dependency-name: github.com/jackc/pgx/v5
         versions: [">=5.9.0"]
       - dependency-name: github.com/redis/go-redis/v9

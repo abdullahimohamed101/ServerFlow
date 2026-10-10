@@ -38,7 +38,7 @@ func NewObserver(sink Sink, cfg Config, log *slog.Logger) *Observer {
 	return o
 }
 
-// Collectors returns the Prometheus collectors to register on the gateway (gateway.WithExtraCollectors).
+// Collectors returns the Prometheus collectors to register on the gateway (gateway.WithCollector, one call per collector).
 func (o *Observer) Collectors() []prometheus.Collector { return o.pub.Collectors() }
 
 // Publisher exposes the publisher, for tests and metrics.

@@ -38,3 +38,15 @@ benchmark/reports/*.json
 benchmark/reports/*.html
 # Local throwaway data (dev Postgres cluster)
 .data/
+
+# Temporary promtool inputs written by internal/observability tests
+.promtool-*/
+
+# Binaries built in the repository root by a bare `go build ./cmd/<name>` (one was committed by accident)
+/gateway
+/control-plane
+/mock-worker
+/worker-agent
+/benchmark
+/usage-consumer
+/admin

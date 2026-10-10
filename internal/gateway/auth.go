@@ -13,7 +13,7 @@ import (
 type Option func(*Server)
 
 // WithAuthenticator turns on client authentication: every /v1 request must then carry a valid API
-// key as "Authorization: Bearer <key>". /healthz, /readyz and /metrics stay open. Without the
+// key as "Authorization: Bearer <key>". /healthz and /readyz stay open; /metrics is not on this listener at all (ADR-017). Without the
 // option (the default, auth.mode=off) the gateway behaves exactly as before.
 //
 // Passing a nil authenticator does not turn authentication off: the server then refuses to Serve

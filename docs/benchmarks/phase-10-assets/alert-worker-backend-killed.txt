@@ -1,0 +1,5 @@
+before: alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')]} health [('READY', '1')]
+t=0.0s  killed the mock process of mock-3 (SIGKILL)
+t= 0.5s  health [('READY', '1')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')]}
+t= 1.5s  health [('FAILED', '0')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')]}
+t= 5.1s  health [('FAILED', '0')]  alerts {'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'pending')], 'ServerFlowAvailabilityBurnSlow': [(None, 'pending')]}

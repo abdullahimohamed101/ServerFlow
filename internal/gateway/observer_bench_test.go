@@ -75,3 +75,34 @@ func BenchmarkObserverRequest(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkMetricsObserverEvents is the cost of the metrics observer alone: the event sequence of one
+// successful registry-mode request (started, admitted, attempt started, first token, attempt ended,
+// completed) fed straight to it, with no HTTP in between. Phase 10 budgets this at 20 microseconds p95 and
+// no allocations in the steady state (docs/benchmarks/phase-10-observability.md).
+//
+//	go test -run '^$' -bench BenchmarkMetricsObserverEvents -benchmem -count=10 ./internal/gateway
+func BenchmarkMetricsObserverEvents(b *testing.B) {
+	m := newMetrics()
+	ctx := context.Background()
+	run := func(workers []string) func(*testing.B) {
+		return func(b *testing.B) {
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					w := workers[i%len(workers)]
+					i++
+					m.RequestStarted(ctx, RequestStart{ID: "r"})
+					m.RequestAdmitted(ctx, Admission{RequestID: "r", Model: "qwen-7b", RateLimitChecked: true, RateLimitDuration: 200_000})
+					m.AttemptStarted(ctx, AttemptStart{RequestID: "r", Number: 1, WorkerID: w, Model: "qwen-7b", Strategy: "least-active", SelectDuration: 20_000, SinceRequestStart: 100_000, WorkerState: "READY"})
+					m.FirstToken(ctx, FirstToken{RequestID: "r", TTFT: 5_000_000})
+					m.AttemptEnded(ctx, AttemptEnd{RequestID: "r", Number: 1, WorkerID: w, Model: "qwen-7b", Outcome: AttemptOK})
+					m.RequestCompleted(ctx, Completion{RequestID: "r", Model: "qwen-7b", Status: 200, Duration: 50_000_000, Attempts: 1, TTFT: 5_000_000, Handled: true})
+				}
+			})
+		}
+	}
+	b.Run("one_worker", run([]string{"w1"}))
+	b.Run("sixteen_workers", run([]string{"w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16"}))
+}

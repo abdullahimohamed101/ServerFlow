@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,7 +84,21 @@ func startRegistryGateway(t *testing.T, c *controlPlane, strategy string, mutate
 	done := make(chan error, 1)
 	go func() { done <- gw.Serve(ctx, ln) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return "http://" + ln.Addr().String()
+	url := "http://" + ln.Addr().String()
+	// /metrics is not on the data listener (ADR-017): serve it separately and remember where, by gateway URL.
+	ms := httptest.NewServer(gw.MetricsHandler())
+	t.Cleanup(ms.Close)
+	gatewayMetrics.Store(url, ms.URL)
+	return url
+}
+
+// gatewayMetrics maps a gateway's URL (from startRegistryGateway) to its metrics listener's URL.
+var gatewayMetrics sync.Map
+
+func metricsOf(gw string) string {
+	v, _ := gatewayMetrics.Load(gw)
+	s, _ := v.(string)
+	return s
 }
 
 func gwPost(url string, stream bool) (int, string) {

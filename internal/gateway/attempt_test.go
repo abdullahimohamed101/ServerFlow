@@ -449,7 +449,7 @@ func TestAttemptMetricsUseBoundedLabels(t *testing.T) {
 	e := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{bad.snapshot("qwen-7b"), good.snapshot("qwen-7b")})
 	e.post(t, false)
 	e.chat(t, "attacker-chosen-model-name")
-	_, metrics := e.get(t, "/metrics")
+	metrics := scrape(t, e.gw)
 	for _, want := range []string{
 		`inference_attempts_total{model="qwen-7b",outcome="retried"} 1`,
 		`inference_attempts_total{model="qwen-7b",outcome="ok"} 1`,
@@ -853,7 +853,7 @@ func TestStatusesOutsideTheDefinedClassesAreGatewayErrors(t *testing.T) {
 		if resp.StatusCode != http.StatusBadGateway {
 			t.Fatalf("%d must not be relayed: got %d", code, resp.StatusCode)
 		}
-		_, metrics := e.get(t, "/metrics")
+		metrics := scrape(t, e.gw)
 		if strings.Contains(metrics, `status="`+strconv.Itoa(code)+`"`) {
 			t.Fatalf("a worker-chosen status must not become a label: %d", code)
 		}
@@ -898,7 +898,7 @@ func TestARelayedClientErrorCountsAsAnOKAttempt(t *testing.T) {
 	if resp, _ := e.post(t, false); resp.StatusCode != 429 {
 		t.Fatal(resp.StatusCode)
 	}
-	_, metrics := e.get(t, "/metrics")
+	metrics := scrape(t, e.gw)
 	if !strings.Contains(metrics, `inference_attempts_total{model="qwen-7b",outcome="ok"} 1`) {
 		t.Fatalf("attempt outcomes describe the gateway's work (ADR-012):\n%s", metrics)
 	}

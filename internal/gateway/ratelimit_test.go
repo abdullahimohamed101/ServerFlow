@@ -186,8 +186,10 @@ func TestEveryLimitMapsTo429WithRetryAfterAndBoundedMetrics(t *testing.T) {
 		if !strings.Contains(out, `"limit":"`+string(tc.limit)+`"`) || !strings.Contains(out, `"tenant_id":"ten_acme"`) || strings.Contains(out, key) {
 			t.Fatalf("%s: log lacks tenant and limit, or leaks the key:\n%s", tc.limit, out)
 		}
-		if n := testutil.CollectAndCount(env.gw.metrics.rateRejects); n != 1 {
-			t.Fatalf("label cardinality %d", n)
+		// The limit series are created at start (ADR-017 D6), so the vector holds exactly the fixed set of
+		// limit names and a refusal never adds a series.
+		if n := testutil.CollectAndCount(env.gw.metrics.rateRejects); n != len(rateLimitNames) {
+			t.Fatalf("label cardinality %d, want the fixed %d", n, len(rateLimitNames))
 		}
 	}
 }
@@ -459,9 +461,7 @@ func TestLimiterLeaseAndDroppedReleaseMetricsAreExported(t *testing.T) {
 	go env.chat(t, key, "qwen-7b")
 	<-started
 	metrics := func() string {
-		resp, body := env.do(t, http.MethodGet, "/metrics", "")
-		_ = resp
-		return body
+		return scrape(t, env.gw)
 	}
 	out := metrics()
 	if !strings.Contains(out, "rate_limit_local_leases 1\n") || !strings.Contains(out, "rate_limit_dropped_releases_total 7\n") {

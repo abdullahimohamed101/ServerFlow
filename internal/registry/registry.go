@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"serverflow/pkg/protocol"
@@ -82,6 +83,10 @@ type Registry struct {
 
 	mu      sync.RWMutex
 	workers map[string]*entry
+
+	// Counters for the Prometheus collector (metrics.go); written outside the lock.
+	registrations atomic.Int64
+	heartbeats    [numHeartbeatResults]atomic.Int64
 }
 
 type entry struct {
@@ -129,6 +134,9 @@ func (r *Registry) Register(info protocol.WorkerInfo) (string, error) {
 	}
 	regID, logs, err := r.register(info)
 	r.flush(logs) // log after the lock is released
+	if err == nil {
+		r.registrations.Add(1)
+	}
 	return regID, err
 }
 
@@ -172,10 +180,12 @@ func (r *Registry) register(info protocol.WorkerInfo) (string, []func(), error) 
 // drain is one-way, even through FAILED.
 func (r *Registry) Heartbeat(id, registrationID string, hb protocol.Heartbeat) error {
 	if err := hb.Validate(); err != nil {
+		r.heartbeats[heartbeatInvalid].Add(1)
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	logs, err := r.heartbeat(id, registrationID, hb)
 	r.flush(logs)
+	r.heartbeats[heartbeatResult(err)].Add(1)
 	return err
 }
 

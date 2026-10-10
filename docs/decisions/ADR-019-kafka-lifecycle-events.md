@@ -29,8 +29,8 @@ hard to reverse or easy to misread, and the findings made while building it.
   same ID, so no path can double count it. `usage_records` is additionally unique on `request_id`.
 - **JSON, one topic `inference.lifecycle.v1`, key = `request_id`.** The topic name carries the major version. Rules for evolution are in
   `docs/events/inference-lifecycle-v1.md`; golden fixtures only ever grow.
-- **Client library: franz-go pinned at v1.21.7.** Pure Go, idempotent producer, non-blocking produce, group consumer. v1.22.x needs Go 1.26,
-  a repo-wide toolchain change that is not this phase's call. Only `internal/kafka` imports it (a test fails otherwise); `events.Sink` and
+- **Client library: franz-go pinned at v1.21.7.** Pure Go, idempotent producer, non-blocking produce, group consumer. v1.22.x needs Go 1.26 (which the repository's floor now is, since PR #16, so it would fit; staying on v1.21.7 is a deliberate no-bump in this PR, to be judged as its own dependency update),
+  a dependency update that is not this phase's call. Only `internal/kafka` imports it (a test fails otherwise); `events.Sink` and
   `usage.Source` are the seams.
 - **Delivery semantics (spec section 22), exactly.** Producer: `acks=all`, idempotent. Duplicates are possible at the consumer (redelivery
   after a crash before the offset commit, or a deliberate replay) and absorbed by the idempotent insert. Loss is possible and counted: buffer
@@ -60,7 +60,7 @@ hard to reverse or easy to misread, and the findings made while building it.
   outage test accounts for every event (delivered or counted) within the timeout.
 - **`events.batch_max_bytes` replaces the planned `batch_max_records`**: the client has no record-count cap, only a batch size in bytes
   (default 1 MiB) plus `linger`.
-- **Metrics are registered with `gateway.WithExtraCollectors`**, a new Option, because each gateway Server owns a private Prometheus
+- **Metrics are registered with `gateway.WithCollector`** (Phase 10's option, one call per collector; this phase first added its own `WithExtraCollectors`, removed in the merge with master) because each gateway Server owns a private Prometheus
   registry (the plan assumed a shared one). `Observer.Collectors()` is what `cmd/gateway` passes.
 - **Per-request state is on the context**, not in a map keyed by request ID (the plan's wording left this open).
 - **Events carry only a model the gateway has confirmed.** In registry mode a request is admitted before its model is matched against the
