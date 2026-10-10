@@ -56,7 +56,7 @@ func validID(id, prefix string) string {
 	}
 	for i := len(prefix); i < len(id); i++ {
 		c := id[i]
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return ""
 		}
 	}

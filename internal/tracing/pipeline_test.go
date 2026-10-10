@@ -197,9 +197,9 @@ func TestClosedPortAndRecovery(t *testing.T) {
 		t.Skipf("could not reuse the port: %v", err)
 	}
 	rcv := newFakeReceiver(t)
-	rcv.srv.Listener.Close()
+	_ = rcv.srv.Listener.Close()
 	srv2 := httptest.NewUnstartedServer(rcv.srv.Config.Handler)
-	srv2.Listener.Close()
+	_ = srv2.Listener.Close()
 	srv2.Listener = ln2
 	srv2.Start()
 	t.Cleanup(srv2.Close)

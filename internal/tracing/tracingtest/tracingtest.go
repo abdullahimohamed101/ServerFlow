@@ -19,7 +19,7 @@ func Dump(spans tracetest.SpanStubs) string {
 	var b strings.Builder
 	kv := func(a []attribute.KeyValue) {
 		for _, x := range a {
-			fmt.Fprintf(&b, " %s=%s", x.Key, x.Value.Emit())
+			fmt.Fprintf(&b, " %s=%s", x.Key, x.Value.String())
 		}
 	}
 	for _, s := range spans {

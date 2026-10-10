@@ -91,7 +91,7 @@ func TestWorkerSpansJoinTheGatewaysTrace(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range inf.Attributes {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	if got["serverflow.request_id"] != "req_0123456789abcdef" || got["serverflow.attempt_id"] != "att_fedcba9876543210" ||
 		got["serverflow.model"] != "qwen-7b" || got["serverflow.stream"] != "true" || got["serverflow.worker_id"] == "" {
@@ -124,11 +124,11 @@ func TestWorkerValidatesTheIDsItPutsOnSpans(t *testing.T) {
 	r.chat(t, stream, "Traceparent", tpSampled, "X-Request-ID", "req_ canary secret ", "X-Attempt-ID", strings.Repeat("a", 5000))
 	for _, s := range r.exp.GetSpans() {
 		for _, kv := range s.Attributes {
-			if strings.Contains(kv.Value.Emit(), "canary") || len(kv.Value.Emit()) > 128 {
-				t.Errorf("unvalidated value on %s: %s", kv.Key, kv.Value.Emit())
+			if strings.Contains(kv.Value.String(), "canary") || len(kv.Value.String()) > 128 {
+				t.Errorf("unvalidated value on %s: %s", kv.Key, kv.Value.String())
 			}
 			if kv.Key == tracing.KeyRequestID || kv.Key == tracing.KeyAttemptID {
-				t.Errorf("an invalid ID must be omitted, got %s=%s", kv.Key, kv.Value.Emit())
+				t.Errorf("an invalid ID must be omitted, got %s=%s", kv.Key, kv.Value.String())
 			}
 		}
 	}
