@@ -169,7 +169,7 @@ func TestDashboardStructure(t *testing.T) {
 			t.Errorf("%s: schemaVersion %d is not the pinned 39", d.File, d.Schema)
 		}
 		ids := map[int]bool{}
-		defined := map[string]bool{"__range": true}
+		defined := map[string]bool{"__range": true, "__rate_interval": true, "__interval": true}
 		for _, v := range d.Templating.List {
 			defined[v.Name] = true
 			switch v.Name {
@@ -204,9 +204,9 @@ func TestDashboardStructure(t *testing.T) {
 				if tg.Datasource == nil || tg.Datasource.UID != "${datasource}" {
 					t.Errorf("%s panel %d target %d: datasource must be ${datasource}", d.File, p.ID, i)
 				}
-				for _, u := range UnresolvedVariables(tg.Expr) {
-					if !defined[strings.Trim(u, "${}")] {
-						t.Errorf("%s panel %d target %d: variable %s is not defined by the dashboard", d.File, p.ID, i, u)
+				for _, u := range Variables(tg.Expr) {
+					if !defined[u] {
+						t.Errorf("%s panel %d target %d: variable $%s is not defined by the dashboard", d.File, p.ID, i, u)
 					}
 				}
 			}

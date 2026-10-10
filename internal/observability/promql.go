@@ -28,13 +28,19 @@ func SubstituteVariables(expr string) string {
 	return expr
 }
 
-// UnresolvedVariables returns the $name references left after substitution: a variable the dashboard does not
-// define would reach Prometheus as literal text.
-func UnresolvedVariables(expr string) []string {
-	var out []string
-	for _, m := range regexp.MustCompile(`\$\{?[A-Za-z_][A-Za-z0-9_]*\}?`).FindAllString(SubstituteVariables(expr), -1) {
-		out = append(out, m)
+// Variables returns the names of the Grafana variables an expression references ($model, ${worker_id},
+// $__range, ...), sorted and without duplicates. A dashboard must define each one it uses, apart from Grafana's
+// built-in $__range, $__rate_interval and $__interval.
+func Variables(expr string) []string {
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`).FindAllStringSubmatch(expr, -1) {
+		seen[m[1]] = true
 	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
 	return out
 }
 

@@ -25,11 +25,12 @@ func TestMetricNames(t *testing.T) {
 	}
 }
 
-func TestUnresolvedVariables(t *testing.T) {
-	if got := UnresolvedVariables(`rate(x{a=~"$model", w=~"$worker_id"}[$__rate_interval])`); len(got) != 0 {
-		t.Fatal(got)
+func TestVariables(t *testing.T) {
+	got := Variables(`rate(x{a=~"$model", w=~"${worker_id}", z=~"$model"}[$__rate_interval]) + sum(y[$__range])`)
+	if want := []string{"__range", "__rate_interval", "model", "worker_id"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("%v", got)
 	}
-	if got := UnresolvedVariables(`rate(x{a=~"$mdoel"}[5m])`); !reflect.DeepEqual(got, []string{"$mdoel"}) {
+	if got := Variables(`rate(x[5m])`); len(got) != 0 {
 		t.Fatal(got)
 	}
 }
