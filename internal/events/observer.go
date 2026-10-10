@@ -52,7 +52,7 @@ func (o *Observer) Close(ctx context.Context) error { return o.pub.Close(ctx) }
 type reqState struct {
 	mu         sync.Mutex
 	admitted   bool
-	model      string // as the client asked; unconfirmed
+	model      string // set at the first AttemptStarted: only a model the gateway has confirmed (never client text)
 	stream     bool
 	tenantID   string
 	apiKeyID   string
@@ -88,7 +88,9 @@ func (o *Observer) RequestAdmitted(ctx context.Context, e gateway.Admission) {
 		return
 	}
 	st.mu.Lock()
-	st.admitted, st.model, st.stream, st.tenantID, st.apiKeyID = true, e.Model, e.Stream, e.TenantID, e.APIKeyID
+	// e.Model is what the client asked for. In registry mode it has not been matched against the registry yet, so it
+	// is client text and never goes into an event; the confirmed model arrives with AttemptStarted and Completion.
+	st.admitted, st.stream, st.tenantID, st.apiKeyID = true, e.Stream, e.TenantID, e.APIKeyID
 	st.estimated = int64(e.EstimatedCost)
 	ev := o.envelope(st, protocol.EventReceived, e.RequestID, "", "")
 	st.mu.Unlock()
@@ -107,6 +109,7 @@ func (o *Observer) AttemptStarted(ctx context.Context, e gateway.AttemptStart) c
 		st.mu.Unlock()
 		return ctx
 	}
+	st.model = e.Model // a worker was chosen for it, so the gateway has confirmed it exists
 	if len(st.attempts) < protocol.MaxEventAttempts {
 		st.attempts = append(st.attempts, protocol.AttemptData{AttemptID: e.AttemptID, Number: e.Number, WorkerID: e.WorkerID})
 	}

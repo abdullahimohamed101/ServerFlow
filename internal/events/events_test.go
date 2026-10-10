@@ -162,6 +162,48 @@ func TestTerminalClassification(t *testing.T) {
 	}
 }
 
+// Client text must never become event data: in registry mode Admission.Model is whatever the client typed. Only the
+// model of an attempt (a worker was chosen for it) and the confirmed model of the completion may appear.
+func TestClientModelTextNeverReachesAnyEvent(t *testing.T) {
+	const canary = "CANARY-MODEL-q7z"
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		c        gateway.Completion
+		want     map[string]string // event type -> model
+	}{
+		{"unknown model, refused after admission", 0, gateway.Completion{Status: 404, ErrorCode: "MODEL_NOT_FOUND", Handled: true},
+			map[string]string{protocol.EventReceived: "", protocol.EventFailed: ""}},
+		{"served", 1, gateway.Completion{Status: 200, Model: "real-model", Handled: true},
+			map[string]string{protocol.EventReceived: "", protocol.EventRouted: "real-model", protocol.EventCompleted: "real-model"}},
+	} {
+		sink := &eventstest.RecordingSink{}
+		o := newObs(t, sink, 20)
+		id := rid(70)
+		ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: id})
+		o.RequestAdmitted(ctx, gateway.Admission{RequestID: id, Model: canary, TenantID: "ten_a"})
+		for i := 1; i <= tc.attempts; i++ {
+			att := fmt.Sprintf("att_%d", i)
+			actx := o.AttemptStarted(ctx, gateway.AttemptStart{RequestID: id, AttemptID: att, Number: i, WorkerID: "w1", Model: "real-model"})
+			o.AttemptEnded(actx, gateway.AttemptEnd{RequestID: id, AttemptID: att, Number: i, Outcome: gateway.AttemptOK})
+		}
+		tc.c.RequestID = id
+		o.RequestCompleted(ctx, tc.c)
+		eventually(t, func() bool { return len(sink.Records()) == len(tc.want) }, tc.name)
+		for _, r := range sink.Records() {
+			if strings.Contains(string(r.Value), canary) || strings.Contains(string(r.Key), canary) {
+				t.Fatalf("%s: client model text reached a record: %s", tc.name, r.Value)
+			}
+		}
+		evs, _ := sink.Events()
+		for _, e := range evs {
+			if want, ok := tc.want[e.EventType]; !ok || e.Model != want {
+				t.Errorf("%s: %s has model %q, want %q", tc.name, e.EventType, e.Model, want)
+			}
+		}
+	}
+}
+
 func TestChunkCountsLabelledAndInputUnknown(t *testing.T) {
 	sink := &eventstest.RecordingSink{}
 	o := newObs(t, sink, 10)
@@ -180,7 +222,7 @@ func TestUnconfirmedModelNeverReachesTheTerminalEvent(t *testing.T) {
 	drive(o, rid(41), gateway.Completion{Status: 404, ErrorCode: "MODEL_NOT_FOUND", Model: "", Handled: true}, 0)
 	eventually(t, func() bool { return len(sink.Records()) == 2 }, "events")
 	evs, _ := sink.Events()
-	if evs[1].EventType != protocol.EventFailed || evs[1].Model != "" || evs[0].Model != "m" {
+	if evs[1].EventType != protocol.EventFailed || evs[1].Model != "" || evs[0].Model != "" {
 		t.Fatalf("received model %q terminal model %q", evs[0].Model, evs[1].Model)
 	}
 }
@@ -380,7 +422,7 @@ func TestEncodeFailureIsCountedAndDoesNotStopTheStream(t *testing.T) {
 	sink := &eventstest.RecordingSink{}
 	o := newObs(t, sink, 10)
 	ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: rid(1)})
-	o.RequestAdmitted(ctx, gateway.Admission{RequestID: rid(1), Model: "bad\nmodel"}) // control character: refused by Encode
+	o.RequestAdmitted(ctx, gateway.Admission{RequestID: rid(1), Model: "m", TenantID: "not-a-tenant-id"}) // refused by Encode
 	drive(o, rid(2), gateway.Completion{Status: 200, Handled: true}, 1)
 	eventually(t, func() bool { return o.Publisher().Dropped(events.ReasonEncode) == 1 && len(sink.Records()) == 4 }, "encode drop then normal flow")
 }

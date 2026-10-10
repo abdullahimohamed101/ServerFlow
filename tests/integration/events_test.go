@@ -106,7 +106,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 		if tt.TokensSource != protocol.TokensFromUsage || tt.InputTokens == nil || tt.OutputTokens == nil || *tt.OutputTokens <= 0 || tt.HTTPStatus != 200 {
 			t.Fatalf("terminal: %+v", tt)
 		}
-		if len(tt.Attempts) != 1 || tt.Attempts[0].Outcome != "ok" || evs[2].Model != model || evs[0].Model != model {
+		if len(tt.Attempts) != 1 || tt.Attempts[0].Outcome != "ok" || evs[2].Model != model || evs[1].Model != model || evs[0].Model != "" {
 			t.Fatalf("attempts/model: %+v", evs[2])
 		}
 	})
@@ -188,11 +188,8 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 	})
 }
 
-func TestEventsAfterARetryListEveryAttemptInOrder(t *testing.T) {
-	c := startRelaxedControlPlane(t)
-	c.startModelNode(t, "q1", model, func(m *mockworker.Config) { m.FailureRate, m.FailureMode = 1, mockworker.ModeUnavailable })
-	c.startModelNode(t, "q2", model, nil)
-	obs, sink := newEventsObserver(t, quiet())
+func registryGatewayWithEvents(t *testing.T, c *controlPlane, obs *events.Observer) string {
+	t.Helper()
 	cfg := config.Default()
 	cfg.Gateway.WorkerSource, cfg.Gateway.ControlPlaneURL = config.WorkerSourceRegistry, c.url
 	cfg.Gateway.RegistryRefresh, cfg.Gateway.RegistryMaxStaleness, cfg.Gateway.UpstreamHeaderTimeout = 25*time.Millisecond, 3*time.Second, 5*time.Second
@@ -206,7 +203,15 @@ func TestEventsAfterARetryListEveryAttemptInOrder(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- gw.Serve(ctx, ln) }()
 	t.Cleanup(func() { cancel(); <-done })
-	url := "http://" + ln.Addr().String()
+	return "http://" + ln.Addr().String()
+}
+
+func TestEventsAfterARetryListEveryAttemptInOrder(t *testing.T) {
+	c := startRelaxedControlPlane(t)
+	c.startModelNode(t, "q1", model, func(m *mockworker.Config) { m.FailureRate, m.FailureMode = 1, mockworker.ModeUnavailable })
+	c.startModelNode(t, "q2", model, nil)
+	obs, sink := newEventsObserver(t, quiet())
+	url := registryGatewayWithEvents(t, c, obs)
 	waitFor(t, 10*time.Second, "both workers eligible", func() bool { return c.eligible("q1") && c.eligible("q2") })
 	// The gateway's own view of the registry lags the control plane's by a refresh or two: the first requests
 	// can still be refused for capacity on a loaded machine.
@@ -325,4 +330,61 @@ func TestNoPromptResponseOrKeyReachesAnEvent(t *testing.T) {
 	if !found {
 		t.Fatal("expected usage-sourced tokens in at least one terminal event")
 	}
+}
+
+// A model name the client invents must not reach the topic, in registry mode (where the gateway admits the request
+// before it knows the model) or in static mode (where it is refused before admission and nothing is emitted).
+func TestUnknownModelTextNeverReachesTheRecords(t *testing.T) {
+	const canary = "CANARY-UNKNOWN-MODEL-8e3b"
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, canary)
+	t.Run("registry", func(t *testing.T) {
+		c := startRelaxedControlPlane(t)
+		c.startModelNode(t, "q1", model, nil)
+		obs, sink := newEventsObserver(t, quiet())
+		url := registryGatewayWithEvents(t, c, obs)
+		waitFor(t, 10*time.Second, "worker eligible", func() bool { return c.eligible("q1") })
+		eventually(t, 15*time.Second, func() bool { code, _ := gwPost(url, false); return code == 200 }, "the gateway to route a request")
+		resp, err := http.Post(url+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != 404 {
+			t.Fatalf("an unknown model should be 404, got %d", resp.StatusCode)
+		}
+		time.Sleep(100 * time.Millisecond)
+		var mine []protocol.Event
+		evs, _ := sink.Events()
+		for _, e := range evs {
+			if e.Model == canary {
+				t.Fatalf("the invented model is in an event: %+v", e)
+			}
+		}
+		for _, r := range sink.Records() {
+			if strings.Contains(string(r.Value), canary) || strings.Contains(string(r.Key), canary) {
+				t.Fatalf("the invented model is in a record: %s", r.Value)
+			}
+		}
+		// The unknown-model request did leave a received/failed pair (it was admitted), without the model.
+		for _, e := range evs {
+			if e.EventType == protocol.EventFailed && e.Terminal.HTTPStatus == 404 {
+				mine = append(mine, e)
+			}
+		}
+		if len(mine) != 1 || mine[0].Model != "" {
+			t.Fatalf("expected one failed event for the unknown model with no model, got %+v", mine)
+		}
+	})
+	t.Run("static", func(t *testing.T) {
+		mock, _ := startMock(t)
+		gw, _, sink := staticGatewayWithEvents(t, mock.URL, nil, quiet())
+		resp := mustPost(t, gw, body)
+		_ = resp.Body.Close()
+		time.Sleep(100 * time.Millisecond)
+		for _, r := range sink.Records() {
+			if strings.Contains(string(r.Value), canary) {
+				t.Fatalf("the invented model is in a record: %s", r.Value)
+			}
+		}
+	})
 }

@@ -44,7 +44,11 @@ func fixtureEvents() map[string]Event {
 			{AttemptID: "att_1111111111111111", Number: 1, WorkerID: "worker-a", Outcome: "retried", FailureClass: "status_503", DurationMS: 30},
 			{AttemptID: "att_2222222222222222", Number: 2, WorkerID: "worker-b", Outcome: "failed", FailureClass: "status_503", DurationMS: 60},
 		}}
-	return map[string]Event{"received": recv, "routed": routed, "first_token": first, "completed": done, "failed_after_retry": failed}
+	// What the gateway emits today: no model before it is confirmed (the model arrives with routed and the terminal event).
+	recvNoModel := recv
+	recvNoModel.Model = ""
+	recvNoModel.EventID = NewEventID(recvNoModel.RequestID, EventReceived, "")
+	return map[string]Event{"received_no_model": recvNoModel, "received": recv, "routed": routed, "first_token": first, "completed": done, "failed_after_retry": failed}
 }
 
 func TestFixturesWrittenOnceAndDecodeUnderCurrentCode(t *testing.T) {

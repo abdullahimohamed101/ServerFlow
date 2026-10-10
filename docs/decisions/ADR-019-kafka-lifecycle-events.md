@@ -63,8 +63,11 @@ hard to reverse or easy to misread, and the findings made while building it.
 - **Metrics are registered with `gateway.WithExtraCollectors`**, a new Option, because each gateway Server owns a private Prometheus
   registry (the plan assumed a shared one). `Observer.Collectors()` is what `cmd/gateway` passes.
 - **Per-request state is on the context**, not in a map keyed by request ID (the plan's wording left this open).
-- **Terminal events carry only the confirmed model**; `received` carries the model as the client asked for it (bounded to 128 characters and
-  control-character free). Client-controlled text therefore never becomes a usage dimension.
+- **Events carry only a model the gateway has confirmed.** In registry mode a request is admitted before its model is matched against the
+  registry, so `Admission.Model` is client text. The first version of this phase put it on `received` (an independent review found an invented
+  model name in the topic); `received` now has no model, and `routed`, `first_token` and the terminal event carry the model of the attempt or
+  the completion. No schema version change: the field was already optional, and a new golden fixture (`received_no_model.json`) documents
+  the shape. Client-controlled text therefore never becomes a usage dimension or reaches the topic.
 - **`Admission` gained `APIKeyID` and `Completion` gained `TokensSource`, `InputTokens`, `OutputTokens`** (additive).
 - **The Kafka consumer holds rebalances between a poll and its commit** (`BlockRebalanceOnPoll`), so a member never works on partitions
   another has been given; `Close` must allow rebalances or it blocks (found when a test hung).
