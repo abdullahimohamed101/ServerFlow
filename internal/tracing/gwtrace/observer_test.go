@@ -425,14 +425,49 @@ func TestBoundedAttributes(t *testing.T) {
 	}
 }
 
+// oneKeyStore knows a single active key of the tenant ten_acme.
+type oneKeyStore struct{ rec auth.KeyRecord }
+
+func (o oneKeyStore) LookupKey(_ context.Context, prefix string) (auth.KeyRecord, error) {
+	if prefix == o.rec.Prefix {
+		return o.rec, nil
+	}
+	return auth.KeyRecord{}, auth.ErrNotFound
+}
+
 func TestTenantIDSwitch(t *testing.T) {
-	// The tenant attribute is added by RequestAdmitted/Completion; with the switch off it must never appear.
-	e := newEnv(t, envOpts{noTenant: true})
-	e.post(plainBody)
-	for _, s := range e.spans() {
-		if _, ok := attrOf(s, tracing.KeyTenantID); ok {
-			t.Errorf("%s carries a tenant id although include_tenant_id is off", s.Name)
+	for _, include := range []bool{true, false} {
+		name := "include_tenant_id off"
+		if include {
+			name = "include_tenant_id on"
 		}
+		t.Run(name, func(t *testing.T) {
+			key, prefix, hash := auth.GenerateKey()
+			store := oneKeyStore{auth.KeyRecord{KeyID: "key_acme", TenantID: "ten_acme", Prefix: prefix, SecretHash: hash, KeyStatus: auth.KeyActive,
+				Policy: auth.TenantPolicy{Status: auth.TenantActive}}}
+			a := auth.New(store, auth.Config{CacheTTL: time.Minute, NegativeTTL: time.Minute, CacheSize: 10, StaleGrace: time.Minute})
+			e := newEnv(t, envOpts{noTenant: !include, gwOpts: []gateway.Option{gateway.WithAuthenticator(a)}})
+			if resp, _ := e.post(plainBody, "Authorization", "Bearer "+key); resp.StatusCode != 200 {
+				t.Fatalf("an authenticated request failed: %d", resp.StatusCode)
+			}
+			spans := e.spans()
+			withTenant := 0
+			for _, s := range spans {
+				if v, ok := attrOf(s, tracing.KeyTenantID); ok {
+					withTenant++
+					if v.AsString() != "ten_acme" {
+						t.Errorf("%s carries tenant id %q", s.Name, v.AsString())
+					}
+				}
+			}
+			if include && withTenant == 0 {
+				t.Errorf("the tenant id must be on the root when include_tenant_id is on:\n%s", tracingtest.Dump(spans))
+			}
+			if !include && (withTenant != 0 || strings.Contains(tracingtest.Dump(spans), "ten_acme")) {
+				t.Errorf("tenant ids on spans although include_tenant_id is off:\n%s", tracingtest.Dump(spans))
+			}
+			tracingtest.RequireNoCanary(t, spans, key, prefix, "key_acme")
+		})
 	}
 }
 
