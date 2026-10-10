@@ -276,7 +276,7 @@ func TestConsumerGroupCommitsAfterDatabase(t *testing.T) {
 		}
 	}
 	group := kafkatest.Unique("sf-group")
-	cfg.Topic, cfg.GroupID, cfg.StartOffset = topic, group, "earliest"
+	cfg.Topic, cfg.GroupID, cfg.StartOffset, cfg.LagInterval = topic, group, "earliest", 100*time.Millisecond
 
 	drain := func(c *kafka.Consumer, want int, commit bool) (n int) {
 		deadline := time.Now().Add(30 * time.Second)
@@ -327,9 +327,7 @@ func TestConsumerGroupCommitsAfterDatabase(t *testing.T) {
 	if got := drain(c2, total, true); got != total {
 		t.Fatalf("second member re-read %d of %d: uncommitted records must be redelivered", got, total)
 	}
-	if c2.Lag() != 0 {
-		t.Fatalf("consumer lag after committing everything = %d", c2.Lag())
-	}
+	waitFor(t, 20*time.Second, func() bool { return c2.Lag() == 0 }, "consumer lag after committing everything")
 	c2.Close()
 	if lag, err = adm.GroupLag(ctx, group, topic); err != nil || lag != 0 {
 		t.Fatalf("lag after commit = %d (%v), want 0", lag, err)
@@ -346,4 +344,72 @@ func TestConsumerGroupCommitsAfterDatabase(t *testing.T) {
 	if msgs, _ := c3.Poll(pc, 100); len(msgs) != 0 {
 		t.Fatalf("a committed group was redelivered %d records", len(msgs))
 	}
+}
+
+// consumer_lag comes from the broker's committed offsets against partition end offsets, not from what this process
+// happened to poll: a backlog is visible before the first poll, it falls as batches are committed, and a stopped
+// poller does not make it zero.
+func TestConsumerLagIsTheGroupsRealBacklog(t *testing.T) {
+	cfg := kafkatest.Config(t)
+	topic := kafkatest.NewTopic(t, cfg, 4)
+	adm := kafkatest.Admin(t, cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	const total = 200
+	for i := 0; i < total; i++ {
+		if err := adm.Produce(ctx, topic, []byte(reqID(i)), []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.Topic, cfg.GroupID, cfg.StartOffset, cfg.LagInterval = topic, kafkatest.Unique("sf-lag"), "earliest", 100*time.Millisecond
+	c, err := kafka.NewConsumer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	// Nothing has been polled: the backlog is still all of it.
+	waitFor(t, 20*time.Second, func() bool { return c.Lag() == total }, fmt.Sprintf("lag %d before any poll (have %d)", total, c.Lag()))
+	// Process half and commit: the lag follows the commit, even though polling now stops.
+	done := 0
+	offs := map[int32]int64{}
+	for done < total/2 {
+		pc, pcancel := context.WithTimeout(ctx, time.Second)
+		msgs, _ := c.Poll(pc, 10)
+		pcancel()
+		for _, m := range msgs {
+			offs[m.Partition] = max(offs[m.Partition], m.Offset+1)
+		}
+		done += len(msgs)
+		if len(msgs) > 0 {
+			var o []usageOffset
+			for p, off := range offs {
+				o = append(o, usageOffset{Topic: topic, Partition: p, Offset: off})
+			}
+			if err := c.Commit(ctx, toUsage(o)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	want := int64(total - done)
+	waitFor(t, 20*time.Second, func() bool { return c.Lag() == want }, fmt.Sprintf("lag %d after committing %d (have %d)", want, done, c.Lag()))
+	// Drain the rest.
+	for done < total {
+		pc, pcancel := context.WithTimeout(ctx, time.Second)
+		msgs, _ := c.Poll(pc, 50)
+		pcancel()
+		for _, m := range msgs {
+			offs[m.Partition] = max(offs[m.Partition], m.Offset+1)
+		}
+		done += len(msgs)
+		if len(msgs) > 0 {
+			var o []usageOffset
+			for p, off := range offs {
+				o = append(o, usageOffset{Topic: topic, Partition: p, Offset: off})
+			}
+			if err := c.Commit(ctx, toUsage(o)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	waitFor(t, 20*time.Second, func() bool { return c.Lag() == 0 }, fmt.Sprintf("lag 0 after everything is committed (have %d)", c.Lag()))
 }

@@ -54,6 +54,8 @@ type Config struct {
 	// Consumer settings.
 	GroupID     string
 	StartOffset string // earliest or latest, for a group with no committed offset
+	// LagInterval is how often the consumer asks the broker for the group's lag (default 5s).
+	LagInterval time.Duration
 
 	// Logger receives one line when brokers become unreachable and one when they recover; nil discards them.
 	Logger *slog.Logger

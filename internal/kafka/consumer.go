@@ -20,16 +20,14 @@ import (
 type Consumer struct {
 	cfg    Config
 	cl     *kgo.Client
-	mu     sync.Mutex
-	hw     map[tp]int64 // high watermark seen per partition
-	next   map[tp]int64 // next offset to process per partition
 	closed atomic.Bool
 	polled atomic.Bool // a batch is out: rebalances are blocked until Commit or an empty Poll
-}
 
-type tp struct {
-	topic string
-	part  int32
+	// lag is the group's backlog as the broker last reported it (committed offsets against partition end
+	// offsets), refreshed by lagLoop. It is not derived from what this process has polled.
+	lag     atomic.Int64
+	lagStop chan struct{}
+	lagDone chan struct{}
 }
 
 var _ usage.Source = (*Consumer)(nil)
@@ -61,7 +59,39 @@ func NewConsumer(cfg Config) (*Consumer, error) {
 	if err != nil {
 		return nil, cfg.safe(err)
 	}
-	return &Consumer{cfg: cfg, cl: cl, hw: map[tp]int64{}, next: map[tp]int64{}}, nil
+	c := &Consumer{cfg: cfg, cl: cl, lagStop: make(chan struct{}), lagDone: make(chan struct{})}
+	go c.lagLoop()
+	return c, nil
+}
+
+// lagLoop recomputes the group's lag on a fixed cadence (Config.LagInterval, default 5s), each time bounded by a
+// timeout. A failed refresh (broker unreachable) keeps the last value: the gauge is stale, not reset to zero, and
+// goes on being stale for as long as the broker cannot be asked.
+func (c *Consumer) lagLoop() {
+	defer close(c.lagDone)
+	every := c.cfg.LagInterval
+	if every <= 0 {
+		every = 5 * time.Second
+	}
+	adm := &Admin{cfg: c.cfg, cl: c.cl}
+	refresh := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if n, err := adm.GroupLag(ctx, c.cfg.GroupID, c.cfg.Topic); err == nil {
+			c.lag.Store(n)
+		}
+	}
+	refresh()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.lagStop:
+			return
+		case <-t.C:
+			refresh()
+		}
+	}
 }
 
 // Poll implements usage.Source.
@@ -90,23 +120,11 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]usage.Message, error) {
 		}
 	}
 	var out []usage.Message
-	c.mu.Lock()
 	fetches.EachPartition(func(p kgo.FetchTopicPartition) {
-		k := tp{p.Topic, p.Partition}
-		if _, known := c.next[k]; !known {
-			// The first record fetched is where this member's position is; before that the position is not
-			// known, and guessing it would invent lag.
-			if len(p.Records) == 0 {
-				return
-			}
-			c.next[k] = p.Records[0].Offset
-		}
-		c.hw[k] = p.HighWatermark
 		for _, r := range p.Records {
 			out = append(out, usage.Message{Topic: r.Topic, Partition: r.Partition, Offset: r.Offset, Key: r.Key, Value: r.Value, Timestamp: r.Timestamp})
 		}
 	})
-	c.mu.Unlock()
 	if len(out) == 0 {
 		c.cl.AllowRebalance()
 		return nil, firstErr
@@ -153,32 +171,21 @@ func (c *Consumer) Commit(ctx context.Context, upTo []usage.Offset) error {
 	if commitErr != nil {
 		return c.cfg.safe(commitErr)
 	}
-	c.mu.Lock()
-	for _, o := range upTo {
-		c.next[tp{o.Topic, o.Partition}] = o.Offset
-	}
-	c.mu.Unlock()
 	return nil
 }
 
-// Lag implements usage.Source: the sum over partitions of the high watermark seen minus the next offset to process.
-func (c *Consumer) Lag() int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var lag int64
-	for k, hw := range c.hw {
-		if d := hw - c.next[k]; d > 0 {
-			lag += d
-		}
-	}
-	return lag
-}
+// Lag implements usage.Source: the group's backlog on the topic, from the broker's committed offsets and partition
+// end offsets, refreshed every Config.LagInterval (default 5 seconds). A partition with no commit counts from its log
+// start, so a brand-new group shows the whole retained log until its first commit.
+func (c *Consumer) Lag() int64 { return c.lag.Load() }
 
 // Close implements usage.Source.
 func (c *Consumer) Close() {
 	if c.closed.Swap(true) {
 		return
 	}
+	close(c.lagStop)
+	<-c.lagDone
 	c.cl.CloseAllowingRebalance()
 }
 
