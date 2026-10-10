@@ -8,6 +8,7 @@
 #   scripts/quality.sh integration  the database-backed tests, which MUST run (a skip is a failure)
 #   scripts/quality.sh build        go build, cross-compiles, go mod tidy/verify
 #   scripts/quality.sh vuln         govulncheck
+#   scripts/quality.sh tracing      the Phase 11 tracing tests, which MUST run (no Docker needed)
 #   scripts/quality.sh full         lint, unit, race, integration (if configured), build
 #
 # integration needs the test servers described in docs/development/ci.md:
@@ -90,6 +91,25 @@ integration() {
     TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd
 }
 
+# tracing runs the tracing tests with the race detector and fails if a named acceptance test did not run and pass.
+# They need no Docker and no service: spans go to in-memory exporters and a fake OTLP receiver.
+tracing_tests() {
+  local log t
+  log="$(mktemp "${TMPDIR:-/tmp}/serverflow-tracing.XXXXXX")"
+  step "tracing tests must run, not skip"
+  if ! go test -race -count=1 -v ./internal/tracing/... ./internal/gateway/... ./internal/mockworker/... ./internal/config/... ./tests/integration/... >"$log" 2>&1; then
+    tail -80 "$log"
+    printf 'quality: full log kept at %s\n' "$log" >&2
+    exit 1
+  fi
+  for t in TestOneTraceAcrossGatewayAndWorker TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace TestNoSecretsInSpansAndOnlyAllowListedKeys \
+    TestADeadCollectorNeverTouchesRequests TestGatewayDoesNotDependOnOpenTelemetry TestExportReachesTheReceiver TestStreamingRequestSpanTree; do
+    grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
+  done
+  rm -f "$log"
+  printf 'tracing: the named tests ran and passed\n'
+}
+
 build() {
   step "go build"
   go build ./...
@@ -133,6 +153,7 @@ case "${1:-}" in
   integration) integration ;;
   build) build ;;
   vuln) vuln ;;
+  tracing) tracing_tests ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|full\n' "$0" >&2; exit 2 ;;
 esac
