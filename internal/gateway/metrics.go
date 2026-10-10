@@ -68,10 +68,6 @@ type metrics struct {
 	perModel map[string]*modelInst
 }
 
-// Bucket edges for sub-millisecond to one-second internal latencies (scheduler decision, gateway overhead).
-// 10 ms and 25 ms are edges so the p95 SLO thresholds are not interpolated across a wide bucket.
-var internalLatencyBuckets = []float64{.00005, .0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25, 1}
-
 // Scheduler decision results.
 const (
 	resultSelected   = "selected"
@@ -115,12 +111,12 @@ func newMetrics() *metrics {
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "inference_request_duration_seconds",
 			Help:    "Total inference request duration as seen by the gateway.",
-			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
+			Buckets: telemetry.DurationBuckets,
 		}, []string{"model"}),
 		ttft: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "inference_ttft_seconds",
 			Help:    "Time from request accepted to the first streamed chunk of a streaming response.",
-			Buckets: []float64{.01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
+			Buckets: telemetry.TTFTBuckets,
 		}, []string{"model"}),
 		attempts: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "inference_attempts_total",
@@ -154,7 +150,7 @@ func newMetrics() *metrics {
 		overhead: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "inference_gateway_overhead_seconds",
 			Help:    "Time from request accepted to the first dispatch to a worker (authentication, rate limit, parsing and worker selection), by model.",
-			Buckets: internalLatencyBuckets,
+			Buckets: telemetry.InternalLatencyBuckets,
 		}, []string{"model"}),
 		decisions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "scheduler_decisions_total",
@@ -163,7 +159,7 @@ func newMetrics() *metrics {
 		decisionDur: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "scheduler_decision_duration_seconds",
 			Help:    "Time the scheduler took to choose a worker, by strategy.",
-			Buckets: internalLatencyBuckets,
+			Buckets: telemetry.InternalLatencyBuckets,
 		}, []string{"strategy"}),
 		noCapacity: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "scheduler_no_capacity_total",

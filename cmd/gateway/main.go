@@ -21,6 +21,7 @@ import (
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/redis"
 	"serverflow/internal/telemetry"
+	"serverflow/internal/telemetry/metricsserver"
 )
 
 func main() {
@@ -59,7 +60,7 @@ func main() {
 			// Lookups may use all but two pool connections, so the pool is never entirely theirs.
 			MaxLookups: lookupCap(cfg.Postgres.MaxConns),
 		})
-		opts = append(opts, gateway.WithAuthenticator(authn))
+		opts = append(opts, gateway.WithAuthenticator(authn), gateway.WithCollector(authn.Collector()), gateway.WithCollector(store.Collector()))
 		logger.Info("api key authentication required", "component", "gateway", "cache_ttl", cfg.Auth.CacheTTL.String(),
 			"negative_ttl", cfg.Auth.NegativeTTL.String(), "cache_size", cfg.Auth.CacheSize, "stale_grace", cfg.Auth.StaleGrace.String())
 	}
@@ -73,6 +74,7 @@ func main() {
 	}
 	if rc != nil {
 		defer func() { _ = rc.Close() }()
+		opts = append(opts, gateway.WithCollector(rc.Collector()))
 	}
 	if cfg.RateLimit.Mode == config.RateLimitRequired {
 		lim, err := ratelimit.NewRedis(rc, ratelimit.Config{
@@ -132,6 +134,22 @@ func main() {
 	if (cfg.RateLimit.Mode == config.RateLimitRequired) != srv.RateLimitRequired() {
 		fmt.Fprintf(os.Stderr, "gateway: rate limiting wiring does not match rate_limit.mode %q; refusing to start\n", cfg.RateLimit.Mode)
 		os.Exit(1)
+	}
+
+	// /metrics has a listener of its own: loopback by default, a bearer token for anything else (ADR-017). It
+	// is bound before serving so a refused or busy address stops the gateway at start-up.
+	if ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultGatewayMetricsListen), cfg.Metrics, srv.MetricsGatherer(), logger); err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	} else if ms != nil {
+		logger.Info("metrics endpoint", "component", "gateway", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
+		go func() {
+			if err := ms.Serve(ctx); err != nil {
+				logger.Error("metrics endpoint stopped with error", "component", "gateway", "error", err.Error())
+			}
+		}()
+	} else {
+		logger.Info("metrics endpoint is off (metrics.listen is empty)", "component", "gateway")
 	}
 
 	if err := srv.Serve(ctx, ln); err != nil {

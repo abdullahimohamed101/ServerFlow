@@ -13,10 +13,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+
 	"serverflow/internal/config"
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/server"
 	"serverflow/internal/telemetry"
+	"serverflow/internal/telemetry/metricsserver"
 )
 
 func main() {
@@ -65,6 +69,25 @@ func main() {
 		"auth_required", cfg.ControlPlane.Token != "", "max_workers", cfg.ControlPlane.MaxWorkers,
 		"suspect_after", cfg.Worker.SuspectTimeout.String(), "unhealthy_after", cfg.Worker.UnhealthyTimeout.String(),
 		"lost_after", cfg.Worker.LostTimeout.String(), "heartbeat_interval", cfg.Worker.HeartbeatInterval.String())
+
+	// /metrics has a listener of its own, never the API port (ADR-017). Bound before serving so a refused
+	// or busy address stops the control plane at start-up.
+	mreg := prometheus.NewRegistry()
+	mreg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		telemetry.BuildInfoCollector(), registry.NewCollector(reg, cfg.Metrics.MaxModels))
+	if ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultControlPlaneMetricsListen), cfg.Metrics, mreg, logger); err != nil {
+		fmt.Fprintf(os.Stderr, "control-plane: %v\n", err)
+		os.Exit(1)
+	} else if ms != nil {
+		logger.Info("metrics endpoint", "component", "control-plane", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
+		go func() {
+			if err := ms.Serve(ctx); err != nil {
+				logger.Error("metrics endpoint stopped with error", "component", "control-plane", "error", err.Error())
+			}
+		}()
+	} else {
+		logger.Info("metrics endpoint is off (metrics.listen is empty)", "component", "control-plane")
+	}
 
 	if err := srv.Serve(ctx, ln); err != nil {
 		logger.Error("control-plane stopped with error", "component", "control-plane", "error", err)
