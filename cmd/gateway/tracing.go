@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"time"
 
 	"serverflow/internal/config"
@@ -44,6 +45,14 @@ func setupTracing(cfg config.Config, logger *slog.Logger) (*tracing.Provider, []
 		logger.Warn("tracing.incoming=trust: clients can force sampling and graft spans into traces of their choosing; use it only behind a trusted proxy", "component", "gateway")
 	}
 	return p, []gateway.Option{gateway.WithObserver(obs), gateway.WithTracingStats(stats)}, nil
+}
+
+// serveAndFlush serves until ctx ends and then flushes the spans still queued, in that order, so a clean
+// shutdown loses none. With a dead collector the flush costs at most shutdownTracingTimeout.
+func serveAndFlush(ctx context.Context, srv *gateway.Server, ln net.Listener, tracer *tracing.Provider, logger *slog.Logger) error {
+	err := srv.Serve(ctx, ln)
+	shutdownTracing(tracer, logger)
+	return err
 }
 
 // shutdownTracing flushes and stops the pipeline after the server stopped. A nil provider (tracing off) is fine.

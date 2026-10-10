@@ -141,10 +141,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	serveErr := srv.Serve(ctx, ln)
-	// Flush the spans still queued. With a dead collector this costs at most shutdownTracingTimeout.
-	shutdownTracing(tracer, logger)
-	if serveErr != nil {
+	if serveErr := serveAndFlush(ctx, srv, ln, tracer, logger); serveErr != nil {
 		logger.Error("gateway stopped with error", "component", "gateway", "error", serveErr)
 		os.Exit(1)
 	}
