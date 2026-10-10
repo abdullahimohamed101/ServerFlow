@@ -138,7 +138,7 @@ func (s *kafkaStack) startConsumer(group, startOffset string, mut func(*usage.Co
 	ctx, cancel := context.WithCancel(context.Background())
 	rc := &runningConsumer{c: c, src: src, cancel: cancel, done: make(chan error, 1)}
 	go func() { rc.done <- c.Run(ctx) }()
-	s.t.Cleanup(func() { rc.stop() })
+	s.t.Cleanup(func() { _ = rc.stop() })
 	return rc
 }
 

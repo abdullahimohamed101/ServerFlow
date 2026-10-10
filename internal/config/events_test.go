@@ -139,7 +139,8 @@ func TestEventsPasswordIsRedactedEverywhere(t *testing.T) {
 	pjs, _ := json.Marshal(&c.Events)
 	outputs := map[string]string{
 		"String": c.Events.String(), "GoString": c.Events.GoString(), "%v": fmt.Sprintf("%v", c.Events), "%+v": fmt.Sprintf("%+v", c.Events),
-		"%#v": fmt.Sprintf("%#v", c.Events), "%s": fmt.Sprintf("%s", c.Events), "ptr %v": fmt.Sprintf("%v", &c.Events), "ptr %+v": fmt.Sprintf("%+v", &c.Events),
+		"%#v": fmt.Sprintf("%#v", c.Events), "%s": fmt.Sprintf("%s", c.Events), //nolint:staticcheck // the %s verb itself is under test
+		"ptr %v": fmt.Sprintf("%v", &c.Events), "ptr %+v": fmt.Sprintf("%+v", &c.Events),
 		"slog": logBuf.String(), "JSON whole config": string(js), "JSON events": string(pjs),
 		"%+v whole config": fmt.Sprintf("%+v", c),
 	}

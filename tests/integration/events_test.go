@@ -97,7 +97,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 	t.Run("non-streaming success carries the worker's usage", func(t *testing.T) {
 		mock, _ := startMock(t)
 		gw, _, sink := staticGatewayWithEvents(t, mock.URL, nil, log)
-		mustPost(t, gw, chat(false, "hi")).Body.Close()
+		_ = mustPost(t, gw, chat(false, "hi")).Body.Close()
 		evs := settle(t, sink, 3)
 		if typesOf(evs) != "received,routed,completed" || terminalCount(evs) != 1 {
 			t.Fatalf("sequence %s", typesOf(evs))
