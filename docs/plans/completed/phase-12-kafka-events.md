@@ -324,7 +324,7 @@ After the first completion an independent verifier found the items below; each w
 - **Survivors killed by hand:** M9 (payload logged), M16 (wall clock for `occurred_at`), M20 (database error swallowed at shutdown), M22
   (leader ack, no idempotence, no cancellation: asserted on the options of the client actually built, not on a broker round trip).
 - **Environment finding.** This laptop runs on battery and takes 'Maintenance Sleep' naps mid-run (`pmset -g log`); wall clock jumps of 37 to
-  51 seconds appeared inside a 3 second test and made the client time records out. That, and the shared machine's load, caused nine failed
+  51 seconds appeared inside a 3 second test and made the client time records out. That, and the shared machine's load, caused many failed
   gate attempts across unrelated timing tests (Phase 6 registry thresholds, Phase 8 renewal, a Phase 8 test whose `Fatalf` skips
   `close(release)` and then hangs `httptest.Server.Close`) and my own SIGTERM test (which now uses a 5 minute delivery timeout and the 5 s
   production flush timeout). The tenth gate passed: lint 0 issues, unit, race, postgres 4, redis 7, kafka 8 named tests, build, mod verify,
