@@ -74,7 +74,7 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, info *reqInfo, co
 	}
 	t0 := time.Now()
 	d, err := s.limiter.Allow(r.Context(), ratelimit.Request{TenantID: info.tenantID, Model: model, Cost: cost, Limits: lim})
-	s.metrics.observeRateDecision(time.Since(t0))
+	info.rateChecked, info.rateDuration = true, time.Since(t0)
 	switch {
 	case err != nil:
 		retry := 1
@@ -83,13 +83,13 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, info *reqInfo, co
 			retry = ue.RetryAfterSeconds()
 		}
 		info.rateLimit = string(ratelimit.LimitUnavailable)
-		s.metrics.observeRateReject(ratelimit.LimitUnavailable)
+		s.rejected(r.Context(), info, RejectRateLimit, string(ratelimit.LimitUnavailable), http.StatusServiceUnavailable)
 		s.log.Warn("rate limit check unavailable", append([]any{"request_id", info.id, "limit", info.rateLimit, "error", err.Error()}, tenantAttrs(info)...)...)
 		s.fail(w, info, api.ErrRateLimitUnavailable(retry))
 		return nil, false
 	case !d.Allowed:
 		info.rateLimit = string(d.Limit)
-		s.metrics.observeRateReject(d.Limit)
+		s.rejected(r.Context(), info, RejectRateLimit, string(d.Limit), http.StatusTooManyRequests)
 		s.log.Info("rate limited", append([]any{"request_id", info.id, "limit", info.rateLimit, "est_cost", cost,
 			"retry_after_s", d.RetryAfterSeconds()}, tenantAttrs(info)...)...)
 		s.fail(w, info, api.ErrRateLimited(string(d.Limit), d.RetryAfterSeconds()))
@@ -97,7 +97,6 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, info *reqInfo, co
 	}
 	if d.Bypassed {
 		info.rateBypassed = true
-		s.metrics.rateBypassed.Inc()
 	}
 	if d.Release == nil {
 		return func() {}, true

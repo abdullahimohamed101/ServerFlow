@@ -18,8 +18,10 @@ const statusClientClosed = 499
 // reqInfo is per-request state shared between the middleware and handlers.
 type reqInfo struct {
 	id        string
+	start     time.Time // when the middleware accepted the request
 	attemptID string
 	model     string // set only after the model is validated
+	requested string // the model the client asked for, once the request parsed; never a metrics label
 	stream    bool
 	inference bool
 	ttft      time.Duration
@@ -36,12 +38,19 @@ type reqInfo struct {
 	cost         int
 	rateLimit    string
 	rateBypassed bool
+	// rateChecked and rateDuration say whether a limiter decided the request and how long it took.
+	rateChecked  bool
+	rateDuration time.Duration
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
 	// attempts is the ordered history of tries (registry mode). It is only appended to,
 	// never rewritten: a retry is a new attempt with its own ID (spec section 7).
 	attempts []attemptRecord
+	// attempted counts attempts started (also in static mode, where attempts stays empty); attemptCtx is the
+	// context the observers returned for the current attempt.
+	attempted  int
+	attemptCtx context.Context
 }
 
 type ctxKey struct{}
@@ -78,15 +87,20 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // withRequest assigns the request ID, logs one structured line per request,
-// records inference metrics, and converts handler panics into a 500 (or an
+// tells the observers about inference requests, and converts handler panics into a 500 (or an
 // aborted connection if the response already started).
 func (s *Server) withRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		info := &reqInfo{id: protocol.NewRequestID()}
+		info := &reqInfo{id: protocol.NewRequestID(), start: start}
 		w.Header().Set(protocol.HeaderRequestID, info.id)
 		rec := &statusRecorder{ResponseWriter: w}
-		r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, info))
+		ctx := context.WithValue(r.Context(), ctxKey{}, info)
+		observed := isInferenceRequest(r)
+		if observed {
+			ctx = s.obs.RequestStarted(ctx, requestStartFrom(r, info.id, start))
+		}
+		r = r.WithContext(ctx)
 
 		var abort any
 		func() {
@@ -118,8 +132,8 @@ func (s *Server) withRequest(next http.Handler) http.Handler {
 		}
 
 		d := time.Since(start)
-		if info.inference {
-			s.metrics.observe(info, status, d)
+		if observed {
+			s.obs.RequestCompleted(r.Context(), completionFrom(info, status, d))
 		}
 		s.logRequest(r, info, status, d)
 

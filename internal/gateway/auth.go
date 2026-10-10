@@ -51,12 +51,12 @@ func (s *Server) authenticate(next http.HandlerFunc) http.Handler {
 		}
 		info := infoFrom(r.Context())
 		if s.authn == nil { // required but not wired: fail closed
-			s.reject(w, info, api.ErrInternal(), rejectFault)
+			s.reject(w, r, info, api.ErrInternal(), rejectFault)
 			return
 		}
 		bearer, ok := bearerToken(r)
 		if !ok {
-			s.reject(w, info, api.ErrUnauthorized(), rejectMissing)
+			s.reject(w, r, info, api.ErrUnauthorized(), rejectMissing)
 			return
 		}
 		p, err := s.authn.Authenticate(r.Context(), bearer)
@@ -67,27 +67,27 @@ func (s *Server) authenticate(next http.HandlerFunc) http.Handler {
 		case errors.Is(err, auth.ErrBadRecord):
 			// One key's database row is unreadable: an operator problem, not the client's, and not an
 			// outage. Say so plainly without saying anything about the key.
-			s.reject(w, info, api.ErrInternal(), rejectFault)
+			s.reject(w, r, info, api.ErrInternal(), rejectFault)
 		case errors.Is(err, auth.ErrUnavailable):
-			s.reject(w, info, api.ErrAuthUnavailable(), rejectUnavailable)
+			s.reject(w, r, info, api.ErrAuthUnavailable(), rejectUnavailable)
 		case errors.Is(err, auth.ErrSuspended):
 			// The caller proved it holds a valid key, so telling it the tenant is suspended leaks nothing.
-			s.reject(w, info, api.ErrForbidden(), rejectSuspended)
+			s.reject(w, r, info, api.ErrForbidden(), rejectSuspended)
 		case errors.Is(err, auth.ErrRevoked):
-			s.reject(w, info, api.ErrUnauthorized(), rejectRevoked)
+			s.reject(w, r, info, api.ErrUnauthorized(), rejectRevoked)
 		case errors.Is(err, auth.ErrExpired):
-			s.reject(w, info, api.ErrUnauthorized(), rejectExpired)
+			s.reject(w, r, info, api.ErrUnauthorized(), rejectExpired)
 		default:
-			s.reject(w, info, api.ErrUnauthorized(), rejectMalformed)
+			s.reject(w, r, info, api.ErrUnauthorized(), rejectMalformed)
 		}
 	})
 }
 
 // reject answers an unauthenticated request. The reason goes to the log and the counter only.
-func (s *Server) reject(w http.ResponseWriter, info *reqInfo, e *api.Error, reason string) {
+func (s *Server) reject(w http.ResponseWriter, r *http.Request, info *reqInfo, e *api.Error, reason string) {
 	info.errCode = e.Code
 	info.authReject = reason
-	s.metrics.observeAuthReject(e.HTTPStatus)
+	s.rejected(r.Context(), info, RejectAuth, reason, e.HTTPStatus)
 	// The request body is never read. Without this net/http would try to drain it before replying,
 	// which lets an unauthenticated client that stalls mid-body hold the response (and the
 	// connection) hostage; with it the reply goes out at once and the connection is closed.
