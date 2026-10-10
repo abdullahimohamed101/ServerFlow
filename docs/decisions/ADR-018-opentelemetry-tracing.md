@@ -45,8 +45,10 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
   `OTEL_*` environment variables are not honoured (a test proves `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`,
   `OTEL_TRACES_SAMPLER` and the span-limit variables have no effect), and no global tracer provider or propagator is set.
 - **Dependencies: OpenTelemetry Go v1.46.0, pinned.** The SDK, the OTLP/HTTP exporter and W3C parsing are not worth hand-rolling.
-  **v1.47.0 sets `go 1.26.0` and would raise the module floor from 1.25.0, so it must not be used**; Dependabot is told to ignore
-  `go.opentelemetry.io/otel*` versions from 1.47.0 (`.github/dependabot.yml`), and the floor is raised only by a deliberate decision. The
+  **v1.47.0 sets `go 1.26.0`; the floor was 1.25.0 when this was written, so it was not used.** The repository's floor has since become
+  Go 1.26 (ADR-014 update), so v1.47 and later are now possible, but this change deliberately stays on v1.46.0: a separate follow-up
+  pull request bumps OpenTelemetry and `golang.org/x/net`, deletes the vulnerability exception below and removes the Dependabot ignore for
+  `go.opentelemetry.io/otel*` from 1.47.0 (`.github/dependabot.yml`), which exists only to hold the pin until then. The
   change adds about 13 indirect modules (grpc, genproto, protobuf bump, grpc-gateway, backoff, logr, uuid, proto/otlp, auto/sdk) and
   grows the binaries (measured in `docs/benchmarks/phase-11-tracing.md`).
 - **Exporter: OTLP/HTTP (protobuf).** In a scratch build the gRPC exporter added almost nothing over HTTP (the HTTP exporter's proto
@@ -80,8 +82,9 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
 ## Known vulnerability exception (golang.org/x/net)
 
 `govulncheck` (v1.8.0) on this branch reports GO-2026-6617, 6612, 6611, 6610 and 6603 in `golang.org/x/net@v0.58.0`, fixed in v0.60.0. v0.59.0
-and v0.60.0 declare `go 1.26.0`, so taking them would raise the Go floor (the same reason OpenTelemetry v1.47 is refused), and no older
-release carries the fixes. `google.golang.org/grpc` was bumped to v1.83.2 (GO-2026-6443), which builds on Go 1.25. The facts, checked:
+and v0.60.0 declare `go 1.26.0`; when this was written the floor was 1.25.0, so they could not be taken, and no older release carries the
+fixes. The floor is 1.26 now, so the fix is available and is left to the follow-up pull request that also bumps OpenTelemetry.
+`google.golang.org/grpc` was bumped to v1.83.2 (GO-2026-6443). The facts, checked:
 `golang.org/x/net/http2` is linked only through `google.golang.org/grpc/internal/transport`, which the OTLP exporter package pulls in for
 its shared (gRPC-oriented) option types; nothing in this repository or in the HTTP exporter creates a gRPC client or server, and the
 exporter sends with `net/http`. In source mode govulncheck still lists these as reachable, through over-approximated call traces
@@ -94,8 +97,8 @@ vulnerability except those listed in the marked `VULN_EXCEPTIONS` block of `qual
 (`golang.org/x/net:GO-2026-6617`, and so on), so the same id in another module, or another advisory in `x/net`, still fails; standard
 library findings are not silenced either (CI runs the stable toolchain, which carries the stdlib fixes; on this machine's Go 1.27.1 the
 stdlib findings fail the check, and with Go 1.27.2 it passes). Every run prints the exception list as a NOTICE, prints each excepted
-finding, and flags an exception that matched nothing. The block must be **deleted when the Go floor is raised to 1.26 and
-`golang.org/x/net` v0.60.0 or later is taken** (a separate, approved change). `scripts/vulnfilter/main_test.go` proves, with canned
+finding, and flags an exception that matched nothing. The block must be **deleted by the follow-up pull request that bumps
+`golang.org/x/net` to v0.60.0 or later** (the Go 1.26 floor it needs is already in place). `scripts/vulnfilter/main_test.go` proves, with canned
 govulncheck JSON: only excepted ids pass with the notice; an excepted id in another module fails; an unrelated new id fails; stdlib
 findings fail; empty findings pass; invalid JSON fails. The plan's criterion 14 is therefore **met with a documented, enforced
 exception**, not "clean".

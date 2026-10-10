@@ -33,6 +33,7 @@ type Client struct {
 	timeout time.Duration
 
 	cmds atomic.Int64 // commands sent to the server
+	errs [numErrorKinds]atomic.Int64
 
 	mu        sync.Mutex
 	down      bool      // between the first failed call and the next success
@@ -176,7 +177,9 @@ func (c *Client) Set(ctx context.Context, key, value string, ttl time.Duration) 
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
 	defer cancel()
-	return c.scrub(c.rdb.Set(cctx, key, value, ttl).Err())
+	err := c.scrub(c.rdb.Set(cctx, key, value, ttl).Err())
+	c.noteError(err)
+	return err
 }
 
 // Get reads a key; it is for tests and debugging, not the request path.
@@ -249,6 +252,7 @@ func (c *Client) done(probe bool, err error) {
 		c.probing = false
 	}
 	now := c.now()
+	c.noteError(err)
 	if err != nil {
 		if !c.down {
 			c.down, c.since = true, now

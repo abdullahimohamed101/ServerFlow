@@ -70,6 +70,7 @@ type Server struct {
 	ready   *time.Timer
 	handler http.Handler
 	tracing *tracing.Provider // nil: tracing off
+	metrics *workerMetrics
 }
 
 // Option customises a Server.
@@ -96,7 +97,9 @@ func New(cfg Config, log *slog.Logger, opts ...Option) *Server {
 	} else {
 		s.state.Store(int32(stateReady))
 	}
+	s.metrics = newWorkerMetrics(s)
 	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", s.metrics.handler())
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /v1/models", s.handleModels)
@@ -333,6 +336,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	release, err := s.engine.Acquire(r.Context(), rl.promptTokens)
 	rl.queueMillis = time.Since(queued).Milliseconds()
 	ts.queueEnd()
+	rl.queued, rl.queueDur = true, time.Since(queued)
 	if err != nil {
 		if errors.Is(err, ErrQueueFull) {
 			writeAPIError(w, queueFullError())
@@ -342,6 +346,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	s.metrics.inputTokens.Add(int64(rl.promptTokens))
 
 	id := "chatcmpl-" + strings.TrimPrefix(protocol.NewRequestID(), "req_")
 	created := time.Now()
@@ -407,7 +412,8 @@ func (s *Server) streamResponse(w http.ResponseWriter, ctx context.Context, rl *
 	started := time.Now()
 	err := s.generate(ctx, n, abortAt, func(i int) error {
 		if i == 0 {
-			rl.ttftMillis = time.Since(started).Milliseconds()
+			rl.ttftDur = time.Since(started)
+			rl.ttftMillis = rl.ttftDur.Milliseconds()
 			rl.firstTokenAt = time.Now()
 			if err := send(api.NewChunk(id, s.cfg.Model, created, api.Delta{Role: "assistant", Content: api.Str("")}, "")); err != nil {
 				return err
@@ -492,9 +498,14 @@ type chatLog struct {
 	ttftMillis   int64
 	firstTokenAt time.Time
 	traceID      string // set when the request carried a valid trace context
+	// For the metrics: whether the request reached the queue, how long it waited, and the time to first token.
+	queued   bool
+	queueDur time.Duration
+	ttftDur  time.Duration
 }
 
 func (s *Server) logChat(rl *chatLog, start time.Time) {
+	s.metrics.observe(rl, time.Since(start))
 	attrs := []any{
 		"component", "mock-worker", "worker_id", s.cfg.EffectiveWorkerID(), "outcome", rl.outcome, "model", rl.model, "stream", rl.stream,
 		"prompt_tokens", rl.promptTokens, "output_tokens", rl.outputTokens,

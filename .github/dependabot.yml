@@ -18,14 +18,15 @@ updates:
       go-dependencies:
         patterns: ["*"]
     ignore:
-      # These releases raise the module's Go floor (go.mod says go 1.24.0). Bumping the floor is a
+      # These releases raise the module's Go floor above what go.mod says. Bumping the floor is a
       # deliberate project decision, not something a dependency bot should do (see ADR-014, ADR-015).
+      # Revisit these ignores: the floor is 1.26 now, so they are probably unnecessary.
       - dependency-name: github.com/jackc/pgx/v5
         versions: [">=5.9.0"]
       - dependency-name: github.com/redis/go-redis/v9
         versions: [">=9.23.0"]
-      # OpenTelemetry Go v1.47.0 sets go 1.26.0 in go.mod and would raise the module's floor from 1.25.0
-      # (ADR-018). Pinned at v1.46.x until the floor is raised on purpose; then remove this entry.
+      # OpenTelemetry Go is held at v1.46.x (ADR-018). The Go 1.26 floor now allows v1.47+, but the bump is a
+      # separate follow-up pull request (with golang.org/x/net >= v0.60.0); that pull request removes this entry.
       # The wildcard covers otel, otel/trace, otel/sdk and the OTLP exporter.
       - dependency-name: "go.opentelemetry.io/otel*"
         versions: [">=1.47.0"]

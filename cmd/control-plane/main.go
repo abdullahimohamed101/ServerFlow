@@ -17,6 +17,7 @@ import (
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/server"
 	"serverflow/internal/telemetry"
+	"serverflow/internal/telemetry/metricsserver"
 )
 
 func main() {
@@ -60,14 +61,41 @@ func main() {
 		fmt.Fprintf(os.Stderr, "control-plane: %v\n", err)
 		os.Exit(1)
 	}
+	// /metrics has a listener of its own, never the API port (ADR-017). Bound before the control plane announces
+	// itself, so a refused or busy address (a second control plane on one host with the default port) is a fatal
+	// error. It outlives the shutdown signal and stops after the drain, so Prometheus can scrape during it.
+	ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultControlPlaneMetricsListen), cfg.Metrics,
+		registry.NewMetricsRegistry(reg, cfg.Metrics.MaxModels), logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "control-plane: %v\n", err)
+		os.Exit(1)
+	}
+	stopMetrics := func() {}
+	if ms != nil {
+		mctx, mstop := context.WithCancel(context.Background())
+		mdone := make(chan struct{})
+		go func() {
+			defer close(mdone)
+			if err := ms.Serve(mctx); err != nil {
+				logger.Error("metrics endpoint stopped with error", "component", "control-plane", "error", err.Error())
+			}
+		}()
+		stopMetrics = func() { mstop(); <-mdone }
+		logger.Info("metrics endpoint", "component", "control-plane", "addr", ms.Addr(), "token_required", cfg.Metrics.Token != "")
+	} else {
+		logger.Info("metrics endpoint is off (metrics.listen is empty)", "component", "control-plane")
+	}
+
 	// The token itself is never logged, only whether one is required.
 	logger.Info("control-plane starting", "component", "control-plane", "addr", ln.Addr().String(),
 		"auth_required", cfg.ControlPlane.Token != "", "max_workers", cfg.ControlPlane.MaxWorkers,
 		"suspect_after", cfg.Worker.SuspectTimeout.String(), "unhealthy_after", cfg.Worker.UnhealthyTimeout.String(),
 		"lost_after", cfg.Worker.LostTimeout.String(), "heartbeat_interval", cfg.Worker.HeartbeatInterval.String())
 
-	if err := srv.Serve(ctx, ln); err != nil {
-		logger.Error("control-plane stopped with error", "component", "control-plane", "error", err)
+	serveErr := srv.Serve(ctx, ln) // returns after the drain
+	stopMetrics()
+	if serveErr != nil {
+		logger.Error("control-plane stopped with error", "component", "control-plane", "error", serveErr)
 		os.Exit(1)
 	}
 	logger.Info("control-plane stopped", "component", "control-plane")

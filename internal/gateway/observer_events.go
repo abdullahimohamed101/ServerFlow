@@ -64,9 +64,12 @@ type Rejection struct {
 	Reason string
 	Status int
 	// DecisionStart and DecisionDuration say when the deciding component began and how long it took: the
-	// limiter for rate_limit, the scheduler's selection for capacity and model, else zero.
+	// limiter for rate_limit, the scheduler for model and capacity refusals in registry mode, else zero.
 	DecisionStart    time.Time
 	DecisionDuration time.Duration
+	// Model is the model the registry confirmed exists, set for capacity refusals; empty when the model
+	// is unknown or was never checked (it is a metrics label, so client text never goes here).
+	Model string
 }
 
 // AttemptStart is a worker having been chosen (registry mode) or the upstream about to be called (static mode).
@@ -83,6 +86,9 @@ type AttemptStart struct {
 	SelectDuration    time.Duration
 	SinceRequestStart time.Duration
 	WorkerState       string // the state the registry reported for the worker; empty in static mode
+	// WorkerEligible is whether the gateway's registry view judged the chosen worker eligible when it was
+	// chosen. A registry-mode selection with this false is a routing bug (scheduler_ineligible_selections_total).
+	WorkerEligible bool
 }
 
 // FirstToken marks the first streamed chunk reaching the client.

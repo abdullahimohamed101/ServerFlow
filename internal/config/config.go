@@ -27,6 +27,7 @@ type Config struct {
 	Auth         AuthConfig         `yaml:"auth"`
 	Tracing      TracingConfig      `yaml:"tracing"`
 	Log          LogConfig          `yaml:"log"`
+	Metrics      MetricsConfig      `yaml:"metrics"`
 
 	configFilePath string
 }
@@ -101,6 +102,7 @@ func Default() Config {
 		Log: LogConfig{
 			Level: "info",
 		},
+		Metrics: defaultMetrics(),
 	}
 }
 
@@ -154,6 +156,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("postgres.max_conns must be at least %d when auth.mode is %q", minAuthPoolConns, AuthModeRequired)
 	}
 	if err := c.Tracing.validate(); err != nil {
+		return err
+	}
+	if err := c.Metrics.validate(); err != nil {
 		return err
 	}
 	switch c.Log.Level {

@@ -1,0 +1,6 @@
+worker   selections(prom)  share    worker ok(prom)  share    benchmark completed  share   max |diff| pp
+mock-1          670     53.51%           670     53.51%         648     53.55%    0.04
+mock-2          435     34.74%           435     34.74%         419     34.63%    0.12
+mock-3          147     11.74%           147     11.74%         143     11.82%    0.08
+max difference selections vs benchmark report: 0.12 pp
+max difference worker counters vs benchmark report: 0.12 pp

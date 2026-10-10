@@ -1,0 +1,7 @@
+before: alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'pending')]} health [('FAILED', '0')]
+t=0.0s  killed the agent process of mock-3 (SIGKILL)
+t= 0.5s  health [('FAILED', '0')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'pending')]}
+t= 1.0s  health [('FAILED', '0')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'firing')]}
+t=12.7s  health [('UNHEALTHY', '0')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'firing')]}
+t=16.3s  health [('UNHEALTHY', '0')]  alerts {'ServerFlowWorkerHeartbeatStale': [('mock-3', 'firing')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'firing')], 'ServerFlowAvailabilityBurnSlow': [(None, 'pending')]}
+t=32.6s  health [('LOST', '0')]  alerts {'ServerFlowAvailabilityBurnSlow': [(None, 'pending')], 'ServerFlowWorkerHeartbeatStale': [('mock-3', 'firing')], 'ServerFlowWorkerNotServing': [('mock-3', 'firing')], 'ServerFlowTargetDown': [('mock-3', 'firing')]}

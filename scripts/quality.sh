@@ -9,7 +9,8 @@
 #   scripts/quality.sh build        go build, cross-compiles, go mod tidy/verify
 #   scripts/quality.sh vuln         govulncheck
 #   scripts/quality.sh tracing      the Phase 11 tracing tests, which MUST run (no Docker needed)
-#   scripts/quality.sh full         lint, unit, race, integration (if configured), build
+#   scripts/quality.sh observability  promtool on the Prometheus config, rules and rule tests, and the dashboard checks
+#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), build
 #
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
@@ -89,6 +90,15 @@ integration() {
     TestRunAndPingWithPassword TestRequestsBoundaryAgainstRedis TestScriptMatchesModelOnRandomSequences \
     TestFailureClosedAcrossTheMatrix TestThreeGatewaysShareOneRequestQuota \
     TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd
+  observability_integration
+}
+
+# The Redis and PostgreSQL metric families the dashboards and alerts use (redis_up, the pool series) come from
+# the real clients; this stanza makes sure that check ran against real servers and did not skip.
+observability_integration() {
+  [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ] || fail "observability integration tests need SERVERFLOW_TEST_POSTGRES_DSN (see docs/development/ci.md)"
+  must_run observability SERVERFLOW_TEST_REDIS_ADDR "is not set; skipping the Redis and PostgreSQL families check" \
+    "./internal/observability/..." TestRedisAndPostgresFamiliesAreExported
 }
 
 # tracing runs the tracing tests with the race detector and fails if a named acceptance test did not run and pass.
@@ -128,9 +138,9 @@ build() {
 # EXCEPTION LIST for `vuln`. Each entry is module:OSV-id and covers exactly that advisory in exactly that
 # module (an excepted id in another module, or another id in the same module, still fails). They are
 # printed on every run; they are NOT fixed. Why: ADR-018 "Known vulnerability exception". The fix for
-# these five golang.org/x/net advisories is x/net v0.60.0, which needs Go 1.26, and this module's floor is
-# Go 1.25.0 (the same reason OpenTelemetry stays at v1.46.x).
-# DELETE THIS BLOCK when the Go floor is raised to 1.26 and golang.org/x/net >= v0.60.0 is taken.
+# these five golang.org/x/net advisories is x/net v0.60.0. It needed Go 1.26, which master now has; the
+# follow-up pull request that bumps golang.org/x/net (and OpenTelemetry) to versions that need it
+# DELETES THIS BLOCK. Until then these five are accepted, visibly.
 VULN_EXCEPTIONS=(
   golang.org/x/net:GO-2026-6617
   golang.org/x/net:GO-2026-6612
@@ -139,6 +149,23 @@ VULN_EXCEPTIONS=(
   golang.org/x/net:GO-2026-6603
 )
 # ---------------------------------------------------------------------------------------------------------
+# Phase 10: the Prometheus configuration, recording and alert rules and their promtool tests, then the dashboard
+# and rule checks against the metrics a running cluster exports (internal/observability). promtool comes from
+# scripts/promtool.sh (a binary on PATH, else a container); without either this fails here, and `full` reports
+# a loud skip locally and fails in CI.
+observability() {
+  export SERVERFLOW_REQUIRE_PROMTOOL=1
+  step "promtool check config"
+  scripts/promtool.sh check config observability/prometheus/prometheus.yml
+  step "promtool check rules"
+  scripts/promtool.sh check rules observability/prometheus/rules/recording.yml observability/prometheus/rules/alerts.yml
+  step "promtool test rules"
+  scripts/promtool.sh test rules observability/prometheus/tests/recording.test.yml observability/prometheus/tests/alerts.test.yml
+  step "dashboards, rules and exported metrics"
+  go test -race -count=1 ./internal/observability/...
+}
+
+have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
 
 # v1.1.4 panics ("unexpected expr: *ast.KeyValueExpr") on Go 1.27, which CI's "stable" resolves to.
 # govulncheck exits 0 in JSON mode, so scripts/vulnfilter decides: it fails on any called vulnerability that
@@ -166,6 +193,13 @@ full() {
   else
     printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN or SERVERFLOW_TEST_REDIS_ADDR is not set). CI will run it.\n'
   fi
+  if have_promtool; then
+    observability
+  elif [ "${CI:-}" = "true" ]; then
+    fail "neither promtool nor Docker is available in CI"
+  else
+    printf '\nquality: SKIPPING observability (no promtool binary and no running Docker). CI will run it.\n'
+  fi
   build
 }
 
@@ -177,6 +211,7 @@ case "${1:-}" in
   build) build ;;
   vuln) vuln ;;
   tracing) tracing_tests ;;
+  observability) observability ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|full\n' "$0" >&2; exit 2 ;;
 esac

@@ -110,22 +110,23 @@ make dev-tracing-stop
 Phase 16 moves it into the full compose behind the collector, and the gateway then only needs a new `tracing.endpoint`. Search the UI
 for service `serverflow-gateway`, tag `serverflow.request_id`.
 
-## Dependency note: OpenTelemetry v1.47 and Go 1.26
+## Dependency note: OpenTelemetry v1.46 and the follow-up bump
 
-OpenTelemetry Go is pinned at **v1.46.0**. Version 1.47.0 and later declare `go 1.26.0`, which would raise this module's Go floor from
-1.25.0. Dependabot is configured to ignore `go.opentelemetry.io/otel*` from 1.47.0, but if a pull request that bumps them appears anyway,
-do not merge it unexamined: it either needs to be refused or to come with a deliberate decision to raise the Go floor (CI's minimum-Go job
-will fail on it). When the floor is raised, remove the ignore entry in `.github/dependabot.yml`.
+OpenTelemetry Go is pinned at **v1.46.0**. Versions 1.47.0 and later declare `go 1.26.0`. That used to be above this module's Go floor; the floor is
+now 1.26, so the bump is possible, but it is a separate follow-up pull request (it also takes `golang.org/x/net` v0.60.0 or later, deletes the
+vulnerability exception below, and removes the `go.opentelemetry.io/otel*` ignore from `.github/dependabot.yml`). Until then Dependabot is told not to
+propose v1.47+. Do not bump OpenTelemetry piecemeal: review the whole set of `go.opentelemetry.io/*` modules together.
 
 ## Known vulnerability exception
 
-`govulncheck` reports five `golang.org/x/net@v0.58.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed only in v0.60.0, which needs Go 1.26.
-They are accepted for now for the same reason as the OpenTelemetry pin: taking the fix raises the Go floor. The affected HTTP/2 code is linked
+`govulncheck` reports five `golang.org/x/net@v0.58.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed in v0.60.0. They are accepted until the
+follow-up pull request above takes v0.60.0. The affected HTTP/2 code is linked
 through gRPC types the OTLP/HTTP exporter imports but does not use; govulncheck's source mode still marks them reachable through
 over-approximated call traces, so "not reachable at runtime" is the expectation from the code structure, not something the tool confirms.
 `scripts/quality.sh vuln` (and so the nightly job) accepts exactly these five ids for `golang.org/x/net` through an enforced, visible exception
 list (the `VULN_EXCEPTIONS` block in `scripts/quality.sh`, filtered by `scripts/vulnfilter`) and fails on every other called vulnerability,
-including the same id in a different module. Delete the block when the Go floor is raised to 1.26 and x/net v0.60.0 or later is taken (ADR-018).
+including the same id in a different module. The follow-up pull request deletes the block (ADR-018).
+
 ## Known limits
 
 - Clocks are not corrected: a worker whose clock is ahead of the gateway's can show a child starting before its parent.

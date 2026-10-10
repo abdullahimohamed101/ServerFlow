@@ -9,7 +9,7 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8, 9 and 11 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 11 are complete. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
@@ -41,7 +41,7 @@ docs/          architecture, ADRs, benchmarks, operations, development
 
 ## Quick Start
 
-Building and testing requires only Go 1.25+.
+Building and testing requires only Go 1.26+.
 
 ```bash
 go build ./...
@@ -57,7 +57,7 @@ SERVERFLOW_GATEWAY_MODELS=my-model \
 go run ./cmd/gateway
 ```
 
-Endpoints: `GET /healthz`, `/readyz`, `/metrics`, `/v1/models`, and
+Endpoints: `GET /healthz`, `/readyz`, `/v1/models`, and
 `POST /v1/chat/completions` (streaming supported). See `internal/config` for all
 `gateway.*` settings and their `SERVERFLOW_GATEWAY_*` environment variables.
 
@@ -103,7 +103,7 @@ On Windows (no `make`), use the existing quality gate:
 | 7 | Baseline benchmark harness | Complete |
 | 8 | Redis integration | Complete |
 | 9 | PostgreSQL | Complete |
-| 10 | Prometheus + Grafana | Not started |
+| 10 | Prometheus + Grafana | Complete (`docs/operations/observability.md`, ADR-017) |
 | 11 | OpenTelemetry | Complete |
 | 12 | Kafka | Not started |
 | 13 | Real vLLM worker pool | Not started |

@@ -17,6 +17,7 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh build` | `go build`, cross-compiles (linux amd64/arm64, darwin arm64, windows amd64), `go mod verify`, `go mod tidy -diff` |
 | `scripts/quality.sh tracing` | the Phase 11 tracing tests with the race detector; named acceptance tests **must run** (no Docker or service needed) |
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed), failing on every called vulnerability except the visible, marked exception list (five `golang.org/x/net` advisories, ADR-018) |
+| `scripts/quality.sh observability` | `promtool` check of the Prometheus config and rules and the rule tests, then `internal/observability` (dashboards and rules against the metrics a running cluster exports). Needs `promtool` or Docker (`scripts/promtool.sh`; image `quay.io/prometheus/prometheus:v2.53.0`, override with `PROMTOOL_IMAGE`) |
 | `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
 
 `integration` needs a PostgreSQL and a Redis that both require a password, exactly like the CI services. Locally:
@@ -39,9 +40,10 @@ local server deliberately requires one.
 | Job | Runs | Notes |
 | --- | --- | --- |
 | `lint` | `quality.sh lint` | golangci-lint installed by the official action |
-| `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod`, and current stable |
+| `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod` (`go-version-file`, currently 1.26), and current stable |
 | `integration` | `quality.sh integration` | PostgreSQL 16 service and a password-protected Redis 7; test log uploaded on failure |
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
+| `observability (promtool, dashboards)` | `quality.sh observability` | pinned promtool 2.53.0 release archive, SHA-256 verified; no Docker Hub |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 
 A new push to a pull request cancels the run in progress. Every job has a timeout. Actions are pinned to

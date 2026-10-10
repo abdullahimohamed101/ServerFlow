@@ -202,6 +202,8 @@ in-process cost 1.4 us and 18 allocs unsampled, 8.9 to 11.6 us and 53 to 80 allo
   the exception list (5 excepted)"); with this machine's default Go 1.27.1 it fails on 11 standard-library findings that the toolchain update fixes.
 - **Worker recording (D6):** a caller reaching the mock worker directly with a sampled `traceparent` does make it record; the claim that it cannot was
   wrong and is corrected. No guard was added (the mock worker is a development tool; a real worker decides its own in Phase 13).
+- **After the merge with master (Go floor 1.26, Phase 10):** the floor is now 1.26, so OpenTelemetry v1.47+ and `golang.org/x/net` v0.60.0 are possible; they are left to a
+  follow-up pull request, which also deletes the vulnerability exception block and the Dependabot ignore. The "go 1.25.0" statements in the plan body describe the floor at planning time.
 - **Endpoint path:** `/v1/traces` is appended only when the configured URL has no path; a URL with a path is used as given.
 
 **Not verified**

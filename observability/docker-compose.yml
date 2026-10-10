@@ -1,0 +1,47 @@
+# The local observability stack: Prometheus and Grafana beside ServerFlow processes running on the host
+# (make dev-cluster). A separate Compose project so it never touches the root docker-compose.yml.
+#
+#   cp observability/.env.example observability/.env   # then set GRAFANA_ADMIN_PASSWORD (the file is untracked)
+#   make obs-up        Prometheus http://127.0.0.1:9091, Grafana http://127.0.0.1:3000 (user admin)
+#   make obs-down
+#
+# Prometheus scrapes the host through host.docker.internal (targets/local.yml). Everything is published on
+# 127.0.0.1 only. Phase 16 either includes this file or copies the two services into the full compose, adding
+# targets/compose.yml with service names; prometheus.yml, the rules and the dashboards stay as they are.
+name: serverflow-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${OBS_RETENTION:-2d}
+    ports:
+      - "127.0.0.1:${OBS_PROMETHEUS_PORT:-9091}:9090" # not 9090: that is the control plane's API
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      # The targets file can be swapped without editing the repository (OBS_TARGETS_FILE in .env).
+      - ${OBS_TARGETS_FILE:-./prometheus/targets/local.yml}:/etc/prometheus/targets/local.yml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # already defined on Docker Desktop and Colima; needed on Linux
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:${OBS_GRAFANA_PORT:-3000}:3000"
+    environment:
+      # No default password is committed: compose refuses to start without one.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in observability/.env}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped

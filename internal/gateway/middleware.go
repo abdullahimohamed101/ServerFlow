@@ -42,7 +42,7 @@ type reqInfo struct {
 	rateChecked  bool
 	rateStart    time.Time
 	rateDuration time.Duration
-	// selectStart and selectDuration time the last worker selection (registry mode), for refusals.
+	// selectStart and selectDuration time the last worker selection (registry mode), whether or not it found a worker.
 	selectStart    time.Time
 	selectDuration time.Duration
 	// clientClosed is set when the client disconnected before the response

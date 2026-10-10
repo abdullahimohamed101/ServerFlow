@@ -159,7 +159,7 @@ func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	idx := len(info.attempts) - 1
 	info.attempted = len(info.attempts)
 	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
-		string(target.worker.State), info.attempts[idx].Started.Sub(selecting)))
+		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(selecting)))
 	info.attemptCtx = octx
 	ctx, cancel := context.WithCancel(withAttemptID(octx, id))
 	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancel)

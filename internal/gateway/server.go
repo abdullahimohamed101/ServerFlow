@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"serverflow/internal/auth"
 	"serverflow/internal/config"
 	"serverflow/internal/ratelimit"
@@ -74,7 +76,7 @@ func New(cfg config.GatewayConfig, log *slog.Logger, opts ...Option) *Server {
 // requires API keys cannot produce an open server by omitting the WithAuthenticator option. Without
 // an authenticator the server then refuses to Serve and answers every /v1 request with an error.
 func NewFromConfig(cfg config.Config, log *slog.Logger, opts ...Option) *Server {
-	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode), requireLimitIfConfigured(cfg.RateLimit.Mode)}, opts...)
+	opts = append([]Option{requireIfConfigured(cfg.Auth.Mode), requireLimitIfConfigured(cfg.RateLimit.Mode), WithMetricsConfig(cfg.Metrics)}, opts...)
 	return New(cfg.Gateway, log, opts...)
 }
 
@@ -103,15 +105,42 @@ func newWithUpstream(cfg config.GatewayConfig, log *slog.Logger, up Upstream) *S
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
-	mux.Handle("GET /metrics", s.metrics.handler())
 	mux.Handle("GET /v1/models", s.authenticate(s.handleModels))
 	mux.Handle("POST "+chatCompletionsPath, s.authenticate(s.handleChatCompletions))
 	s.handler = s.withRequest(mux)
 	return s
 }
 
-// Handler returns the gateway's HTTP handler.
+// Handler returns the gateway's HTTP handler. It does not serve /metrics: the Prometheus endpoint is on a
+// separate listener (MetricsHandler, ADR-017), so the data port never exposes it.
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// MetricsHandler returns the plain Prometheus handler for this server's registry, without any access control.
+// Serve it only through internal/telemetry/metricsserver (loopback by default, a token otherwise).
+func (s *Server) MetricsHandler() http.Handler { return s.metrics.handler() }
+
+// MetricsGatherer is the server's private registry, for the metrics listener and for tests.
+func (s *Server) MetricsGatherer() prometheus.Gatherer { return s.metrics.reg }
+
+// WithCollector registers a collector on the server's private registry (Redis, PostgreSQL and key cache
+// statistics, read at scrape time). A collector that cannot be registered (a duplicate or inconsistent
+// descriptor) is logged and skipped: a monitoring defect must not stop the gateway.
+func WithCollector(c prometheus.Collector) Option {
+	return func(s *Server) {
+		if c == nil {
+			return
+		}
+		if err := s.metrics.reg.Register(c); err != nil {
+			s.log.Error("metrics collector not registered", "component", "gateway", "error", err.Error())
+		}
+	}
+}
+
+// WithMetricsConfig applies the metrics section (label caps, tenant series). NewFromConfig and NewRegistry do
+// this themselves; the option is for servers built from a GatewayConfig alone.
+func WithMetricsConfig(c config.MetricsConfig) Option {
+	return func(s *Server) { s.metrics.configure(c) }
+}
 
 // Serve serves on ln until ctx is cancelled, then shuts down gracefully:
 // it stops accepting connections and lets in-flight requests (including
@@ -191,6 +220,7 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	}
 	requireIfConfigured(cfg.Auth.Mode)(s)
 	requireLimitIfConfigured(cfg.RateLimit.Mode)(s)
+	WithMetricsConfig(cfg.Metrics)(s)
 	for _, o := range opts {
 		o(s)
 	}
@@ -219,5 +249,7 @@ func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter tim
 	s.retry = newRetryPolicy(g.MaxAttempts, g.RetryStatuses)
 	s.ready = &readiness{upstream: rt}
 	s.background = cache.Run
+	s.metrics.setStrategy(strategy)
+	s.metrics.reg.MustRegister(newSnapshotCollector(cache))
 	return s, nil
 }
