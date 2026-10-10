@@ -154,3 +154,32 @@ jobs:
           cache: true
       - name: govulncheck
         run: scripts/quality.sh vuln
+
+  observability:
+    # Prometheus config, recording and alert rules with their promtool tests, and the Grafana dashboards checked
+    # against the metrics a running cluster exports (Phase 10, ADR-017). promtool is the pinned official release
+    # from GitHub, verified against its published SHA-256 (Docker Hub is not used: it rate-limits shared runners).
+    name: observability (promtool, dashboards)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROMTOOL_VERSION: 2.53.0
+      PROMTOOL_SHA256: d9900a11e3c89261e6416e3c9989858bad7b206af8b6838dfe9a5392d8ddc60d # prometheus-2.53.0.linux-amd64.tar.gz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install promtool
+        run: |
+          archive="prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/$archive"
+          echo "${PROMTOOL_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" --strip-components=1 "prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool"
+          mkdir -p "$HOME/.local/bin" && mv "$RUNNER_TEMP/promtool" "$HOME/.local/bin/promtool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: promtool, dashboards and exported metrics
+        run: scripts/quality.sh observability

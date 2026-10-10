@@ -8,6 +8,7 @@
 #   scripts/quality.sh integration  the database-backed tests, which MUST run (a skip is a failure)
 #   scripts/quality.sh build        go build, cross-compiles, go mod tidy/verify
 #   scripts/quality.sh vuln         govulncheck
+#   scripts/quality.sh observability  promtool on the Prometheus config, rules and rule tests, and the dashboard checks
 #   scripts/quality.sh full         lint, unit, race, integration (if configured), build
 #
 # integration needs the test servers described in docs/development/ci.md:
@@ -88,6 +89,15 @@ integration() {
     TestRunAndPingWithPassword TestRequestsBoundaryAgainstRedis TestScriptMatchesModelOnRandomSequences \
     TestFailureClosedAcrossTheMatrix TestThreeGatewaysShareOneRequestQuota \
     TestRedisFailureMatrixThroughTheGateway TestProcessRateLimitingEndToEnd
+  observability_integration
+}
+
+# The Redis and PostgreSQL metric families the dashboards and alerts use (redis_up, the pool series) come from
+# the real clients; this stanza makes sure that check ran against real servers and did not skip.
+observability_integration() {
+  [ -n "${SERVERFLOW_TEST_POSTGRES_DSN:-}" ] || fail "observability integration tests need SERVERFLOW_TEST_POSTGRES_DSN (see docs/development/ci.md)"
+  must_run observability SERVERFLOW_TEST_REDIS_ADDR "is not set; skipping the Redis and PostgreSQL families check" \
+    "./internal/observability/..." TestRedisAndPostgresFamiliesAreExported
 }
 
 build() {
@@ -103,6 +113,24 @@ build() {
   step "go mod tidy (must change nothing)"
   go mod tidy -diff || fail "go.mod/go.sum are not tidy (run go mod tidy)"
 }
+
+# Phase 10: the Prometheus configuration, recording and alert rules and their promtool tests, then the dashboard
+# and rule checks against the metrics a running cluster exports (internal/observability). promtool comes from
+# scripts/promtool.sh (a binary on PATH, else a container); without either this fails here, and `full` reports
+# a loud skip locally and fails in CI.
+observability() {
+  export SERVERFLOW_REQUIRE_PROMTOOL=1
+  step "promtool check config"
+  scripts/promtool.sh check config observability/prometheus/prometheus.yml
+  step "promtool check rules"
+  scripts/promtool.sh check rules observability/prometheus/rules/recording.yml observability/prometheus/rules/alerts.yml
+  step "promtool test rules"
+  scripts/promtool.sh test rules observability/prometheus/tests/recording.test.yml observability/prometheus/tests/alerts.test.yml
+  step "dashboards, rules and exported metrics"
+  go test -race -count=1 ./internal/observability/...
+}
+
+have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
 
 # v1.1.4 panics ("unexpected expr: *ast.KeyValueExpr") on Go 1.27, which CI's "stable" resolves to.
 vuln() {
@@ -123,6 +151,13 @@ full() {
   else
     printf '\nquality: SKIPPING integration (SERVERFLOW_TEST_POSTGRES_DSN or SERVERFLOW_TEST_REDIS_ADDR is not set). CI will run it.\n'
   fi
+  if have_promtool; then
+    observability
+  elif [ "${CI:-}" = "true" ]; then
+    fail "neither promtool nor Docker is available in CI"
+  else
+    printf '\nquality: SKIPPING observability (no promtool binary and no running Docker). CI will run it.\n'
+  fi
   build
 }
 
@@ -133,6 +168,7 @@ case "${1:-}" in
   integration) integration ;;
   build) build ;;
   vuln) vuln ;;
+  observability) observability ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|observability|full\n' "$0" >&2; exit 2 ;;
 esac
