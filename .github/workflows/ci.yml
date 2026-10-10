@@ -44,6 +44,10 @@ jobs:
     name: unit and race tests (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # The promtool-backed tests skip here instead of pulling a container image; the observability job below
+      # installs the pinned promtool and requires it.
+      PROMTOOL_DISABLE_DOCKER: "1"
     strategy:
       fail-fast: false
       matrix:
