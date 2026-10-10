@@ -83,7 +83,9 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL,
 		"SERVERFLOW_EVENTS_BROKERS="+strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC="+topic,
 		"SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256", "SERVERFLOW_EVENTS_SASL_USERNAME="+kcfg.SASLUsername,
-		"SERVERFLOW_EVENTS_SASL_PASSWORD="+kcfg.SASLPassword))
+		"SERVERFLOW_EVENTS_SASL_PASSWORD="+kcfg.SASLPassword,
+		// A long linger holds the last events in the client until the flush: without Close they would be lost.
+		"SERVERFLOW_EVENTS_LINGER=1500ms"))
 	const inflight = 5
 	var wg sync.WaitGroup
 	started := make(chan struct{}, inflight)
