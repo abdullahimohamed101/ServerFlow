@@ -1,6 +1,6 @@
 # Phase 10 — Prometheus and Grafana
 
-Status: Proposed (awaiting approval of the decisions below)
+Status: Completed (2026-10-09). All decisions D1-D17 were approved with their defaults. See Implementation Notes at the end.
 Owner: coding agent
 Depends on: Phases 4-9 merged, and the prep plan `prep-lifecycle-observer-and-config-split.md` (the `gateway.Observer` seam and the per-feature config files). Do not start before that lands. Uses Phase 7 (`cmd/benchmark`) for the acceptance demonstration.
 Spec: `docs/architecture/serverflow-spec.md` §6 (lifecycle), §28-31 (observability, metrics, dashboards, SLOs), §58 Phase 10, §63 (rule 8: instrument request stages)
@@ -183,3 +183,57 @@ func Serve(ctx context.Context, cfg config.MetricsConfig, g prometheus.Gatherer,
 9. Independent verifier, fix round, narrower second verification, PR; stop for approval.
 
 **Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
+
+## Implementation Notes
+
+Implemented on branch `feature/phase-10-prometheus`, in the order of the Implementation Steps. Evidence for the acceptance criteria that `go test` cannot give is
+in `docs/benchmarks/phase-10-observability.md` (raw outputs in `docs/benchmarks/phase-10-assets/`); the design record is ADR-017; the operator guide is
+`docs/operations/observability.md`.
+
+**Acceptance criteria to evidence**
+
+| # | Evidence |
+| --- | --- |
+| 1 | `TestMetricsSeriesGoldenStatic/Registry` (golden files regenerated deliberately: 14 added lines, none removed or changed), `TestRunningClusterExportsTheAdditions` (names and types over HTTP), ADR-017 (deferrals and divergences) |
+| 2 | the same golden diff shows additions only; the one move is the endpoint (`TestMetricsAreNotOnTheDataListener`) |
+| 3 | `TestGatewayLabelNamesAreAllowlisted`, `TestNoTenantLabelAnywhereByDefault`, `TestHostileTrafficKeepsSeriesBounded` (10,000 requests, ceiling 2,000 series), `TestOverflowValuesAreOther`; registry and mock-worker allowlist checks in their packages |
+| 4 | `internal/config/metrics_test.go` (listen guard, token redaction in String/GoString/slog/JSON), `internal/telemetry/metricsserver` tests (401 without or with a wrong token, 200 with it, only GET /metrics, off when empty), `TestMetricsAreNotOnTheDataListener`, process tests asserting 404 on the data port and 200 on the metrics port |
+| 5 | `TestSeriesExistBeforeTraffic`, `TestCollectorReportsAnOutage`, promtool alert tests from a cold start |
+| 6 | `internal/registry/metrics_test.go`: per-worker values, series vanish on deregistration, `worker_health` through READY, suspect, UNHEALTHY, LOST and back, `TestScrapesAndHeartbeatsRunTogether` under `-race`, `TestSlowScrapeDoesNotBlockHeartbeats` |
+| 7 | `metrics_events_test.go`: exact effects for success, stream, retry, no capacity, worker unavailable, unknown model, forbidden model, auth refusal, rate-limit refusal, disconnect; `TestOnlyAnIneligibleSelectionIncrementsTheGuardCounter`; the counter stays 0 in the cluster test and in the live run |
+| 8 | `scripts/promtool.sh check config`, `check rules`, `test rules` (21 alert test cases, 19 recording-rule samples); `TestEveryRuleHasATest` makes the firing/non-firing requirement a Go test |
+| 9 | `internal/observability/files_test.go`, `promtool_test.go`, `exported_test.go` |
+| 10 | `TestEveryMetricUsedIsExportedOrRecorded` over a real control plane, mock workers and gateway scraped over HTTP; Redis and PostgreSQL families in `TestRedisAndPostgresFamiliesAreExported` (a `must_run` stanza in `quality.sh integration`); the exemption list has four entries (`up`, `ALERTS`, `redis_up`, `postgres_pool_empty_acquires_total`), the last two covered by the integration test |
+| 11 | live: Prometheus showed the gateway, control plane and three mock workers up; Grafana listed the four dashboards, the datasource test was green, no provisioning errors (one bundled-plugin error unrelated to provisioning) |
+| 12 | live: 120 s run, selection shares within 0.12 percentage points of the report; the failed-worker alert fired 5.1 s after the kill. The silent-agent path fired at 16.3 s (misses 10 s plus one interval by about a second); stated in the benchmark note |
+| 13 | `BenchmarkMetricsObserverEvents` 189 to 132 ns and 1 to 0 allocs; whole request unchanged within spread; `TestGatewayOverhead` and the Phase 8 limiter benchmark within spread; 1,000-worker collection about 6 ms |
+| 14 | no assertion weakened (see below); `scripts/quality.sh observability` and the CI job exist; the new must-run stanza is in `integration()` |
+| 15 | ADR-017, `docs/operations/observability.md`, ARCHITECTURE and README updated, `docs/development/ci.md` and `observers.md` updated |
+
+**Deviations**
+
+- `MetricsConfig.Listen` is a `*string` so "unset" (the binary's default) and "" (off) differ; the plan's struct had a plain string.
+- The prep seam already had D2's `AttemptStart{SelectDuration, SinceRequestStart, Strategy, WorkerState}`, `Rejection{DecisionDuration}` and `Completion{ErrorCode}`. Two additive fields were added:
+  `AttemptStart.WorkerEligible` (so an ineligible selection is judged on the registry view's eligibility and not on the state string alone) and `Rejection.Model` (set only for a confirmed
+  model; needed for `scheduler_no_capacity_total{model}`). `Rejection.DecisionDuration` is now the scheduler's time for model and capacity refusals (it was the limiter's time for every kind);
+  only the rate-limit case was consumed before.
+- The plan's failed-worker alert ("heartbeat age above 10 s while `worker_health` is still 1") cannot occur, because `worker_health` is 0 as soon as a worker is not READY and recently heard from. It is replaced by
+  `ServerFlowWorkerNotServing` and `ServerFlowWorkerHeartbeatStale` (ADR-017 section 7). The control plane job is scraped every 5 s and the fleet rule group evaluated every 5 s to fit the 10 s target.
+- Added alerts beyond the plan's list: `ServerFlowTargetDown`. Added panel "Alerts firing" (reads `ALERTS`, which Prometheus writes).
+- `internal/telemetry` also gained `buckets.go` (shared histogram edges) and `labels.go` (the allowlist and a series counter for tests); `registry.NewMetricsRegistry` builds the control plane's registry so the test gathers what the binary serves.
+- The scheduler series count `scheduler_decisions_total{result=selected}` for every attempt, including a retry's second attempt; a retry whose second routing fails is not a rejection event and is not counted (ADR-017).
+- CI gets promtool from the pinned release archive with its SHA-256; `scripts/promtool.sh` falls back to `quay.io/prometheus/prometheus:v2.53.0` (same digest as the Docker Hub image). The public ECR gallery could not be checked (rate-limited) and was not used.
+- Promtool's `test rules` compares values exactly in v2.53.0, so one recording-rule expectation is written as `8.500000000000001E-01`.
+- The independent read-only verifier of the Verification Plan was not run by the implementing agent. The mutation list was applied by hand instead: all 15 mutants were caught by the named tests (drop the model label, rename the TTFT series,
+  add a request_id label, remove the worker_id cap, serve /metrics on the data mux, skip the token check, swap 5xx for 4xx, change an alert threshold, delete an alert's `for:`, misspell a panel's metric, remove a pre-created series,
+  hold the registry lock while emitting, double-fire `RequestCompleted`, delete a dashboard variable, change the datasource uid in one file). Two of them first survived (deleting a `for:`, deleting a dashboard variable) and
+  led to a new alert test case and a stricter variable check.
+
+**Shipped behaviour changed**
+
+- `/metrics` left the gateway's data listener. Tests that read metrics through `Handler()` now read them through `Server.MetricsHandler()` (helper `scrape` in `internal/gateway/metrics_scrape_test.go`): `attempt_test.go` (3 sites), `auth_test.go` (2), `gateway_test.go` (3), `router_test.go` (2),
+  `ratelimit_test.go` (1) and `metrics_golden_test.go` (1) keep their assertions; `TestOperationalEndpointsStayOpen` no longer lists `/metrics`; in `tests/integration`, `auth_process_test.go` now asserts 404 on the data port and 200 on the metrics listener,
+  `ratelimit_process_test.go`, `distribution_test.go` and `ratelimit_test.go` read the metrics listener, and `startProc`/`runBin` give each launched binary an ephemeral `SERVERFLOW_METRICS_LISTEN` so parallel processes do not collide on 9100/9101.
+- One assertion changed deliberately: `TestEveryLimitMapsTo429WithRetryAfterAndBoundedMetrics` checked that `rate_limit_rejections_total` had exactly one series after one refusal; the five limit series now exist from start (ADR-017, series exist before traffic), so it checks that the count equals the fixed set of five and that a refusal adds none.
+
+**Measurements and what could not be verified:** see `docs/benchmarks/phase-10-observability.md`. Not verified: how the panels look in a browser (no screenshots), a GPU worker end to end, and the CI job itself (the same checks ran locally in the container).
