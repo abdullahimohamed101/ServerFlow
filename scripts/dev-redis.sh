@@ -54,7 +54,7 @@ start() {
     if docker ps --format '{{.Names}}' | grep -qx "$name"; then
       echo "dev-redis: already running ($name)"
     else
-      docker rm -f "$name" >/dev/null 2>&1 || true
+      docker rm -fv "$name" >/dev/null 2>&1 || true
       docker run -d --name "$name" -p "127.0.0.1:$port:6379" "$image" \
         redis-server --requirepass "$password" --save "" --appendonly no >/dev/null
       echo "dev-redis: started $image as $name on 127.0.0.1:$port"
@@ -82,7 +82,7 @@ start() {
 
 stop() {
   if use_docker && docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
-    docker rm -f "$name" >/dev/null
+    docker rm -fv "$name" >/dev/null
     echo "dev-redis: stopped"
   elif [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     kill "$(cat "$pidfile")"

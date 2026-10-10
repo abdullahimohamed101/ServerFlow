@@ -109,7 +109,7 @@ shared-secret bearer token. Placement and scaling are later phases. See
 Purpose: distributed ephemeral state (Redis), durable metadata (PostgreSQL),
 async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
 tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
-`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9) and Redis rate limiting (Phase 8);
+`internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9), Redis rate limiting (Phase 8) and Kafka lifecycle events (Phase 12);
 the rest are skeletons.
 
 ### Authentication and PostgreSQL
@@ -130,6 +130,16 @@ and closed/open failure modes, `EstimateCost`), `internal/redis` (the only packa
 password redaction, health tracking, best-effort request metadata). The gateway depends on the `ratelimit.Limiter` interface and
 asks it after the body is parsed and the model allowed, before routing; the slot is released on every exit path. Off by default.
 Redis stays ephemeral: losing it loses buckets, never data. See ADR-015 and `docs/operations/redis-and-rate-limits.md`.
+
+### Lifecycle Events and Kafka
+Purpose: a content-free trail of every admitted request on Kafka, and per-request usage rows in PostgreSQL, with Kafka never on
+the request path. Location: `pkg/protocol/events.go` (the event contract), `internal/events` (the third `gateway.Observer`, a bounded
+drop-newest publisher, the `Sink` interface, `eventstest`), `internal/kafka` (the only package that imports franz-go: producer, consumer,
+SASL/TLS, password redaction), `internal/usage` (the consumer loop over `Source` and `Store`), `internal/postgres/usage.go`,
+`migrations/0003_usage_records.sql`, `cmd/usage-consumer`. The gateway depends on neither Kafka nor `internal/events`; `cmd/gateway`
+registers the observer when `events.mode: on`. Delivery is best-effort and stated exactly in ADR-019: drops are counted, duplicates
+are absorbed, offsets are committed only after the database. See `docs/events/inference-lifecycle-v1.md` and
+`docs/operations/kafka-and-usage.md`.
 
 ## Dependency Direction
 

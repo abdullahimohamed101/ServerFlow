@@ -33,6 +33,9 @@ type Admission struct {
 	Model     string
 	Stream    bool
 	TenantID  string // empty when authentication is off
+	// APIKeyID is the ID (key_...) of the key that authenticated the request; never the key or its prefix. Empty
+	// when authentication is off.
+	APIKeyID string
 	// EstimatedCost is the token estimate charged to rate limits (0 when rate limiting is off).
 	EstimatedCost int
 	// RateLimitChecked is true when a limiter decided the request; RateLimitDuration is how long it took and
@@ -129,4 +132,16 @@ type Completion struct {
 	// Handled is true when the request got past authentication into the inference handler; a refused
 	// authentication completes with Handled=false.
 	Handled bool
+	// TokensSource says where the token counts came from: TokensUsage (the worker's usage object: both counts),
+	// TokensChunks (streamed content chunks counted: OutputTokens only, an approximation), or "" (nothing was
+	// reported: both counts are meaningless). Phase 12 only.
+	TokensSource string
+	InputTokens  int64
+	OutputTokens int64
 }
+
+// Token count sources for Completion.TokensSource.
+const (
+	TokensUsage  = "usage"
+	TokensChunks = "chunks"
+)

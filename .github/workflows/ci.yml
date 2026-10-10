@@ -90,6 +90,10 @@ jobs:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       SERVERFLOW_TEST_REDIS_ADDR: 127.0.0.1:6379
       SERVERFLOW_TEST_REDIS_PASSWORD: ci-redis-test-password
+      SERVERFLOW_TEST_KAFKA_BROKERS: 127.0.0.1:59092
+      SERVERFLOW_TEST_KAFKA_USER: serverflow-test
+      SERVERFLOW_TEST_KAFKA_PASSWORD: serverflow-test-kafka-password
+      SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE: "59100"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,13 +109,43 @@ jobs:
             sleep 1
           done
           echo "Redis did not start"; exit 1
+      # A Kafka-compatible broker with SASL/SCRAM, started by the same script developers use. The image is Redpanda
+      # (Kafka API compatible, not Apache Kafka, ADR-019). Its registry host docker.redpanda.com is only a front for
+      # Docker Hub (anonymous pulls count against Docker Hub's shared-runner limit) and no unauthenticated mirror exists
+      # on public.ecr.aws, quay.io or ghcr.io, so: the image is cached as a `docker save` tarball keyed by its
+      # reference, a cache miss pulls with retries and backoff (scripts/dev-kafka.sh pull), and a hit pulls nothing.
+      # What is NOT verified: a cold pull from a GitHub-hosted runner has never been run from here. If it is rate
+      # limited past the retries, the step fails loudly; an optional `docker login` with a Docker Hub account in a
+      # repository secret before this step lifts the limit (docs/development/ci.md).
+      - name: Redpanda image reference
+        id: redpanda
+        run: echo "image=$(scripts/dev-kafka.sh image)" >> "$GITHUB_OUTPUT"
+      - name: Cache the Redpanda image
+        id: redpanda-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/redpanda-image.tar
+          key: redpanda-image-${{ steps.redpanda.outputs.image }}
+      - name: Load the cached Redpanda image
+        if: steps.redpanda-cache.outputs.cache-hit == 'true'
+        run: docker load -i "$RUNNER_TEMP/redpanda-image.tar"
+      - name: Pull the Redpanda image (cache miss only; retries with backoff)
+        if: steps.redpanda-cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/dev-kafka.sh pull
+          docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
+      - name: Start Kafka
+        run: scripts/dev-kafka.sh start
+      - name: Keep the Kafka log on failure
+        if: failure()
+        run: docker logs --tail 200 serverflow-test-kafka-59092 || true
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Keep test logs in the runner's temp directory
         run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Database and Redis tests must run, not skip
+      - name: Database, Redis and Kafka tests must run, not skip
         run: scripts/quality.sh integration
       - name: Keep the test log on failure
         if: failure()

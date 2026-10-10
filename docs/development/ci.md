@@ -18,15 +18,37 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed) |
 | `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
 
-`integration` needs a PostgreSQL and a Redis that both require a password, exactly like the CI services. Locally:
+`integration` needs a PostgreSQL, a Redis and a Kafka-compatible broker that all require credentials, exactly like the CI services. Locally:
 
 ```bash
 scripts/dev-postgres.sh start                   # throwaway Postgres 16, password auth, 127.0.0.1:55432
 export SERVERFLOW_TEST_POSTGRES_DSN="$(scripts/dev-postgres.sh dsn)"
 scripts/dev-redis.sh start                      # throwaway Redis 7, password auth, 127.0.0.1:56379
 export SERVERFLOW_TEST_REDIS_ADDR="$(scripts/dev-redis.sh addr)" SERVERFLOW_TEST_REDIS_PASSWORD="$(scripts/dev-redis.sh password)"
+scripts/dev-kafka.sh start                      # throwaway Redpanda, SASL/SCRAM required, 127.0.0.1:59092
+export SERVERFLOW_TEST_KAFKA_BROKERS="$(scripts/dev-kafka.sh brokers)" SERVERFLOW_TEST_KAFKA_USER="$(scripts/dev-kafka.sh user)" SERVERFLOW_TEST_KAFKA_PASSWORD="$(scripts/dev-kafka.sh password)"
 scripts/quality.sh full
 ```
+
+The Kafka tests are named in `quality.sh integration` (`must_run kafka`), so a skipped one fails the gate. The broker is
+Redpanda; it is Kafka API compatible, not Apache Kafka (ADR-019).
+
+**Where the image comes from, honestly.** `docker.redpanda.com` is not an independent registry: an anonymous request to
+`https://docker.redpanda.com/v2/redpandadata/redpanda/manifests/v25.1.1` answers 401 with
+`www-authenticate: Bearer realm="https://auth.docker.io/token",service="registry.docker.io"`, i.e. it hands out Docker Hub tokens, and
+an anonymous pull is counted against Docker Hub's limit (100 pulls per hour per source address, shared by GitHub-hosted runners).
+Alternatives were checked on 2026-10-10 with anonymous manifest requests and none exists: `public.ecr.aws` (`redpandadata/redpanda`,
+`redpanda/redpanda` answer 404; its mirror only carries official Docker library images), `quay.io` (`redpandadata/redpanda`,
+`redpanda/redpanda`, `redpanda-data/redpanda` answer 401 even with an anonymous token) and `ghcr.io` (`redpanda-data/redpanda`,
+`redpandadata/redpanda` answer 403). So the CI job (a) caches the image as a `docker save` tarball with `actions/cache`, keyed by the image
+reference, so most runs pull nothing, and (b) on a cache miss pulls with five attempts and growing backoff
+(`scripts/dev-kafka.sh pull`). Updating the image tag changes the key and refills the cache.
+
+What is verified and what is not: the image pulls and runs on the development Mac, and the cache/load/retry steps were written but a **cold pull
+from a GitHub-hosted runner has not been run**, so a rate-limited first run on a busy runner can still fail the Kafka step. If that
+happens: re-run the job (the limit is hourly), or add a `docker login` step with a Docker Hub account kept in a repository secret before
+`Start Kafka` (authenticated pulls have a higher limit). The repository owner owns that secret; none is added here. The outage test starts a second, private broker on `SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE`
+and needs Docker.
 
 A local server that trusts everyone hides a missing password until CI fails (this happened once), so the
 local server deliberately requires one.
@@ -39,7 +61,7 @@ local server deliberately requires one.
 | --- | --- | --- |
 | `lint` | `quality.sh lint` | golangci-lint installed by the official action |
 | `test` | `quality.sh unit` and `race` | matrix: the minimum Go version in `go.mod`, and current stable |
-| `integration` | `quality.sh integration` | PostgreSQL 16 service and a password-protected Redis 7; test log uploaded on failure |
+| `integration` | `quality.sh integration` | PostgreSQL 16 service, a password-protected Redis 7 and a SASL-protected Redpanda (`Start Kafka` step); test log uploaded on failure |
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 

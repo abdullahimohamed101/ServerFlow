@@ -51,6 +51,11 @@ type reqInfo struct {
 	// context the observers returned for the current attempt.
 	attempted  int
 	attemptCtx context.Context
+	// scan reads token counts off a successful response as it passes (tokens.go); tokSource, tokIn and tokOut are
+	// what it found, for the Completion event.
+	scan          *tokenScanner
+	tokSource     string
+	tokIn, tokOut int64
 }
 
 type ctxKey struct{}

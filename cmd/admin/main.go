@@ -41,6 +41,7 @@ const usage = `usage: serverflow-admin [--config FILE] <command>
           list [--tenant TENANT] | revoke KEY_ID_OR_PREFIX
   model   add NAME [--display-name TEXT] [--max-tokens N] [--notes TEXT]
           list | enable NAME | disable NAME
+  usage   summary [--since 24h|7d|RFC3339] [--tenant TENANT]
 
 TENANT is a tenant name or ID. The database comes from SERVERFLOW_POSTGRES_DSN or the config file.
 `
@@ -119,7 +120,7 @@ func describe(err error) string {
 func (a *app) dispatch(ctx context.Context, cfgPath string, args []string) error {
 	group, rest := args[0], args[1:]
 	switch group {
-	case "migrate", "tenant", "key", "model":
+	case "migrate", "tenant", "key", "model", "usage":
 	default:
 		return usagef("unknown command %q", truncate(group))
 	}
@@ -147,6 +148,8 @@ func (a *app) dispatch(ctx context.Context, cfgPath string, args []string) error
 		return a.tenant(ctx, sub, rest)
 	case "key":
 		return a.key(ctx, sub, rest)
+	case "usage":
+		return a.usageCmd(ctx, sub, rest)
 	default:
 		return a.model(ctx, sub, rest)
 	}
