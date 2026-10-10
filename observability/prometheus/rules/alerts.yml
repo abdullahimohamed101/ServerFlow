@@ -35,6 +35,7 @@ groups:
           runbook: "docs/operations/observability.md#runbook-gateway-overhead-high"
 
   - name: serverflow-fleet
+    interval: 5s # failed-worker detection must fit the 10 s target: see prometheus.yml
     rules:
       # A worker that stopped heartbeating is detected from the control plane's heartbeat age. 10 s is the
       # worker.unhealthy_timeout default: after it the registry already treats the worker as UNHEALTHY.

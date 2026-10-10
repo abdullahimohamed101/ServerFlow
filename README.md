@@ -103,7 +103,7 @@ On Windows (no `make`), use the existing quality gate:
 | 7 | Baseline benchmark harness | Complete |
 | 8 | Redis integration | Complete |
 | 9 | PostgreSQL | Complete |
-| 10 | Prometheus + Grafana | Not started |
+| 10 | Prometheus + Grafana | Complete (`docs/operations/observability.md`, ADR-017) |
 | 11 | OpenTelemetry | Not started |
 | 12 | Kafka | Not started |
 | 13 | Real vLLM worker pool | Not started |

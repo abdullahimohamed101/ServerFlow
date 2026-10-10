@@ -268,3 +268,38 @@ func BenchmarkCollectWorkers1000(b *testing.B) {
 		}
 	}
 }
+
+// A slow consumer of the collector's output must not hold up heartbeats: the collector copies the fleet under the
+// registry's read lock and releases it before emitting anything. The consumer here takes 100 ms per series; if the
+// lock were held while emitting, a heartbeat (which needs the write lock) would wait for all of them.
+func TestSlowScrapeDoesNotBlockHeartbeats(t *testing.T) {
+	r, _ := newTest(t, func(c *Config) { c.MaxWorkers = 50 })
+	regs := map[string]string{}
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("w%d", i)
+		regs[id] = mustRegister(t, r, id, "m")
+		mustBeat(t, r, id, regs[id], protocol.StateReady)
+	}
+	c := NewCollector(r, 64)
+	ch := make(chan prometheus.Metric)
+	done := make(chan struct{})
+	go func() {
+		c.Collect(ch)
+		close(done)
+	}()
+	<-ch // the collector has its snapshot and is now emitting; stall the consumer
+	start := time.Now()
+	if err := r.Heartbeat("w0", regs["w0"], hb(regs["w0"], protocol.StateReady)); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 50*time.Millisecond {
+		t.Fatalf("a heartbeat waited %v behind a stalled scrape", d)
+	}
+	for {
+		select {
+		case <-ch: // drain
+		case <-done:
+			return
+		}
+	}
+}

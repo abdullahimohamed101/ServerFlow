@@ -28,6 +28,9 @@ scrape_configs:
       - {source_labels: [component], regex: gateway, action: keep}
 
   - job_name: serverflow-control-plane
+    # Worker state comes from here, and failed-worker detection has a 10 s target (spec section 31): scrape
+    # fast enough that scrape plus the fleet rule group's evaluation (5 s each) fit in it with the heartbeat.
+    scrape_interval: 5s
     sample_limit: 20000
     file_sd_configs:
       - files: [targets/*.yml]
