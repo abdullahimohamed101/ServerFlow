@@ -47,6 +47,14 @@ func newTraceRig(t *testing.T, mutate func(*Config)) *traceRig {
 	return r
 }
 
+// settle waits until every started span has ended: the handler's deferred span end runs just after the body, so
+// a fixed sleep is a guess that fails on a loaded runner. A request that started no span returns at once.
+func (r *traceRig) settle() {
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && len(r.rec.Started()) != len(r.rec.Ended()); {
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func (r *traceRig) chat(t *testing.T, body string, hdr ...string) int {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, r.srv.URL+"/v1/chat/completions", strings.NewReader(body))
@@ -59,7 +67,7 @@ func (r *traceRig) chat(t *testing.T, body string, hdr ...string) int {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	time.Sleep(30 * time.Millisecond) // the handler's deferred span end runs just after the body
+	r.settle()
 	return resp.StatusCode
 }
 
@@ -161,7 +169,7 @@ func TestWorkerDropAndMidstreamEndTheirSpans(t *testing.T) {
 	for _, mode := range []FailureMode{ModeDrop, ModeMidstream} {
 		r := newTraceRig(t, func(c *Config) { c.FailureRate, c.FailureMode, c.OutputTokens = 1, mode, 6 })
 		r.chat(t, stream, "Traceparent", tpSampled)
-		time.Sleep(50 * time.Millisecond)
+		r.settle()
 		if s, e := len(r.rec.Started()), len(r.rec.Ended()); s != e || s == 0 {
 			t.Errorf("%s: started %d ended %d", mode, s, e)
 		}

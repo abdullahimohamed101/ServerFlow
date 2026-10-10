@@ -106,6 +106,6 @@ same time: p95 overhead 0.66 ms non-stream and 0.66 ms stream against the 25 ms 
 upstream, which is the worst case for relative overhead; with real inference times the added microseconds vanish.
 
 **Collector failure** (`TestADeadCollectorNeverTouchesRequests`): 400 sequential requests against a gateway whose collector answers 500,
-hangs forever, answers after 800 ms, or is a closed port; every request returned 200, p95 stayed within 4x the tracing-off p95 plus 3 ms
+hangs forever, answers after 800 ms, or is a closed port; every request returned 200, p95 stayed within 10x the tracing-off p95 plus 10 ms
 (the test's bound, deliberately loose; it passed), the queue never exceeded its bound, drop and failure counters moved, shutdown
 returned within its 2 s budget, and at most two export log lines were written.

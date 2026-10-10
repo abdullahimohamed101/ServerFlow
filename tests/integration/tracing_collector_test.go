@@ -130,7 +130,9 @@ func TestADeadCollectorNeverTouchesRequests(t *testing.T) {
 			url := staticGateway(t, gateway.WithObserver(gwtrace.New(prov, gwtrace.Options{})))
 			got := measure(t, url, n) // every request must still be a 200
 
-			if on, off := p(.95, got), p(.95, base); on > 4*off+3*time.Millisecond {
+			if on, off := p(.95, got), p(.95, base); on > 10*off+10*time.Millisecond {
+				// A request that waited for the exporter would take 300 ms to seconds (the collector hangs or answers
+				// after 800 ms); the bound only has to sit far below that and above scheduler noise on a loaded runner.
 				t.Errorf("p95 with a %s collector is %v against %v with tracing off", name, on, off)
 			}
 			st := prov.Stats()

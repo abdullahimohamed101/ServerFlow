@@ -171,7 +171,10 @@ func (e *env) spans() tracetest.SpanStubs {
 // noLeak fails if a span was started and never ended.
 func (e *env) noLeak() {
 	e.t.Helper()
-	time.Sleep(50 * time.Millisecond)
+	// Spans may legitimately end a moment after the response (deferred ends); only a span that never ends is a leak.
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && len(e.rec.Started()) != len(e.rec.Ended()); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if s, en := len(e.rec.Started()), len(e.rec.Ended()); s != en {
 		e.t.Errorf("span leak: started %d, ended %d", s, en)
 	}
