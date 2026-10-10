@@ -194,7 +194,7 @@ func TestOneTraceAcrossGatewayAndWorker(t *testing.T) {
 func attrString(s tracetest.SpanStub, k attribute.Key) string {
 	for _, kv := range s.Attributes {
 		if kv.Key == k {
-			return kv.Value.Emit()
+			return kv.Value.String()
 		}
 	}
 	return ""
