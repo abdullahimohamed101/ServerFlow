@@ -53,6 +53,16 @@ race() {
   go test -race ./...
 }
 
+# show_failures prints what went wrong in a verbose go test log before its tail: the names of failed tests,
+# failed packages, panics and data races. CI keeps only the last lines of a long log, and by then the failing
+# test's name has usually scrolled away.
+show_failures() {
+  local log="$1"
+  printf '\n--- failed tests, packages, panics and races in the full log ---\n' >&2
+  grep -E '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' "$log" >&2 || printf '(none matched; see the tail below)\n' >&2
+  printf -- '--- last 80 lines ---\n' >&2
+}
+
 # must_run <label> <env var> <skip message> <test packages> <test name>...
 # Runs the packages verbosely with the race detector, then fails if any test skipped for want of the
 # server, or if a named test did not run and pass. In CI a silent skip would look like a green build.
@@ -65,6 +75,7 @@ must_run() {
   step "$label tests must run, not skip"
   # shellcheck disable=SC2086 # $pkgs is a deliberate word list
   if ! go test -race -count=1 -v $pkgs >"$log" 2>&1; then
+    show_failures "$log"
     tail -80 "$log"
     printf 'quality: full log kept at %s\n' "$log" >&2
     exit 1
@@ -108,6 +119,7 @@ tracing_tests() {
   log="$(mktemp "${TMPDIR:-/tmp}/serverflow-tracing.XXXXXX")"
   step "tracing tests must run, not skip"
   if ! go test -race -count=1 -v ./internal/tracing/... ./internal/gateway/... ./internal/mockworker/... ./internal/config/... ./tests/integration/... >"$log" 2>&1; then
+    show_failures "$log"
     tail -80 "$log"
     printf 'quality: full log kept at %s\n' "$log" >&2
     exit 1
