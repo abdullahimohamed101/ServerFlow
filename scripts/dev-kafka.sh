@@ -38,9 +38,11 @@ pull() {
   local i delay="${DEV_KAFKA_PULL_DELAY:-5}"
   for i in 1 2 3 4 5; do
     if docker pull "$image" >/dev/null; then return 0; fi
-    echo "dev-kafka: pulling $image failed (attempt $i of 5); retrying in ${delay}s" >&2
-    sleep "$delay"
-    delay=$((delay * 3))
+    if [ "$i" -lt 5 ]; then
+      echo "dev-kafka: pulling $image failed (attempt $i of 5); retrying in ${delay}s" >&2
+      sleep "$delay"
+      delay=$((delay * 3))
+    fi
   done
   echo "dev-kafka: could not pull $image (rate limited? log in with docker login, or load a saved image)" >&2
   return 1
@@ -72,7 +74,7 @@ start() {
   if running; then
     echo "dev-kafka: already running ($name)"
   else
-    docker rm -f "$name" >/dev/null 2>&1 || true
+    docker rm -fv "$name" >/dev/null 2>&1 || true
     docker image inspect "$image" >/dev/null 2>&1 || pull
     # The external listener is what the host connects to; the internal one is for rpk inside the container.
     docker run -d --name "$name" -p "127.0.0.1:$port:$port" "$image" \
@@ -97,7 +99,7 @@ start() {
 
 stop() {
   if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
-    docker rm -f "$name" >/dev/null
+    docker rm -fv "$name" >/dev/null
     echo "dev-kafka: stopped"
   else
     echo "dev-kafka: not running"

@@ -17,7 +17,7 @@ default (`events.mode`). Why and how: ADR-019.
 | `attempt_id` | string, optional | `att_...` the attempt concerned; absent for `received`; for the terminal event the last attempt |
 | `tenant_id` | string, optional | `ten_...`; absent when authentication is off |
 | `api_key_id` | string, optional | `key_...`, never the key or its prefix |
-| `model` | string, optional | only ever a model the gateway has confirmed (configured in static mode, registered in registry mode). **Absent on `received`** (in registry mode the request is admitted before the model is matched, so it would be client text). Present on `routed`, `first_token` and the terminal event; the terminal event of a request that never reached a worker (for example an unknown model) has none. Older producers of this schema version put the client's string on `received`; consumers must treat that field as unverified |
+| `model` | string, optional | only ever a model the gateway has confirmed (configured in static mode, registered in registry mode). **Empty on `received` (the wire carries `"model":""`; consumers must treat empty as "no confirmed model")** (in registry mode the request is admitted before the model is matched, so it would be client text). Present on `routed`, `first_token` and the terminal event; the terminal event of a request that never reached a worker (for example an unknown model) has an empty model too. Older producers of this schema version put the client's string on `received`; consumers must treat that field as unverified |
 | `worker_id` | string, optional | absent before routing |
 | `payload` | object | by type. The spec's example is flat; the envelope/payload split is a deliberate choice so every type shares one envelope |
 
