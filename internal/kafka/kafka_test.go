@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 
 	"serverflow/internal/events"
@@ -372,5 +373,30 @@ func TestScrubCoversTheEncodingsAPasswordTravelsIn(t *testing.T) {
 		if strings.Contains(got, canary) || strings.Contains(got, in) && in != "" && !strings.Contains(got, "redacted") {
 			t.Errorf("%s survived scrubbing: %q", name, got)
 		}
+	}
+}
+
+// The delivery promises of ADR-019 rest on client options: acks=all, the idempotent producer, and a bounded
+// delivery time. Not a broker round trip, but the options of the very client the producer built.
+func TestProducerClientUsesAcksAllIdempotenceAndABoundedDeliveryTime(t *testing.T) {
+	p, err := NewProducer(Config{Brokers: []string{"127.0.0.1:1"}, ClientID: "t", Topic: "t", MaxBufferedRecords: 5, DeliveryTimeout: 7 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	if acks, ok := p.cl.OptValue(kgo.RequiredAcks).(kgo.Acks); !ok || acks != kgo.AllISRAcks() {
+		t.Fatalf("required acks = %v, want all in-sync replicas", p.cl.OptValue(kgo.RequiredAcks))
+	}
+	if off, _ := p.cl.OptValue(kgo.DisableIdempotentWrite).(bool); off {
+		t.Fatal("the idempotent producer must stay on")
+	}
+	if d, _ := p.cl.OptValue(kgo.RecordDeliveryTimeout).(time.Duration); d != 7*time.Second {
+		t.Fatalf("delivery timeout = %v", d)
+	}
+	if on, _ := p.cl.OptValue(kgo.AllowIdempotentProduceCancellation).(bool); !on {
+		t.Fatal("in-flight records must be cancellable at the delivery timeout (a dead broker would otherwise pin memory)")
+	}
+	if tx, _ := p.cl.OptValue(kgo.TransactionalID).(string); tx != "" {
+		t.Fatal("no transactions (ADR-019)")
 	}
 }
