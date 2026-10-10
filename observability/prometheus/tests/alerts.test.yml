@@ -1,0 +1,237 @@
+# promtool unit tests for the alerts. Every alert has a case that fires it and a case that must not.
+# Inputs are 15 s samples. Where an alert is written on a recording rule, both rule files are loaded.
+rule_files:
+  - ../rules/recording.yml
+  - ../rules/alerts.yml
+evaluation_interval: 15s
+
+tests:
+  # --- availability burn: fast (5m and 1h at 14.4x of a 0.1% budget = 1.44%) -------------------------------------
+  - name: fast burn fires at a 9% 5xx ratio, and the slow burn fires with it
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+      - {series: 'inference_requests_total{model="a",status="503"}', values: '0+1.5x480'}
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 14.4x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+  - name: a 1% 5xx ratio is below the fast threshold but above the slow one
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+      - {series: 'inference_requests_total{model="a",status="503"}', values: '0+0.15x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+  - name: a 0.1% 5xx ratio (exactly the budget) fires neither, and 429 and 499 are not errors
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+      - {series: 'inference_requests_total{model="a",status="503"}', values: '0+0.015x480'}
+      - {series: 'inference_requests_total{model="a",status="429"}', values: '0+7.5x480'}
+      - {series: 'inference_requests_total{model="a",status="499"}', values: '0+7.5x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
+  - name: a short 5% spike does not fire the fast burn (the 1h window has not caught up)
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+      # clean for 100 minutes, then 5 minutes of about 5% errors: the 5m window is far above 1.44% but the 1h window
+      # (about 0.4%) is not, so the multi-window rule holds its fire
+      - {series: 'inference_requests_total{model="a",status="503"}', values: '0x400 0+0.75x20'}
+    alert_rule_test:
+      - {eval_time: 106m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+
+  # --- latency ---------------------------------------------------------------------------------------------------
+  - name: routing decision p95 above 10 ms fires after 5 minutes; below it does not
+    interval: 15s
+    input_series:
+      # all decisions land in (0.01, 0.025]: p95 is about 24 ms
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="0.01"}', values: '0x200'}
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="0.025"}', values: '0+1500x200'}
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="+Inf"}', values: '0+1500x200'}
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ServerFlowRoutingDecisionSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Scheduler routing decision p95 is above 10 ms"
+              runbook: "docs/operations/observability.md#runbook-routing-decision-slow"
+  - name: routing decision p95 of 5 ms does not fire
+    interval: 15s
+    input_series:
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="0.005"}', values: '0+1500x200'}
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="0.01"}', values: '0+1500x200'}
+      - {series: 'scheduler_decision_duration_seconds_bucket{strategy="s",le="+Inf"}', values: '0+1500x200'}
+    alert_rule_test:
+      - {eval_time: 40m, alertname: ServerFlowRoutingDecisionSlow, exp_alerts: []}
+  - name: gateway overhead p95 above 25 ms fires; 5 ms does not
+    interval: 15s
+    input_series:
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="a",le="0.025"}', values: '0x200'}
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="a",le="0.05"}', values: '0+1500x200'}
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="a",le="+Inf"}', values: '0+1500x200'}
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="ok",le="0.005"}', values: '0x200'}
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ServerFlowGatewayOverheadHigh
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Gateway overhead (request start to dispatch) p95 is above 25 ms"
+              runbook: "docs/operations/observability.md#runbook-gateway-overhead-high"
+  - name: gateway overhead of 5 ms does not fire
+    interval: 15s
+    input_series:
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="a",le="0.005"}', values: '0+1500x200'}
+      - {series: 'inference_gateway_overhead_seconds_bucket{model="a",le="+Inf"}', values: '0+1500x200'}
+    alert_rule_test:
+      - {eval_time: 40m, alertname: ServerFlowGatewayOverheadHigh, exp_alerts: []}
+
+  # --- fleet -------------------------------------------------------------------------------------------------------
+  - name: a worker silent for more than 10 s fires immediately; a fresh one does not
+    interval: 5s
+    input_series:
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w1",model="m"}', values: '1 2 3 4 5 6 7 8 9 10 11 12'}
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w2",model="m"}', values: '1 2 1 2 1 2 1 2 1 2 1 2'}
+    alert_rule_test:
+      - {eval_time: 45s, alertname: ServerFlowWorkerHeartbeatStale, exp_alerts: []}
+      - eval_time: 1m
+        alertname: ServerFlowWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels: {severity: critical, worker_id: w1, model: m}
+            exp_annotations:
+              summary: "Worker w1 has not sent a heartbeat for more than 10 s"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+  - name: a FAILED worker fires; a READY, a WARMING and an UNHEALTHY-then-recovered worker do not
+    interval: 5s
+    input_series:
+      - {series: 'worker_health{worker_id="w1",model="m",state="FAILED"}', values: '0 0 0 0'}
+      - {series: 'worker_health{worker_id="w2",model="m",state="READY"}', values: '1 1 1 1'}
+      - {series: 'worker_health{worker_id="w3",model="m",state="WARMING"}', values: '0 0 0 0'}
+      - {series: 'worker_health{worker_id="w4",model="m",state="UNHEALTHY"}', values: '0 0 0 stale'}
+    alert_rule_test:
+      - eval_time: 10s
+        alertname: ServerFlowWorkerNotServing
+        exp_alerts:
+          - exp_labels: {severity: critical, worker_id: w1, model: m, state: FAILED}
+            exp_annotations:
+              summary: "Worker w1 is FAILED and takes no traffic"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+          - exp_labels: {severity: critical, worker_id: w4, model: m, state: UNHEALTHY}
+            exp_annotations:
+              summary: "Worker w4 is UNHEALTHY and takes no traffic"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+      - eval_time: 20s
+        alertname: ServerFlowWorkerNotServing
+        exp_alerts:
+          - exp_labels: {severity: critical, worker_id: w1, model: m, state: FAILED}
+            exp_annotations:
+              summary: "Worker w1 is FAILED and takes no traffic"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+  - name: any ineligible selection fires; a flat counter does not
+    interval: 15s
+    input_series:
+      - {series: 'scheduler_ineligible_selections_total{instance="bad"}', values: '0 0 0 1 1 1 1 1 1 1 1 1'}
+      - {series: 'scheduler_ineligible_selections_total{instance="good"}', values: '0x12'}
+    alert_rule_test:
+      - eval_time: 90s
+        alertname: ServerFlowIneligibleWorkerSelected
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: bad}
+            exp_annotations:
+              summary: "The scheduler routed a request to a worker that was not eligible (must never happen)"
+              runbook: "docs/operations/observability.md#runbook-ineligible-selection"
+  - name: a queue deeper than its capacity fires after a minute; a full queue does not
+    interval: 15s
+    input_series:
+      - {series: 'worker_queue_depth{worker_id="w1",model="m"}', values: '9x20'}
+      - {series: 'worker_queue_capacity{worker_id="w1",model="m"}', values: '8x20'}
+      - {series: 'worker_queue_depth{worker_id="w2",model="m"}', values: '8x20'}
+      - {series: 'worker_queue_capacity{worker_id="w2",model="m"}', values: '8x20'}
+    alert_rule_test:
+      - {eval_time: 30s, alertname: ServerFlowWorkerQueueOverCapacity, exp_alerts: []}
+      - eval_time: 2m
+        alertname: ServerFlowWorkerQueueOverCapacity
+        exp_alerts:
+          - exp_labels: {severity: warning, worker_id: w1, model: m}
+            exp_annotations:
+              summary: "Worker w1 queue is deeper than its configured size (no unbounded queues)"
+              runbook: "docs/operations/observability.md#runbook-queue-over-capacity"
+  - name: a registry snapshot older than 10 s for 30 s fires; a fresh one does not
+    interval: 5s
+    input_series:
+      - {series: 'gateway_registry_snapshot_age_seconds{instance="stale"}', values: '1 2 11 12 13 14 15 16 17 18 19 20 21 22'}
+      - {series: 'gateway_registry_snapshot_age_seconds{instance="fresh"}', values: '1x14'}
+    alert_rule_test:
+      - {eval_time: 20s, alertname: ServerFlowRegistrySnapshotStale, exp_alerts: []}
+      - eval_time: 60s
+        alertname: ServerFlowRegistrySnapshotStale
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: stale}
+            exp_annotations:
+              summary: "The gateway's view of the worker registry is older than registry_max_staleness"
+              runbook: "docs/operations/observability.md#runbook-registry-snapshot-stale"
+  - name: a ServerFlow target that is down for a minute fires; other jobs and up targets do not
+    interval: 15s
+    input_series:
+      - {series: 'up{job="serverflow-gateway",instance="g:1"}', values: '0x12'}
+      - {series: 'up{job="serverflow-control-plane",instance="c:1"}', values: '1x12'}
+      - {series: 'up{job="node",instance="n:1"}', values: '0x12'}
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ServerFlowTargetDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: serverflow-gateway, instance: "g:1"}
+            exp_annotations:
+              summary: "Prometheus cannot scrape serverflow-gateway at g:1"
+              runbook: "docs/operations/observability.md#runbook-target-down"
+
+  # --- dependencies ------------------------------------------------------------------------------------------------
+  - name: redis_up 0 for a minute fires; 1 does not
+    interval: 15s
+    input_series:
+      - {series: 'redis_up{instance="down"}', values: '0x12'}
+      - {series: 'redis_up{instance="up"}', values: '1x12'}
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ServerFlowRedisDown
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: down}
+            exp_annotations:
+              summary: "The gateway is backing off from Redis; rate limits fail per redis.on_failure"
+              runbook: "docs/operations/observability.md#runbook-redis-down"
+  - name: a PostgreSQL pool that keeps being found empty fires; a flat counter does not
+    interval: 15s
+    input_series:
+      - {series: 'postgres_pool_empty_acquires_total{instance="busy"}', values: '0+1x80'}
+      - {series: 'postgres_pool_empty_acquires_total{instance="calm"}', values: '5x80'}
+    alert_rule_test:
+      - {eval_time: 3m, alertname: ServerFlowPostgresPoolExhausted, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ServerFlowPostgresPoolExhausted
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: busy}
+            exp_annotations:
+              summary: "Requests are waiting for a PostgreSQL connection (pool exhausted)"
+              runbook: "docs/operations/observability.md#runbook-postgres-pool-exhausted"

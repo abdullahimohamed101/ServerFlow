@@ -101,3 +101,19 @@ quality:
 quality-fast:
 	scripts/quality.sh lint
 	scripts/quality.sh unit
+
+# Phase 10: Prometheus and Grafana beside a local cluster (docs/operations/observability.md). Needs
+# observability/.env with GRAFANA_ADMIN_PASSWORD (copy observability/.env.example; the file is untracked).
+.PHONY: obs-up obs-down obs-logs obs-check
+obs-up:
+	docker compose -f observability/docker-compose.yml up -d
+
+obs-down:
+	docker compose -f observability/docker-compose.yml down
+
+obs-logs:
+	docker compose -f observability/docker-compose.yml logs -f --tail=100
+
+# promtool checks of the config and rules plus the dashboard validation (needs promtool or Docker).
+obs-check:
+	scripts/quality.sh observability
