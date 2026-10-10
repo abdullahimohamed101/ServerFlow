@@ -92,24 +92,27 @@ func (s *Store) RecordRejects(ctx context.Context, rejects []usage.Reject) error
 
 // UsageSummary is one row of usage_hourly, summed over the requested window.
 type UsageSummary struct {
-	TenantID            string
-	Model               string
-	TokensSource        string
-	Requests            int64
-	Failures            int64
-	InputTokens         int64
-	OutputTokens        int64
-	EstimatedCostTokens int64
+	TenantID     string
+	Model        string
+	TokensSource string
+	Requests     int64
+	Failures     int64
+	// The sums are decimal strings: they are sums of bigint columns and can exceed int64 however well-behaved the
+	// rows are, so the query keeps them numeric and never casts them down.
+	InputTokens         string
+	OutputTokens        string
+	EstimatedCostTokens string
 }
 
-// UsageSummaries reads the usage_hourly view for hours at or after since, optionally for one tenant ID, grouped
-// by tenant, model and tokens_source.
+// UsageSummaries sums usage_records whose occurred_at is at or after since (exact to the instant, not to the hour),
+// optionally for one tenant ID, grouped by tenant, model and tokens_source. The usage_hourly view holds the same
+// data bucketed by hour for reports; this reads the table so a window that starts mid-hour is not rounded.
 func (s *Store) UsageSummaries(ctx context.Context, since time.Time, tenantID string) ([]UsageSummary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT tenant_id, model, tokens_source, sum(requests)::bigint, sum(failures)::bigint,
-		       coalesce(sum(input_tokens), 0)::bigint, coalesce(sum(output_tokens), 0)::bigint, coalesce(sum(estimated_cost_tokens), 0)::bigint
-		FROM usage_hourly
-		WHERE hour >= $1 AND ($2 = '' OR tenant_id = $2)
+		SELECT tenant_id, model, tokens_source, count(*)::bigint, (count(*) FILTER (WHERE outcome = 'failed'))::bigint,
+		       coalesce(sum(input_tokens), 0)::text, coalesce(sum(output_tokens), 0)::text, coalesce(sum(estimated_cost_tokens), 0)::text
+		FROM usage_records
+		WHERE occurred_at >= $1 AND ($2 = '' OR tenant_id = $2)
 		GROUP BY tenant_id, model, tokens_source
 		ORDER BY tenant_id, model, tokens_source`, since, tenantID)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -169,9 +170,9 @@ func (s *kafkaStack) totals() totals {
 	for _, r := range rows {
 		t.requests += r.Requests
 		t.failures += r.Failures
-		t.in += r.InputTokens
-		t.out += r.OutputTokens
-		t.est += r.EstimatedCostTokens
+		t.in += atoi(r.InputTokens)
+		t.out += atoi(r.OutputTokens)
+		t.est += atoi(r.EstimatedCostTokens)
 	}
 	return t
 }
@@ -333,4 +334,9 @@ func TestUsageCrashBetweenDatabaseAndOffsetCommit(t *testing.T) {
 	if s.totals().requests != 40 {
 		t.Fatalf("rows = %d", s.totals().requests)
 	}
+}
+
+func atoi(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
 }

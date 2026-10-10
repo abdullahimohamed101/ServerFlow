@@ -26,6 +26,13 @@ const (
 	EventSchemaVersion = 1
 	// MaxEventBytes caps one encoded event. A larger one is refused by Encode and by Decode.
 	MaxEventBytes = 16 << 10
+	// MaxEventTokens bounds every token count in an event (input, output, estimate): ten billion. No request comes
+	// near it (the largest context windows are about a million tokens), it is below the 12 digits the gateway's
+	// scanner will read, and it keeps sums of many rows far from the int64 range. A bigger claim is a forged or
+	// corrupt event and is rejected like any other invalid one.
+	MaxEventTokens = 10_000_000_000
+	// MaxEventMillis bounds durations in an event (a year of milliseconds is 3.2e10; this allows about 31 years).
+	MaxEventMillis = 1_000_000_000_000
 	// MaxEventAttempts caps attempts[] in a terminal event.
 	MaxEventAttempts = 16
 )
@@ -258,8 +265,8 @@ func (e Event) validatePayload() error {
 		if err := need(e.Received != nil); err != nil {
 			return err
 		}
-		if e.Received.EstimatedCostTokens < 0 {
-			return invalid("estimated_cost_tokens is negative")
+		if e.Received.EstimatedCostTokens < 0 || e.Received.EstimatedCostTokens > MaxEventTokens {
+			return invalid("estimated_cost_tokens is out of range")
 		}
 	case EventRouted:
 		if err := need(e.Routed != nil); err != nil {
@@ -273,8 +280,8 @@ func (e Event) validatePayload() error {
 		if err := need(e.FirstToken != nil); err != nil {
 			return err
 		}
-		if e.FirstToken.TTFTMS < 0 {
-			return invalid("ttft_ms is negative")
+		if e.FirstToken.TTFTMS < 0 || e.FirstToken.TTFTMS > MaxEventMillis {
+			return invalid("ttft_ms is out of range")
 		}
 	case EventCompleted, EventFailed:
 		if err := need(e.Terminal != nil); err != nil {
@@ -292,11 +299,13 @@ func (e Event) validateTerminal() error {
 	if t.HTTPStatus < 100 || t.HTTPStatus > 599 {
 		return invalid("http_status out of range")
 	}
-	if t.DurationMS < 0 || t.TTFTMS < 0 || t.EstimatedCostTokens < 0 {
-		return invalid("a duration or count is negative")
+	if t.DurationMS < 0 || t.DurationMS > MaxEventMillis || t.TTFTMS < 0 || t.TTFTMS > MaxEventMillis || t.EstimatedCostTokens < 0 || t.EstimatedCostTokens > MaxEventTokens {
+		return invalid("a duration or count is out of range")
 	}
-	if (t.InputTokens != nil && *t.InputTokens < 0) || (t.OutputTokens != nil && *t.OutputTokens < 0) {
-		return invalid("a token count is negative")
+	for _, n := range []*int64{t.InputTokens, t.OutputTokens} {
+		if n != nil && (*n < 0 || *n > MaxEventTokens) {
+			return invalid("a token count is out of range")
+		}
 	}
 	switch t.TokensSource {
 	case TokensFromUsage, TokensFromChunks, TokensFromEstimate:
@@ -331,7 +340,7 @@ func (e Event) validateTerminal() error {
 		if err := checkString("attempts.failure_class", a.FailureClass, maxEventShort, false); err != nil {
 			return err
 		}
-		if a.Number < 1 || a.DurationMS < 0 {
+		if a.Number < 1 || a.DurationMS < 0 || a.DurationMS > MaxEventMillis {
 			return invalid("attempts has a bad number or duration")
 		}
 	}

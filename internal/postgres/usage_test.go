@@ -138,3 +138,51 @@ func TestRecordRejectsIsRepeatable(t *testing.T) {
 		t.Fatal("an unknown reason must be refused by the constraint")
 	}
 }
+
+func TestUsageSummariesAreExactToTheInstantAndOverflowSafe(t *testing.T) {
+	s := newMigratedStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	var rows []usage.Row
+	for i, at := range []time.Duration{10 * time.Minute, 40 * time.Minute, 50 * time.Minute, 90 * time.Minute} { // 12:10, 12:40, 12:50, 13:30
+		r := usageRow(i, "ten_a", "completed")
+		r.OccurredAt = base.Add(at)
+		rows = append(rows, r)
+	}
+	if _, err := s.InsertUsage(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	// A window starting at 12:30 must count the 12:40, 12:50 and 13:30 rows: not the whole 12:00 hour, not only 13:00.
+	sums, err := s.UsageSummaries(ctx, base.Add(30*time.Minute), "")
+	if err != nil || len(sums) != 1 || sums[0].Requests != 3 {
+		t.Fatalf("a window starting mid-hour: %+v %v", sums, err)
+	}
+	if sums, _ = s.UsageSummaries(ctx, base.Add(10*time.Minute), ""); len(sums) != 1 || sums[0].Requests != 4 {
+		t.Fatalf("the boundary instant is included: %+v", sums)
+	}
+	if sums, _ = s.UsageSummaries(ctx, base.Add(10*time.Minute+time.Microsecond), ""); len(sums) != 1 || sums[0].Requests != 3 {
+		t.Fatalf("just after the boundary: %+v", sums)
+	}
+	// Rows that bypass the event bounds (the column allows any bigint) must not break the summary for everyone.
+	for i := 100; i < 102; i++ {
+		_, err := s.pool.Exec(ctx, `INSERT INTO usage_records (event_id, request_id, outcome, http_status, input_tokens, output_tokens, tokens_source, occurred_at)
+			VALUES ($1, $2, 'completed', 200, 9223372036854775807, 9223372036854775807, 'usage', $3)`,
+			fmt.Sprintf("evt_%032x", i), fmt.Sprintf("req_%016x", i), base.Add(2*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sums, err = s.UsageSummaries(ctx, base, "")
+	if err != nil {
+		t.Fatalf("a summary over huge sums must not fail: %v", err)
+	}
+	var found bool
+	for _, u := range sums {
+		if u.TenantID == "" && u.InputTokens == "18446744073709551614" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the exact numeric sum is missing: %+v", sums)
+	}
+}

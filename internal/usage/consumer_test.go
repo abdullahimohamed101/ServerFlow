@@ -243,3 +243,35 @@ func TestShutdownFinishesTheBatchInHand(t *testing.T) {
 		t.Fatalf("rows=%d lag=%d: the batch in hand must be written and committed at shutdown", st.Count(), b.Lag("g"))
 	}
 }
+
+// Forged or corrupt events with absurd numbers are poison: rejected with coordinates, never written, and the rest of
+// the stream goes on (a stored 9.2e18 would otherwise poison every report that sums it).
+func TestEventsWithAbsurdNumbersAreRejected(t *testing.T) {
+	b := eventstest.NewMemBroker(topic, 1)
+	st := eventstest.NewMemStore()
+	good := terminal(1, protocol.EventCompleted, true)
+	forge := func(i int, field, from, to string) []byte {
+		v := string(terminal(i, protocol.EventCompleted, true))
+		if !strings.Contains(v, from) {
+			t.Fatalf("test setup: %q not in %s", from, v)
+		}
+		return []byte(strings.Replace(v, from, to, 1))
+	}
+	b.Append(key(0), forge(0, "input", `"input_tokens":3`, `"input_tokens":9223372036854775807`))
+	b.Append(key(2), forge(2, "output", `"output_tokens":4`, `"output_tokens":9223372036854775807`))
+	b.Append(key(3), forge(3, "estimate", `"estimated_cost_tokens":5`, `"estimated_cost_tokens":9223372036854775807`))
+	b.Append(key(4), forge(4, "duration", `"duration_ms":10`, `"duration_ms":9223372036854775807`))
+	b.Append(key(1), good)
+	c, _, cancel, done := start(t, b, st, "g", nil)
+	eventually(t, func() bool { return b.Lag("g") == 0 }, "drains")
+	cancel()
+	<-done
+	if st.Count() != 1 || c.Count(usage.ResultRejected) != 4 || len(st.Rejects) != 4 {
+		t.Fatalf("rows=%d rejected=%d", st.Count(), c.Count(usage.ResultRejected))
+	}
+	for _, r := range st.Rejects {
+		if r.Reason != usage.RejectInvalid {
+			t.Errorf("reason %s", r.Reason)
+		}
+	}
+}

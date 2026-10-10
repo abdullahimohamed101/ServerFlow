@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// usageCmd implements `usage summary --since DURATION|RFC3339 [--tenant TENANT]`: it reads the usage_hourly view.
+// usageCmd implements `usage summary --since DURATION|RFC3339 [--tenant TENANT]`: it reads usage_records (exact to the instant).
 // Rows with different tokens_source are listed separately, never summed together.
 func (a *app) usageCmd(ctx context.Context, sub string, args []string) error {
 	if sub != "summary" {
@@ -38,9 +38,9 @@ func (a *app) usageCmd(ctx context.Context, sub string, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(a.out, "usage since %s (hour buckets, UTC)\n", from.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(a.out, "usage since %s\n", from.UTC().Format(time.RFC3339))
 	for _, r := range rows {
-		_, _ = fmt.Fprintf(a.out, "tenant=%s\tmodel=%s\ttokens_source=%s\trequests=%d\tfailures=%d\tinput_tokens=%d\toutput_tokens=%d\testimated_cost_tokens=%d\n",
+		_, _ = fmt.Fprintf(a.out, "tenant=%s\tmodel=%s\ttokens_source=%s\trequests=%d\tfailures=%d\tinput_tokens=%s\toutput_tokens=%s\testimated_cost_tokens=%s\n",
 			orDash(r.TenantID), orDash(r.Model), r.TokensSource, r.Requests, r.Failures, r.InputTokens, r.OutputTokens, r.EstimatedCostTokens)
 	}
 	if len(rows) == 0 {

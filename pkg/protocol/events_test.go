@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -149,22 +150,29 @@ func TestDecodeRejectsGarbageWithoutPanicking(t *testing.T) {
 func TestValidateRefusals(t *testing.T) {
 	good := fixtureEvents()["completed"]
 	cases := map[string]func(*Event){
-		"no event id":      func(e *Event) { e.EventID = "" },
-		"wrong event id":   func(e *Event) { e.EventID = "evt_00000000000000000000000000000000" },
-		"no request id":    func(e *Event) { e.RequestID = "" },
-		"bad request id":   func(e *Event) { e.RequestID = "xyz" },
-		"bad type":         func(e *Event) { e.EventType = "inference.request.nope" },
-		"no source":        func(e *Event) { e.Source = "" },
-		"long model":       func(e *Event) { e.Model = strings.Repeat("m", 129) },
-		"control char":     func(e *Event) { e.WorkerID = "a\nb" },
-		"zero time":        func(e *Event) { e.Timestamp = time.Time{} },
-		"future version":   func(e *Event) { e.SchemaVersion = 9 },
-		"zero version":     func(e *Event) { e.SchemaVersion = 0 },
-		"no payload":       func(e *Event) { e.Terminal = nil },
-		"two payloads":     func(e *Event) { e.Received = &ReceivedData{} },
-		"bad tokens src":   func(e *Event) { e.Terminal.TokensSource = "guess" },
-		"estimate+counts":  func(e *Event) { e.Terminal.TokensSource = TokensFromEstimate },
-		"negative tokens":  func(e *Event) { e.Terminal.InputTokens = i64(-1) },
+		"no event id":     func(e *Event) { e.EventID = "" },
+		"wrong event id":  func(e *Event) { e.EventID = "evt_00000000000000000000000000000000" },
+		"no request id":   func(e *Event) { e.RequestID = "" },
+		"bad request id":  func(e *Event) { e.RequestID = "xyz" },
+		"bad type":        func(e *Event) { e.EventType = "inference.request.nope" },
+		"no source":       func(e *Event) { e.Source = "" },
+		"long model":      func(e *Event) { e.Model = strings.Repeat("m", 129) },
+		"control char":    func(e *Event) { e.WorkerID = "a\nb" },
+		"zero time":       func(e *Event) { e.Timestamp = time.Time{} },
+		"future version":  func(e *Event) { e.SchemaVersion = 9 },
+		"zero version":    func(e *Event) { e.SchemaVersion = 0 },
+		"no payload":      func(e *Event) { e.Terminal = nil },
+		"two payloads":    func(e *Event) { e.Received = &ReceivedData{} },
+		"bad tokens src":  func(e *Event) { e.Terminal.TokensSource = "guess" },
+		"estimate+counts": func(e *Event) { e.Terminal.TokensSource = TokensFromEstimate },
+		"negative tokens": func(e *Event) { e.Terminal.InputTokens = i64(-1) },
+		"huge input":      func(e *Event) { e.Terminal.InputTokens = i64(math.MaxInt64) },
+		"huge output":     func(e *Event) { e.Terminal.OutputTokens = i64(MaxEventTokens + 1) },
+		"huge estimate":   func(e *Event) { e.Terminal.EstimatedCostTokens = math.MaxInt64 },
+		"huge duration":   func(e *Event) { e.Terminal.DurationMS = MaxEventMillis + 1 },
+		"huge attempt": func(e *Event) {
+			e.Terminal.Attempts = []AttemptData{{AttemptID: "att_1", Number: 1, Outcome: "ok", DurationMS: math.MaxInt64}}
+		},
 		"bad status":       func(e *Event) { e.Terminal.HTTPStatus = 0 },
 		"class on success": func(e *Event) { e.Terminal.FailureClass = FailureTimeout },
 		"too many attempts": func(e *Event) {
@@ -285,4 +293,17 @@ func TestEventTypesHoldOnlyPrimitives(t *testing.T) {
 		}
 	}
 	walk("Event", reflect.TypeOf(Event{}))
+}
+
+func TestTokenBoundsAreInclusive(t *testing.T) {
+	e := fixtureEvents()["completed"]
+	e.Terminal = &TerminalData{HTTPStatus: 200, TokensSource: TokensFromUsage, InputTokens: i64(MaxEventTokens), OutputTokens: i64(MaxEventTokens), EstimatedCostTokens: MaxEventTokens}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("the bound itself must be allowed: %v", err)
+	}
+	r := fixtureEvents()["received"]
+	r.Received.EstimatedCostTokens = MaxEventTokens + 1
+	if r.Validate() == nil {
+		t.Fatal("received with an absurd estimate was accepted")
+	}
 }
