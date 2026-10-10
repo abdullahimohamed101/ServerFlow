@@ -1,8 +1,10 @@
 package integration
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"serverflow/internal/postgres/postgrestest"
 	"strconv"
 	"strings"
 	"sync"
@@ -138,5 +140,58 @@ func TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests(t *test
 	}
 	if strings.Contains(p.stderr.String(), kcfg.SASLPassword) {
 		t.Fatal("the gateway log contains the SASL password")
+	}
+}
+
+// The usage-consumer binary end to end: it refuses to start on an unmigrated database, then consumes a request's
+// events into a row, serves /healthz and /metrics, and exits cleanly on SIGTERM.
+func TestProcessUsageConsumerEndToEnd(t *testing.T) {
+	kcfg := kafkatest.Config(t)
+	dsn := postgrestest.NewDSN(t)
+	topic := kafkatest.NewTopic(t, kcfg, 3)
+	metrics := freePort(t)
+	env := []string{
+		"SERVERFLOW_POSTGRES_DSN=" + dsn, "SERVERFLOW_EVENTS_BROKERS=" + strings.Join(kcfg.Brokers, ","), "SERVERFLOW_EVENTS_TOPIC=" + topic,
+		"SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256", "SERVERFLOW_EVENTS_SASL_USERNAME=" + kcfg.SASLUsername,
+		"SERVERFLOW_EVENTS_SASL_PASSWORD=" + kcfg.SASLPassword, "SERVERFLOW_EVENTS_CONSUMER_GROUP_ID=" + kafkatest.Unique("sf-proc"),
+		"SERVERFLOW_EVENTS_CONSUMER_METRICS_ADDR=" + metrics, "SERVERFLOW_EVENTS_CONSUMER_BATCH_TIMEOUT=50ms",
+	}
+	if code, out := runBin(t, "usage-consumer", env); code == 0 || !strings.Contains(out, "migration") {
+		t.Fatalf("an unmigrated database must stop the consumer: exit %d, %s", code, out)
+	}
+	out := execAdmin(t, dsn, "migrate", "up")
+	_ = out
+	p := startProc(t, "usage-consumer", "usage-consumer starting", env)
+	resp, err := http.Get("http://" + metrics + "/healthz")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+	// one completed event for a request
+	adm := kafkatest.Admin(t, kcfg)
+	e := protocol.Event{EventType: protocol.EventCompleted, SchemaVersion: 1, Timestamp: time.Now(), Source: "t", RequestID: "req_00000000000000aa",
+		AttemptID: "att_00000000000000bb", Model: model, Terminal: &protocol.TerminalData{HTTPStatus: 200, TokensSource: protocol.TokensFromEstimate}}
+	e.EventID = protocol.NewEventID(e.RequestID, e.EventType, e.AttemptID)
+	b, err := protocol.Encode(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := adm.Produce(ctx, topic, []byte(e.RequestID), b); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 30*time.Second, func() bool {
+		return metricValue(t, metrics, `usage_consumer_records_total{result="inserted"}`) == 1
+	}, "the event is inserted")
+	if v := metricValue(t, metrics, "consumer_lag{"); v != 0 {
+		t.Logf("consumer_lag = %v right after insert (it drains with the commit)", v)
+	}
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	if err := p.wait(t, 20*time.Second); err != nil {
+		t.Fatalf("exit: %v\n%s", err, p.stderr.String())
+	}
+	if strings.Contains(p.stderr.String(), kcfg.SASLPassword) {
+		t.Fatal("the consumer log contains the SASL password")
 	}
 }

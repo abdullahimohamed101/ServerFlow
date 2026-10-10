@@ -93,7 +93,9 @@ integration() {
   must_run kafka SERVERFLOW_TEST_KAFKA_BROKERS "SERVERFLOW_TEST_KAFKA_BROKERS is not set" \
     "./internal/kafka/... ./internal/events/... ./internal/usage/... ./tests/integration/..." \
     TestProducerDeliversToRealBroker TestBrokerOutageDoesNotBlockAndDropsAreCounted \
-    TestConsumerGroupCommitsAfterDatabase TestUsageStopAndReplay TestGatewayEventsEndToEnd
+    TestConsumerGroupCommitsAfterDatabase TestUsageStopAndReplay TestGatewayEventsEndToEnd \
+    TestUsageCrashBetweenDatabaseAndOffsetCommit TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests \
+    TestProcessUsageConsumerEndToEnd
 }
 
 build() {
