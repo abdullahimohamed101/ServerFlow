@@ -1,6 +1,9 @@
 package gwtrace
 
-import "serverflow/internal/gateway"
+import (
+	"serverflow/internal/api"
+	"serverflow/internal/gateway"
+)
 
 // Every string that reaches a span is either fixed by this package, taken from a closed set (pick), a
 // short token of safe characters (token, safeID), or a validated model name. Anything else is replaced by
@@ -9,6 +12,10 @@ import "serverflow/internal/gateway"
 var (
 	rejectKinds = set(gateway.RejectAuth, gateway.RejectRateLimit, gateway.RejectValidation, gateway.RejectModel,
 		gateway.RejectCapacity, gateway.RejectInternal)
+	// errorCodes are the gateway's API error codes (internal/api/errors.go); anything else becomes "other".
+	errorCodes = set(api.CodeInvalidRequest, api.CodeModelNotFound, api.CodeNoCapacity, api.CodeUpstreamTimeout, api.CodeWorkerUnavailable,
+		api.CodeInferenceFailed, api.CodeInternalError, api.CodeUnauthorized, api.CodeForbidden, api.CodeAuthUnavailable, api.CodeRateLimited,
+		api.CodeRateLimitUnavail)
 	rateLimits      = set("requests", "tokens", "concurrency", "model", "unavailable")
 	selectOutcomes  = set("no_capacity", "model_not_found", "model_forbidden", "worker_unavailable", "internal")
 	strategies      = set("random", "round-robin", "least-active", "least-queue", "least-work")
@@ -29,6 +36,14 @@ func pick(v string, allowed map[string]struct{}) string {
 		return v
 	}
 	return "other"
+}
+
+// errorCode returns code if it is one of the gateway's error codes, "other" if not, "" if empty.
+func errorCode(code string) string {
+	if code == "" {
+		return ""
+	}
+	return pick(code, errorCodes)
 }
 
 func tokenByte(c byte) bool {

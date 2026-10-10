@@ -259,13 +259,14 @@ func TestRefusalsEndTheRootExactlyOnceWithTheRightStatus(t *testing.T) {
 		opts       envOpts
 		body       string
 		wantStatus int
-		wantErr    bool
+		wantCode   string // the exact serverflow.error_code
 		wantSpans  []string
 	}{
-		{"validation", envOpts{}, `{"model":""}`, 400, false, []string{tracing.SpanReceive}},
-		{"unknown model", envOpts{}, `{"model":"nope","messages":[{"role":"user","content":"x"}]}`, 404, false, []string{tracing.SpanReceive}},
+		{"validation", envOpts{}, `{"model":""}`, 400, "INVALID_REQUEST", []string{tracing.SpanReceive}},
+		{"unknown model", envOpts{}, `{"model":"nope","messages":[{"role":"user","content":"x"}]}`, 404, "MODEL_NOT_FOUND", []string{tracing.SpanReceive}},
+		{"body too large", envOpts{}, `{"model":"qwen-7b","messages":[{"role":"user","content":"` + strings.Repeat("x", 2<<20) + `"}]}`, 413, "INVALID_REQUEST", []string{tracing.SpanReceive}},
 		{"rate limited", envOpts{gwOpts: []gateway.Option{gateway.WithLimiter(allowLimiter{ratelimit.Decision{Allowed: false, Limit: ratelimit.LimitRequests, RetryAfter: time.Second}})}},
-			plainBody, 429, false, []string{tracing.SpanReceive, tracing.SpanRateLimit}},
+			plainBody, 429, "RATE_LIMITED", []string{tracing.SpanReceive, tracing.SpanRateLimit}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -285,6 +286,9 @@ func TestRefusalsEndTheRootExactlyOnceWithTheRightStatus(t *testing.T) {
 			if root.Status.Code != codes.Unset {
 				t.Errorf("a 4xx is not a server error: %v", root.Status)
 			}
+			if got := mustAttr(t, root, tracing.KeyErrorCode).AsString(); got != c.wantCode {
+				t.Errorf("serverflow.error_code = %q, want %q", got, c.wantCode)
+			}
 			if len(e.up.all()) != 0 {
 				t.Error("a refused request must never reach the worker")
 			}
@@ -299,6 +303,9 @@ func TestRateLimitRefusalSpan(t *testing.T) {
 	spans := e.spans()
 	rl := one(t, spans, tracing.SpanRateLimit)
 	root := one(t, spans, tracing.SpanReceive)
+	if got := mustAttr(t, root, tracing.KeyErrorCode).AsString(); got != "RATE_LIMITED" {
+		t.Errorf("error code %q", got)
+	}
 	if mustAttr(t, rl, tracing.KeyRateOutcome).AsString() != "rejected" || mustAttr(t, rl, tracing.KeyRateLimit).AsString() != "tokens" {
 		t.Errorf("attributes: %v", rl.Attributes)
 	}
@@ -328,8 +335,12 @@ func TestUpstreamDownIsAnErrorSpan(t *testing.T) {
 	if root.Status.Code != codes.Error || fwd.Status.Code != codes.Error {
 		t.Errorf("root %v forward %v", root.Status, fwd.Status)
 	}
-	if strings.ContainsAny(root.Status.Description, " :/") || len(root.Status.Description) > 40 {
-		t.Errorf("the status description must be a bounded code, got %q", root.Status.Description)
+	code := mustAttr(t, root, tracing.KeyErrorCode).AsString()
+	if code == "other" || code == "" || root.Status.Description != code || strings.ContainsAny(code, " :/") {
+		t.Errorf("the status description must be the real error code, got description %q code %q", root.Status.Description, code)
+	}
+	if code != "WORKER_UNAVAILABLE" && code != "INFERENCE_FAILED" {
+		t.Errorf("unexpected code %q for a dropped connection", code)
 	}
 	e.noLeak()
 }
@@ -350,8 +361,8 @@ func TestMidstreamFailureEndsEverything(t *testing.T) {
 	e.post(streamBody)
 	spans := e.spans()
 	root, comp := one(t, spans, tracing.SpanReceive), one(t, spans, tracing.SpanCompletion)
-	if root.Status.Code != codes.Error {
-		t.Errorf("a failed stream is an error: %v", root.Status)
+	if root.Status.Code != codes.Error || root.Status.Description != "INFERENCE_FAILED" || mustAttr(t, root, tracing.KeyErrorCode).AsString() != "INFERENCE_FAILED" {
+		t.Errorf("a failed stream is an INFERENCE_FAILED error: %v %v", root.Status, root.Attributes)
 	}
 	if comp.EndTime.After(root.EndTime.Add(time.Millisecond)) {
 		t.Error("completion outlived the root")
@@ -445,6 +456,9 @@ func TestAuthRefusalGetsARootSpan(t *testing.T) {
 		t.Fatalf("a refused key gets only the root span: %v", names(spans))
 	}
 	root := spans[0]
+	if got := mustAttr(t, root, tracing.KeyErrorCode).AsString(); got != "UNAUTHORIZED" {
+		t.Errorf("error code %q", got)
+	}
 	if mustAttr(t, root, tracing.KeyRejectKind).AsString() != "auth" || mustAttr(t, root, tracing.KeyHTTPStatusCode).AsInt64() != 401 {
 		t.Errorf("attributes: %v", root.Attributes)
 	}

@@ -347,7 +347,7 @@ func (o *Observer) RequestCompleted(ctx context.Context, e gateway.Completion) {
 	if m := validModel(e.Model); m != "" {
 		attrs = append(attrs, tracing.KeyModel.String(m))
 	}
-	if code := token(e.ErrorCode, 40); code != "" {
+	if code := errorCode(e.ErrorCode); code != "" {
 		attrs = append(attrs, tracing.KeyErrorCode.String(code))
 	}
 	if e.TTFT > 0 {
@@ -359,7 +359,7 @@ func (o *Observer) RequestCompleted(ctx context.Context, e gateway.Completion) {
 		attrs = append(attrs, tracing.KeyClientClosed.Bool(true))
 	case e.Status >= 500, e.Status < 400 && e.ErrorCode != "":
 		// A 5xx, or a stream that failed after its 200 was sent.
-		desc := token(e.ErrorCode, 40)
+		desc := errorCode(e.ErrorCode)
 		if desc == "" {
 			desc = strconv.Itoa(e.Status)
 		}
