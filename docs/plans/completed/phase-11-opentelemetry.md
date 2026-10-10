@@ -183,7 +183,7 @@ Completed on branch `feature/phase-11-otel`. ADR-018, `docs/operations/tracing.m
   `Rejection.DecisionDuration` now carries the selection time for capacity/model refusals (before, it carried the limiter's time for every kind).
   A repeated `traceparent`/`tracestate` header is dropped.
 - **Own batch processor (D13 open point).** The SDK's `BatchSpanProcessor` exposes no drop count, so `internal/tracing/processor.go` (about 150 lines)
-  replaces it; accounting is exact and tested. `otel.SetErrorHandler` is therefore not used and no OpenTelemetry global state is set at all.
+  replaces it; accounting is exact at rest (spans in flight are in none of the counters) and tested. `otel.SetErrorHandler` is therefore not used and no OpenTelemetry global state is set at all.
 - **Resource and environment.** `sdktrace.WithResource` merges `OTEL_RESOURCE_ATTRIBUTES`, found by a test; exported spans are wrapped so the resource is exactly
   service name, version and instance ID.
 - **Metrics.** `tracing_export_failures_total` counts failed batches; failed spans are in the pipeline stats but not a series.

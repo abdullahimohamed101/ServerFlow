@@ -133,6 +133,11 @@ func checkTraceEndpoint(endpoint string, allowInsecure bool) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 		return fmt.Errorf("tracing.endpoint must be an http:// or https:// URL")
 	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("tracing.endpoint must have a port between 1 and 65535")
+		}
+	}
 	if u.User != nil {
 		return fmt.Errorf("tracing.endpoint must not contain credentials")
 	}
