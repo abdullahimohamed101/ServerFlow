@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -306,4 +308,22 @@ func TestTokenBoundsAreInclusive(t *testing.T) {
 	if r.Validate() == nil {
 		t.Fatal("received with an absurd estimate was accepted")
 	}
+}
+
+// The derivation is part of the contract (docs/events/inference-lifecycle-v1.md): SHA-256 over the three strings joined
+// by single NUL bytes, first 32 hex characters, prefixed "evt_". This vector is what a consumer written in another
+// language can check itself against.
+func TestEventIDTestVector(t *testing.T) {
+	if got := NewEventID("req_0123456789abcdef", EventCompleted, "att_1111111111111111"); got != "evt_fb773ebffce17706505c495fc4412a31" {
+		t.Fatalf("event ID = %s", got)
+	}
+	if got := NewEventID("req_0123456789abcdef", EventReceived, ""); got != "evt_"+refEventID("req_0123456789abcdef", EventReceived, "") {
+		t.Fatalf("event ID for an empty attempt = %s", got)
+	}
+}
+
+// refEventID is the reference implementation from the documentation, written without NewEventID.
+func refEventID(request, typ, attempt string) string {
+	sum := sha256.Sum256([]byte(request + "\x00" + typ + "\x00" + attempt))
+	return hex.EncodeToString(sum[:])[:32]
 }

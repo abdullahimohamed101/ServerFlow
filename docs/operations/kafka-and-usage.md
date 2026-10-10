@@ -52,7 +52,79 @@ serverflow-admin migrate up      # applies 0003_usage_records.sql
 serverflow-admin usage summary --since 24h [--tenant NAME]
 ```
 
-The summary reads the `usage_hourly` view, one line per tenant, model and `tokens_source` (never summed across sources).
+The summary reads `usage_records` directly and is exact to the instant: `--since 24h` is the last 24 hours to the second, `--since` also
+takes an RFC 3339 time. It prints one line per tenant, model and `tokens_source` (never summed across sources); token sums are exact
+decimal numbers. The `usage_hourly` view holds the same data bucketed by UTC hour for reports and dashboards (an hour is counted whole).
+
+### Migration, deploy order, rollback
+
+`0003_usage_records.sql` is forward-only: there is no down migration, and the runner refuses to edit an applied file. It only adds three
+objects (`usage_records`, `usage_rejected_events`, the `usage_hourly` view), so the old binaries ignore them, **but an older binary refuses
+a database that is ahead of it**: a gateway built before this phase with `auth.mode: required` checks the migration list at start and
+stops with `migrate: the database is at version 3 but this binary only knows 2 migrations; run a newer serverflow-admin`. With
+`auth.mode: off` the gateway never opens the database and is unaffected. Therefore:
+
+1. Roll the gateways to a build that includes migration 0003 (events stay off by default) **before** running `serverflow-admin migrate up`,
+   or run the migration in the same change window and expect older gateways with authentication on to refuse a restart until upgraded.
+2. Start `usage-consumer` after the migration (it refuses to start on an unmigrated database).
+3. Rolling back the code after the migration is allowed only to builds that know migration 0003. To remove the feature, stop
+   `usage-consumer` and set `events.mode: off`; the tables stay (drop them by hand if you must; nothing else references them).
+
+### Retention of usage rows
+
+Nothing deletes from `usage_records` or `usage_rejected_events`: there is no retention job. At about 250 bytes of heap plus two indexes per
+request, a million requests a day grows the table by roughly 0.5 GB a month. Clean up by hand, for example:
+
+```sql
+DELETE FROM usage_records WHERE occurred_at < now() - interval '180 days';
+DELETE FROM usage_rejected_events WHERE rejected_at < now() - interval '30 days';
+```
+
+Run it in batches off-peak. Deleting rows older than the topic's retention is safe; deleting newer rows and then replaying the topic
+brings them back (the insert is idempotent), which can be useful and can be a surprise.
+
+### Least-privilege database role for the consumer
+
+`usage-consumer` needs to read the migration table (its startup check) and to insert into two tables; it never updates, deletes or reads
+anything else. Create a role like this (the grants are tested in `internal/postgres/usage_grants_test.go`):
+
+```sql
+CREATE ROLE usage_consumer LOGIN PASSWORD '...';
+GRANT USAGE ON SCHEMA public TO usage_consumer;
+GRANT SELECT ON schema_migrations TO usage_consumer;
+GRANT INSERT ON usage_records, usage_rejected_events TO usage_consumer;
+```
+
+`serverflow-admin usage summary` is run with the admin role (it reads `usage_records`); give a reporting role `GRANT SELECT ON usage_records`.
+
+## Event ID
+
+`event_id = "evt_" + first 32 hex characters of SHA-256(request_id || 0x00 || event_type || 0x00 || attempt_id)`: the three strings are joined by
+single NUL bytes (so `("ab","c")` and `("a","bc")` differ), `attempt_id` is empty for `received`. Reference (any language works):
+
+```go
+sum := sha256.Sum256([]byte(requestID + "\x00" + eventType + "\x00" + attemptID))
+id := "evt_" + hex.EncodeToString(sum[:])[:32]
+```
+
+Test vector: request `req_0123456789abcdef`, type `inference.request.completed`, attempt `att_1111111111111111` gives
+`evt_fb773ebffce17706505c495fc4412a31` (`TestEventIDTestVector`).
+
+## Behaviours worth knowing
+
+- **`delivery_timeout` is approximate.** The client fails a whole batch for a partition when the first record's timeout passes and only
+  checks timeouts before sending a request and after a reply, so with a frozen broker batches fail tens of seconds apart (30 to 80 s
+  observed with a 30 s setting) rather than record by record. Memory stays bounded throughout (the two buffers), and every record is
+  either delivered or counted.
+- **The event shape is nested on purpose.** The spec's example is a flat object; the implementation puts the type-specific fields under
+  `payload` so the envelope is identical for every type and unknown payload fields are additive. Consumers should read the schema
+  reference, not the spec example.
+- **An unknown model after admission** (registry mode: the request was admitted, then the registry did not know the model) produces
+  `received` and a `failed` event with `failure_class: internal` (the gateway's error is a 404-class refusal that the closed enum does not
+  name) and no model.
+- **`consumer_lag`** is the broker's committed offsets against partition end offsets, summed, refreshed every 5 seconds; a stopped
+  consumer process exports nothing, and a refresh that fails (broker unreachable) keeps the last value. A new group with no commit shows the
+  whole retained log until its first commit.
 
 ## Metrics
 
@@ -85,7 +157,10 @@ The automated version is `TestUsageStopAndReplay`. By hand, with the setup above
 4. Start the consumer. It reads the backlog; the summary reaches 250 and the group lag reaches 0.
 5. Replay: stop it and either start it with a new group (`SERVERFLOW_EVENTS_CONSUMER_GROUP_ID=replay-1`, `start_offset` earliest) or
    reset the real group's offsets while it is stopped:
-   `scripts/dev-kafka.sh rpk group seek serverflow-usage --to-start`.
+   `scripts/dev-kafka.sh rpk group seek serverflow-usage --to start --topics inference.lifecycle.v1` (the flag is `--to start`, two words; verified
+   by hand on Redpanda 25.1.1: `--to-start` is an unknown flag, and a group that still has a live member is refused with
+   `INVALID_OPERATION: seeking a non-empty group is not allowed`, so stop every consumer of the group first). Apache Kafka's equivalent is
+   `kafka-consumer-groups.sh --reset-offsets --to-earliest --execute --group serverflow-usage --topic inference.lifecycle.v1`.
    Start the consumer again. `usage_consumer_records_total{result="duplicate"}` rises by the number of terminal events read and the
    summary does not change, because the insert is idempotent on `event_id` and `request_id`.
 
