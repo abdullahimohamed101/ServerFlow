@@ -36,7 +36,7 @@ func requestStartFrom(r *http.Request, id string, at time.Time) RequestStart {
 
 func (s *Server) admitted(ctx context.Context, info *reqInfo) {
 	s.obs.RequestAdmitted(ctx, Admission{
-		RequestID: info.id, Model: info.requested, Stream: info.stream, TenantID: info.tenantID,
+		RequestID: info.id, Model: info.requested, Stream: info.stream, TenantID: info.tenantID, APIKeyID: info.apiKeyID,
 		EstimatedCost: info.cost, RateLimitChecked: info.rateChecked, RateLimitDuration: info.rateDuration,
 		RateLimitBypassed: info.rateBypassed,
 	})
