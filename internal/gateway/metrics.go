@@ -301,16 +301,34 @@ func (c *counterCache) pair(vec *prometheus.CounterVec, model, value string) pro
 const maxSelectionSeries = 1024
 
 // budgeted is pair for a series family with a global budget: while the budget lasts each new value gets its own
-// child; after that, new values share the model's "other" child.
+// child; after that, new values share the model's "other" child. A budget slot is taken only when a child is really
+// created, under the cache's lock after re-checking, so goroutines racing on the same new value take one slot between
+// them and a burst of cold requests cannot exhaust the budget for a fleet that fits in it.
 func (c *counterCache) budgeted(vec *prometheus.CounterVec, model, value string, used *atomic.Int64) prometheus.Counter {
 	if x := c.load(value); x != nil {
 		return x
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if x := c.m[value]; x != nil {
+		return x
+	}
+	if c.m == nil {
+		c.m = map[string]prometheus.Counter{}
+	}
+	key := value
 	if used.Add(1) > maxSelectionSeries {
 		used.Add(-1)
-		return c.pair(vec, model, "other")
+		key = "other"
+		if x := c.m[key]; x != nil {
+			c.m[value] = x
+			return x
+		}
 	}
-	return c.pair(vec, model, value)
+	x := vec.WithLabelValues(model, key)
+	c.m[key] = x
+	c.m[value] = x
+	return x
 }
 
 // model returns the instruments for a model. An empty (unconfirmed) model is "unknown"; a model beyond the cap

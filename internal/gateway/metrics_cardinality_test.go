@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -163,5 +164,84 @@ func TestGatewaySeriesCeilingWithAThousandModelsAndWorkers(t *testing.T) {
 		if f.GetName() == "scheduler_selections_total" && len(f.GetMetric()) > maxSelectionSeries+66+1 {
 			t.Fatalf("%d selection series, budget %d", len(f.GetMetric()), maxSelectionSeries)
 		}
+	}
+}
+
+func selectionSeries(t *testing.T, m *metrics) (total, folded int) {
+	t.Helper()
+	fams, err := m.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fams {
+		if f.GetName() != "scheduler_selections_total" {
+			continue
+		}
+		for _, mm := range f.GetMetric() {
+			total++
+			for _, l := range mm.GetLabel() {
+				if l.GetName() == "worker_id" && l.GetValue() == "other" {
+					folded++
+				}
+			}
+		}
+	}
+	return total, folded
+}
+
+// A burst of cold requests must not use up the selection budget: goroutines hitting the same new (model, worker) pair
+// at once take one slot between them. 50 workers x 10 models = 500 pairs fit the 1,024 budget, so none may fold.
+func TestColdBurstDoesNotFoldAFleetThatFitsTheSelectionBudget(t *testing.T) {
+	for _, goroutines := range []int{256, 1024} {
+		t.Run(fmt.Sprint(goroutines), func(t *testing.T) {
+			m := registryMetrics("round-robin")
+			start := make(chan struct{})
+			var wg sync.WaitGroup
+			for g := 0; g < goroutines; g++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					for i := 0; i < 500; i++ {
+						k := (i + g) % 500
+						m.AttemptStarted(bg, AttemptStart{Number: 1, WorkerID: fmt.Sprintf("w%d", k%50), Model: fmt.Sprintf("m%d", k/50),
+							WorkerState: "READY", WorkerEligible: true})
+					}
+				}()
+			}
+			close(start)
+			wg.Wait()
+			total, folded := selectionSeries(t, m)
+			if total != 500 || folded != 0 {
+				t.Fatalf("%d selection series, %d folded into worker_id=other; want 500 and 0", total, folded)
+			}
+			if used := m.selectionSeries.Load(); used != 500 {
+				t.Fatalf("%d budget slots used for 500 series", used)
+			}
+		})
+	}
+}
+
+// The hostile side of the same budget: 64 models x 400 workers (the worker label cap folds the rest) stays near the
+// budget, plus one "other" series per model.
+func TestHostileFleetStaysNearTheSelectionBudget(t *testing.T) {
+	m := registryMetrics("round-robin")
+	var wg sync.WaitGroup
+	for g := 0; g < 64; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for w := 0; w < 400; w++ {
+				m.AttemptStarted(bg, AttemptStart{Number: 1, WorkerID: fmt.Sprintf("w%d", w), Model: fmt.Sprintf("m%d", g), WorkerState: "READY", WorkerEligible: true})
+			}
+		}()
+	}
+	wg.Wait()
+	total, folded := selectionSeries(t, m)
+	if total > maxSelectionSeries+64 || total < maxSelectionSeries {
+		t.Fatalf("%d selection series, want between %d and %d", total, maxSelectionSeries, maxSelectionSeries+64)
+	}
+	if folded == 0 {
+		t.Fatal("nothing was folded: the budget is not in force")
 	}
 }
