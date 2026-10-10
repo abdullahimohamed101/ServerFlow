@@ -3,6 +3,8 @@ package kafka
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -93,3 +95,9 @@ func (p *Producer) Close() error {
 	p.cl.Close()
 	return nil
 }
+
+// Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
+func (x *Producer) Format(f fmt.State, _ rune) { redactedFormat(f, "Producer", x.cfg) }
+
+// LogValue implements slog.LogValuer.
+func (x *Producer) LogValue() slog.Value { return slog.StringValue("kafka.Producer" + x.cfg.String()) }

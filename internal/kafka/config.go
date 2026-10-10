@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,9 +108,15 @@ func (c Config) scrub(s string) string {
 	if c.SASLPassword == "" {
 		return s
 	}
+	plainMsg := "\x00" + c.SASLUsername + "\x00" + c.SASLPassword // the SASL PLAIN message with an empty authzid
+	jsonEsc, _ := json.Marshal(c.SASLPassword)
 	for _, v := range []string{
 		c.SASLPassword, base64.StdEncoding.EncodeToString([]byte(c.SASLPassword)), base64.RawStdEncoding.EncodeToString([]byte(c.SASLPassword)),
-		url.QueryEscape(c.SASLPassword), url.PathEscape(c.SASLPassword),
+		base64.URLEncoding.EncodeToString([]byte(c.SASLPassword)), url.QueryEscape(c.SASLPassword), url.PathEscape(c.SASLPassword),
+		hex.EncodeToString([]byte(c.SASLPassword)), strings.ToUpper(hex.EncodeToString([]byte(c.SASLPassword))),
+		strings.Trim(string(jsonEsc), `"`),
+		base64.StdEncoding.EncodeToString([]byte(plainMsg)), base64.RawStdEncoding.EncodeToString([]byte(plainMsg)),
+		base64.StdEncoding.EncodeToString([]byte(c.SASLUsername + ":" + c.SASLPassword)),
 	} {
 		if v != "" {
 			s = strings.ReplaceAll(s, v, "<redacted>")
@@ -218,4 +225,10 @@ func (c Config) baseOpts(h *health) ([]kgo.Opt, error) {
 		opts = append(opts, kgo.WithHooks(h))
 	}
 	return opts, nil
+}
+
+// redactedFormat prints a client wrapper as its redacted configuration under every fmt verb, so formatting the
+// producer, consumer or admin value (%v, %+v, %#v, %s, slog) cannot reach the SASL password held in its config.
+func redactedFormat(f fmt.State, kind string, cfg Config) {
+	_, _ = io.WriteString(f, "kafka."+kind+cfg.String())
 }

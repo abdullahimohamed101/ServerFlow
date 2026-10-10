@@ -3,6 +3,8 @@ package kafka
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -195,3 +197,9 @@ type (
 )
 
 func kerrFor(code int16) error { return kerr.ErrorForCode(code) }
+
+// Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
+func (x *Consumer) Format(f fmt.State, _ rune) { redactedFormat(f, "Consumer", x.cfg) }
+
+// LogValue implements slog.LogValuer.
+func (x *Consumer) LogValue() slog.Value { return slog.StringValue("kafka.Consumer" + x.cfg.String()) }

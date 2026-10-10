@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/parser"
@@ -316,3 +318,59 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// Formatting the client wrappers directly must not print the password held in their configuration.
+func TestClientWrappersNeverPrintThePassword(t *testing.T) {
+	cfg := Config{Brokers: []string{"127.0.0.1:1"}, ClientID: "t", Topic: "t", GroupID: "g", MaxBufferedRecords: 5, SASLMechanism: "plain", SASLUsername: "svc", SASLPassword: canary}
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	c, err := NewConsumer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	a, err := NewAdmin(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	var logs bytes.Buffer
+	slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "p", p, "c", c, "a", a)
+	slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "p", p, "c", c, "a", a)
+	out := logs.String()
+	for _, v := range []any{p, c, a} {
+		out += fmt.Sprintf("%v|%+v|%#v|%s|%d|%q|%x", v, v, v, v, v, v, v)
+		js, _ := json.Marshal(v)
+		out += string(js)
+	}
+	if strings.Contains(out, canary) {
+		t.Fatalf("a wrapper printed the password: %s", out)
+	}
+	if !strings.Contains(out, "redacted") {
+		t.Fatalf("expected the redacted configuration to be printed: %s", out)
+	}
+}
+
+func TestScrubCoversTheEncodingsAPasswordTravelsIn(t *testing.T) {
+	c := Config{SASLUsername: "svc", SASLPassword: canary}
+	plainMsg := "\x00svc\x00" + canary
+	js, _ := json.Marshal(canary + `"\`)
+	for name, in := range map[string]string{
+		"raw":             canary,
+		"base64 password": fmtB64(canary),
+		"base64 PLAIN":    fmtB64(plainMsg),
+		"base64 user:pw":  fmtB64("svc:" + canary),
+		"hex":             hex.EncodeToString([]byte(canary)),
+		"HEX":             strings.ToUpper(hex.EncodeToString([]byte(canary))),
+		"url":             urlEsc(canary),
+		"json":            string(js),
+	} {
+		got := c.scrub("broker said " + in + " end")
+		if strings.Contains(got, canary) || strings.Contains(got, in) && in != "" && !strings.Contains(got, "redacted") {
+			t.Errorf("%s survived scrubbing: %q", name, got)
+		}
+	}
+}

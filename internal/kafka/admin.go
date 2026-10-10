@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -201,3 +202,9 @@ func (a *Admin) Produce(ctx context.Context, topic string, key, value []byte) er
 	res := a.cl.ProduceSync(ctx, &kgo.Record{Topic: topic, Key: key, Value: value})
 	return a.cfg.safe(res.FirstErr())
 }
+
+// Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
+func (x *Admin) Format(f fmt.State, _ rune) { redactedFormat(f, "Admin", x.cfg) }
+
+// LogValue implements slog.LogValuer.
+func (x *Admin) LogValue() slog.Value { return slog.StringValue("kafka.Admin" + x.cfg.String()) }
