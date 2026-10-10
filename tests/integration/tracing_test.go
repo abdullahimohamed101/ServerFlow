@@ -210,16 +210,19 @@ func TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace(t *testing.T) {
 	waitFor(t, 5*time.Second, "both eligible", func() bool { return c.eligible("bad") && c.eligible("good") })
 	waitReady(t, gw)
 
+	// Until the gateway's registry view holds both workers, a request may find only the failing one and
+	// fail with a 503; that is warm-up, not the behaviour under test. The first request that was retried
+	// and succeeded proves both workers are known.
 	var retried string
-	for i := 0; i < 8 && retried == ""; i++ {
+	i := 0
+	waitFor(t, 10*time.Second, "a request that was retried onto the healthy worker", func() bool {
 		resp, _ := tracedPost(t, gw, i%2 == 0, "Tracestate", "v=canary-state-0b1c")
-		if resp.StatusCode != 200 {
-			t.Fatalf("a retried request must still succeed, got %d", resp.StatusCode)
-		}
-		if resp.Header.Get("X-ServerFlow-Attempts") == "2" {
+		i++
+		if resp.StatusCode == 200 && resp.Header.Get("X-ServerFlow-Attempts") == "2" {
 			retried = resp.Header.Get("X-Request-ID")
 		}
-	}
+		return retried != ""
+	})
 	if retried == "" {
 		t.Fatal("no request needed a retry with round-robin over a failing and a healthy worker")
 	}
