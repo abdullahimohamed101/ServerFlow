@@ -120,12 +120,12 @@ tests:
       - {series: 'inference_requests_total{status="503"}', values: '0x199 0+100x80 8000x200'}
     alert_rule_test:
       - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
-  - name: only the 30m window is bad (6 hours were clean) does not fire the slow burn
+  - name: only the 30m and 1h windows are bad (6 hours were clean) does not fire the slow burn
     interval: 1m
     input_series:
       - {series: 'inference_requests_total{status="200"}', values: '0+1000x420'}
-      # clean for 6h20m, then 40 minutes at 1.2% errors: the 30m ratio is 1.2%, the 6h ratio about 0.13%
-      - {series: 'inference_requests_total{status="503"}', values: '0x379 0+12x40'}
+      # clean for 6 hours, then an hour at 0.7% errors: the 30m and 1h ratios are 0.7%, the 6h ratio about 0.12%
+      - {series: 'inference_requests_total{status="503"}', values: '0x359 0+7x60'}
     alert_rule_test:
       - {eval_time: 419m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
   - name: only the 6h window is bad (the last 30 minutes are clean) does not fire the slow burn
