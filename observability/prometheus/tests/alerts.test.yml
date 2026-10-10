@@ -149,6 +149,14 @@ tests:
             exp_annotations:
               summary: "Worker w1 is FAILED and takes no traffic"
               runbook: "docs/operations/observability.md#runbook-worker-down"
+  - name: healthy, warming and recovered workers raise no not-serving alert
+    interval: 5s
+    input_series:
+      - {series: 'worker_health{worker_id="w2",model="m",state="READY"}', values: '1 1 1 1'}
+      - {series: 'worker_health{worker_id="w3",model="m",state="WARMING"}', values: '0 0 0 0'}
+      - {series: 'worker_health{worker_id="w4",model="m",state="UNHEALTHY"}', values: '0 0 0 stale'}
+    alert_rule_test:
+      - {eval_time: 30s, alertname: ServerFlowWorkerNotServing, exp_alerts: []}
   - name: any ineligible selection fires; a flat counter does not
     interval: 15s
     input_series:
@@ -162,6 +170,12 @@ tests:
             exp_annotations:
               summary: "The scheduler routed a request to a worker that was not eligible (must never happen)"
               runbook: "docs/operations/observability.md#runbook-ineligible-selection"
+  - name: a counter that never moves raises no ineligible-selection alert
+    interval: 15s
+    input_series:
+      - {series: 'scheduler_ineligible_selections_total{instance="good"}', values: '0x12'}
+    alert_rule_test:
+      - {eval_time: 90s, alertname: ServerFlowIneligibleWorkerSelected, exp_alerts: []}
   - name: a queue deeper than its capacity fires after a minute; a full queue does not
     interval: 15s
     input_series:
@@ -207,6 +221,14 @@ tests:
               summary: "Prometheus cannot scrape serverflow-gateway at g:1"
               runbook: "docs/operations/observability.md#runbook-target-down"
 
+  - name: targets that are up, or of another job, raise no target-down alert
+    interval: 15s
+    input_series:
+      - {series: 'up{job="serverflow-control-plane",instance="c:1"}', values: '1x12'}
+      - {series: 'up{job="node",instance="n:1"}', values: '0x12'}
+    alert_rule_test:
+      - {eval_time: 2m, alertname: ServerFlowTargetDown, exp_alerts: []}
+
   # --- dependencies ------------------------------------------------------------------------------------------------
   - name: redis_up 0 for a minute fires; 1 does not
     interval: 15s
@@ -221,6 +243,12 @@ tests:
             exp_annotations:
               summary: "The gateway is backing off from Redis; rate limits fail per redis.on_failure"
               runbook: "docs/operations/observability.md#runbook-redis-down"
+  - name: a reachable Redis raises no alert
+    interval: 15s
+    input_series:
+      - {series: 'redis_up{instance="up"}', values: '1x12'}
+    alert_rule_test:
+      - {eval_time: 2m, alertname: ServerFlowRedisDown, exp_alerts: []}
   - name: a PostgreSQL pool that keeps being found empty fires; a flat counter does not
     interval: 15s
     input_series:

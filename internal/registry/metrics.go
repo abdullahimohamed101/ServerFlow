@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"serverflow/internal/telemetry"
 	"serverflow/pkg/protocol"
@@ -122,4 +123,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	for i := range heartbeatResultNames {
 		ch <- prometheus.MustNewConstMetric(c.heartbeats, prometheus.CounterValue, float64(c.r.heartbeats[i].Load()), heartbeatResultNames[i])
 	}
+}
+
+// NewMetricsRegistry is the control plane's private Prometheus registry: Go and process statistics, the build
+// information and the fleet collector. cmd/control-plane serves it, and the exported-metrics test gathers the
+// same registry, so what is checked is what runs.
+func NewMetricsRegistry(r *Registry, maxModels int) *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		telemetry.BuildInfoCollector(), NewCollector(r, maxModels))
+	return reg
 }

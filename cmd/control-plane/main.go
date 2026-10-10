@@ -13,9 +13,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-
 	"serverflow/internal/config"
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/server"
@@ -72,10 +69,8 @@ func main() {
 
 	// /metrics has a listener of its own, never the API port (ADR-017). Bound before serving so a refused
 	// or busy address stops the control plane at start-up.
-	mreg := prometheus.NewRegistry()
-	mreg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		telemetry.BuildInfoCollector(), registry.NewCollector(reg, cfg.Metrics.MaxModels))
-	if ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultControlPlaneMetricsListen), cfg.Metrics, mreg, logger); err != nil {
+	if ms, err := metricsserver.Listen(cfg.Metrics.ListenAddr(config.DefaultControlPlaneMetricsListen), cfg.Metrics,
+		registry.NewMetricsRegistry(reg, cfg.Metrics.MaxModels), logger); err != nil {
 		fmt.Fprintf(os.Stderr, "control-plane: %v\n", err)
 		os.Exit(1)
 	} else if ms != nil {
