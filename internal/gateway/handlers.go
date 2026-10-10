@@ -64,12 +64,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	info := infoFrom(r.Context())
 	info.inference = true
 	info.attemptID = protocol.NewAttemptID()
-	s.metrics.active.Inc()
-	defer s.metrics.active.Dec()
 	start := time.Now()
 
 	if s.limitRequired && s.limiter == nil { // required but not wired: fail closed
 		w.Header().Set("Connection", "close")
+		s.rejected(r.Context(), info, RejectInternal, "limiter_missing", http.StatusInternalServerError)
 		s.fail(w, info, api.ErrInternal())
 		return
 	}
@@ -86,11 +85,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Connection", "close")
 		var tooLarge *http.MaxBytesError
+		apiErr := api.ErrInvalidRequest("could not read request body")
 		if errors.As(err, &tooLarge) {
-			s.fail(w, info, api.ErrBodyTooLarge())
-		} else {
-			s.fail(w, info, api.ErrInvalidRequest("could not read request body"))
+			apiErr = api.ErrBodyTooLarge()
 		}
+		s.rejectedAPI(r.Context(), info, apiErr)
+		s.fail(w, info, apiErr)
 		return
 	}
 
@@ -104,6 +104,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if !errors.As(err, &apiErr) {
 			apiErr = api.ErrInternal()
 		}
+		s.rejectedAPI(r.Context(), info, apiErr)
 		s.fail(w, info, apiErr)
 		return
 	}
@@ -111,6 +112,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		info.model = ireq.Model // already checked against the configured list
 	}
 	info.stream = ireq.Stream
+	info.requested = ireq.Model
 	ireq.RequestID = info.id
 	if p := info.principal; p != nil {
 		// Carried for the scheduler and later phases; quotas and priority are not enforced yet.
@@ -127,6 +129,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		defer release()
 	}
+	s.admitted(r.Context(), info)
 
 	if s.router != nil {
 		s.forwardRegistry(w, r, rc, ireq, body, info, start)
@@ -134,11 +137,28 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordWorker(info, "static", 1)
 
+	// Static mode has one attempt per request and no worker ID (the single upstream is the whole fleet).
+	info.attempted = 1
+	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, 1, "", ireq.Model, "", "", 0))
+	info.attemptCtx = octx
+	attemptBegan := time.Now()
+	var upStatus int
+	defer func() {
+		p := recover()
+		s.endStaticAttempt(octx, info, attemptBegan, upStatus, p != nil)
+		if p != nil {
+			panic(p) // not ours to swallow: withRequest turns it into a 500
+		}
+	}()
+
 	// upCtx lets the idle timer abort a stalled upstream without touching the
 	// client's own context, which is how the two failures are told apart.
-	upCtx, cancelUp := context.WithCancel(r.Context())
+	upCtx, cancelUp := context.WithCancel(octx)
 	defer cancelUp()
 	resp, err := s.upstream.Do(upCtx, chatCompletionsPath, body, info.id)
+	if err == nil {
+		upStatus = resp.StatusCode
+	}
 	if err != nil {
 		if r.Context().Err() != nil {
 			info.clientClosed = true
@@ -246,9 +266,14 @@ func (s *Server) relayStream(ctx context.Context, rc *http.ResponseController, w
 	_ = rc.Flush() // send headers immediately
 
 	var tail []byte // last bytes forwarded, to keep SSE event framing intact
+	first := true
 	onData := func(b []byte) {
 		if info.ttft == 0 {
 			info.ttft = time.Since(start)
+		}
+		if first {
+			first = false
+			s.obs.FirstToken(attemptContext(ctx, info), FirstToken{RequestID: info.id, AttemptID: info.attemptID, TTFT: info.ttft})
 		}
 		tail = append(tail, b...)
 		if len(tail) > 4 {

@@ -61,6 +61,11 @@ type attemptRun struct {
 
 	retryable bool
 	class     string
+
+	// octx is the context the observers returned for this attempt; nextUnavailable records that a retry was
+	// wanted but no other worker could take it.
+	octx            context.Context
+	nextUnavailable bool
 }
 
 // errUnexpectedStatus is what an informational (1xx) worker response becomes: a failed attempt that is
@@ -89,6 +94,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 			info.clientClosed = true // the client left while we were choosing
 			return
 		}
+		s.rejectedAPI(r.Context(), info, apiErr)
 		// Unknown models are client typos or probes, which a client could use to fill the log, so
 		// they stay at debug.
 		level := slog.LevelInfo
@@ -113,6 +119,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		// what the client gets (ADR-012 D7).
 		next, nextErr := s.routeAttempt(r, ireq, info, append(tried, run.target.worker.WorkerID))
 		if nextErr != nil {
+			run.nextUnavailable = true
 			break
 		}
 		tried = append(tried, run.target.worker.WorkerID)
@@ -140,6 +147,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 // routeAttempt picks a worker for the next attempt and starts its record. exclude lists the workers
 // already tried for this request.
 func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *api.Error) {
+	selecting := time.Now()
 	target, apiErr := s.router.Route(r.Context(), ireq, exclude...)
 	if apiErr != nil {
 		return nil, apiErr
@@ -148,12 +156,16 @@ func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	info.attemptID = id
 	info.attempts = append(info.attempts, attemptRecord{ID: id, Worker: target.worker.WorkerID, Started: time.Now()})
 	idx := len(info.attempts) - 1
-	ctx, cancel := context.WithCancel(withAttemptID(r.Context(), id))
+	info.attempted = len(info.attempts)
+	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
+		string(target.worker.State), info.attempts[idx].Started.Sub(selecting)))
+	info.attemptCtx = octx
+	ctx, cancel := context.WithCancel(withAttemptID(octx, id))
 	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancel)
 	idle.Stop()
 	s.log.Debug("worker selected", append([]any{"request_id", info.id, "attempt_id", id, "attempt", idx + 1, "strategy", s.router.strategy,
 		"worker_id", target.worker.WorkerID, "model", ireq.Model}, tenantAttrs(info)...)...)
-	return &attemptRun{rec: idx, target: target, ctx: ctx, cancel: cancel, idle: idle}, nil
+	return &attemptRun{rec: idx, target: target, ctx: ctx, cancel: cancel, idle: idle, octx: octx}, nil
 }
 
 // sendAttempt sends the request to the attempt's worker and decides whether what came back may be retried.
@@ -222,9 +234,6 @@ func (s *Server) abandonAttempt(run *attemptRun, info *reqInfo, outcome string) 
 	}
 	run.target.release()
 	s.endAttempt(run, info, outcome)
-	if outcome == outcomeRetried {
-		s.metrics.observeRetry(info.model, run.class)
-	}
 }
 
 // finishAttempt closes out the attempt whose response was relayed (or whose failure was reported).
@@ -243,7 +252,10 @@ func (s *Server) finishAttempt(run *attemptRun, info *reqInfo) {
 func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	rec := &info.attempts[run.rec]
 	rec.Duration, rec.Outcome, rec.Class = time.Since(rec.Started), outcome, run.class
-	s.metrics.observeAttempt(info.model, outcome)
+	s.obs.AttemptEnded(run.octx, AttemptEnd{
+		RequestID: info.id, AttemptID: rec.ID, Number: run.rec + 1, WorkerID: rec.Worker, Model: info.model, Outcome: outcome,
+		Duration: rec.Duration, Class: rec.Class, WillRetry: outcome == outcomeRetried, NextWorkerUnavailable: run.nextUnavailable,
+	})
 	level := slog.LevelDebug
 	if outcome != outcomeOK {
 		level = slog.LevelInfo

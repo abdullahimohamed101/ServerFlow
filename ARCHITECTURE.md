@@ -48,6 +48,14 @@ from a cached registry snapshot and sends it through a dial-guarded transport. O
 live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
 `pkg/protocol` (ADR-003).
 
+**Observer seam.** The gateway reports a request's life through one interface, `gateway.Observer`
+(`internal/gateway/observer.go`): started, admitted, rejected, attempt started, first token, attempt ended, completed. Each call carries
+a small value struct (no bodies, prompts or keys), and `RequestStarted`/`AttemptStarted` return a context so a tracing observer can hold a span.
+A `multiObserver` built at construction fans events out in order and contains panics. Prometheus metrics are the first observer
+(registered first); `gateway.WithObserver` adds more, so tracing and event publishing (Phases 11-12) do not touch the request path.
+Observers must be fast, because they run on the request goroutine. See ADR-016 and `docs/development/observers.md`.
+Configuration is likewise one file per feature under `internal/config`.
+
 ### Mock Worker
 Purpose: a configurable fake vLLM (latency, tokens/s, queueing, failures) so the
 platform can be built and tested without a GPU. Location: `cmd/mock-worker` +
