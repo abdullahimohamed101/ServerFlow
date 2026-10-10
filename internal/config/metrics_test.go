@@ -123,3 +123,24 @@ func TestMetricsEnv(t *testing.T) {
 		t.Fatalf("%+v", c.Metrics)
 	}
 }
+
+// Whatever is wrong with the token, the error must not repeat it: a too-short token is still a secret.
+func TestShortTokenErrorDoesNotContainTheToken(t *testing.T) {
+	for _, tok := range []string{"short-canary-7", "x", "abcdefghijklmno"} { // 14, 1 and 15 characters
+		c := Default()
+		c.Metrics.Token = tok
+		err := c.Validate()
+		if err == nil {
+			t.Fatalf("%q accepted", tok)
+		}
+		if strings.Contains(err.Error(), tok) {
+			t.Fatalf("the error repeats the token %q: %v", tok, err)
+		}
+	}
+	c := Default()
+	c.Metrics.Token = metricsCanary
+	c.Metrics.Listen = strp("not-a-host-port")
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), metricsCanary) {
+		t.Fatalf("a bad address with a good token: %v", err)
+	}
+}

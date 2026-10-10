@@ -57,7 +57,7 @@ SERVERFLOW_GATEWAY_MODELS=my-model \
 go run ./cmd/gateway
 ```
 
-Endpoints: `GET /healthz`, `/readyz`, `/metrics`, `/v1/models`, and
+Endpoints: `GET /healthz`, `/readyz`, `/v1/models`, and
 `POST /v1/chat/completions` (streaming supported). See `internal/config` for all
 `gateway.*` settings and their `SERVERFLOW_GATEWAY_*` environment variables.
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"serverflow/internal/telemetry"
 )
@@ -80,5 +81,31 @@ func readAll(t *testing.T, r io.ReadCloser) {
 	defer func() { _ = r.Close() }()
 	if _, err := io.Copy(io.Discard, r); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The worker's histograms are in seconds: a stream with a 250 ms time to first token must show about 0.25 in
+// worker_ttft_seconds_sum (a millisecond or microsecond slip would show 250 or 250000).
+func TestWorkerHistogramsAreInSeconds(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.TTFT = 250 * time.Millisecond })
+	readAll(t, e.mustPost(t, chatBody(true, "one two", "")).Body)
+	fams, err := e.srv.metrics.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums := map[string]float64{}
+	for _, f := range fams {
+		if h := f.GetMetric(); len(h) == 1 && h[0].GetHistogram() != nil {
+			sums[f.GetName()] = h[0].GetHistogram().GetSampleSum()
+		}
+	}
+	if v := sums["worker_ttft_seconds"]; v < 0.24 || v > 0.6 {
+		t.Errorf("worker_ttft_seconds sum %v for a 250 ms time to first token", v)
+	}
+	if v := sums["worker_request_duration_seconds"]; v < 0.25 || v > 5 {
+		t.Errorf("worker_request_duration_seconds sum %v for a request of at least 250 ms", v)
+	}
+	if v, ok := sums["worker_queue_duration_seconds"]; !ok || v < 0 || v > 0.1 {
+		t.Errorf("worker_queue_duration_seconds sum %v for an unqueued request", v)
 	}
 }

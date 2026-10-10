@@ -1,6 +1,11 @@
 package postgres
 
 import (
+	"context"
+	"net"
+	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 	"testing"
 	"time"
@@ -31,5 +36,63 @@ postgres_pool_empty_acquires_total 4
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(want)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Scraping never talks to the database: with the pool's connection attempts stuck on a server that accepts and then
+// says nothing, the collector still answers at once from the pool's own counters.
+func TestCollectorReturnsAtOnceWhileTheDatabaseHangs(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	var held []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, c) // never answers
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		mu.Lock()
+		for _, c := range held {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	})
+	pc, err := pgxpool.ParseConfig("postgres://u:p@" + ln.Addr().String() + "/d?sslmode=disable&connect_timeout=30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	s := &Store{pool: pool}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = pool.Ping(ctx) }() // stuck in the handshake
+	time.Sleep(100 * time.Millisecond)
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(s.Collector())
+	done := make(chan struct{})
+	start := time.Now()
+	go func() { _, _ = reg.Gather(); close(done) }()
+	select {
+	case <-done:
+		if d := time.Since(start); d > 500*time.Millisecond {
+			t.Fatalf("a scrape took %v while the database hung", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a scrape hangs while the database hangs: the collector must read the pool's counters only")
 	}
 }

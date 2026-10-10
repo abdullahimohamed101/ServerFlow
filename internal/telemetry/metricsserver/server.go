@@ -23,19 +23,32 @@ import (
 
 const (
 	metricsPath       = "/metrics"
-	handlerTimeout    = 10 * time.Second
-	maxHeaderBytes    = 8 << 10
-	maxInFlight       = 4
 	shutdownGraceTime = 5 * time.Second
 )
+
+// Limits are the bounds on what a scraper can make the endpoint do.
+type Limits struct {
+	MaxInFlight       int           // scrapes served at once; more get 503
+	HandlerTimeout    time.Duration // one scrape's time before it gets 503
+	ReadHeaderTimeout time.Duration // time to send the request headers before the connection is dropped
+	MaxHeaderBytes    int           // request header size before 431
+}
+
+// limits is a variable only so tests can shorten the durations; DefaultLimits are the shipped values.
+var limits = DefaultLimits()
+
+// DefaultLimits returns the bounds the shipped binaries run with.
+func DefaultLimits() Limits {
+	return Limits{MaxInFlight: 4, HandlerTimeout: 10 * time.Second, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
+}
 
 // Handler returns the /metrics handler for g. With a non-empty token every request must present it as
 // "Authorization: Bearer <token>"; the comparison is constant time and the token is never written anywhere.
 // Only GET (and HEAD) on exactly /metrics is served.
 func Handler(g prometheus.Gatherer, token string) http.Handler {
 	scrape := promhttp.HandlerFor(g, promhttp.HandlerOpts{
-		MaxRequestsInFlight: maxInFlight,
-		Timeout:             handlerTimeout,
+		MaxRequestsInFlight: limits.MaxInFlight,
+		Timeout:             limits.HandlerTimeout,
 		// Errors while gathering are visible in the response status; not echoing them keeps internals out.
 		ErrorHandling: promhttp.HTTPErrorOnError,
 	})
@@ -91,11 +104,11 @@ func Listen(addr string, cfg config.MetricsConfig, g prometheus.Gatherer, log *s
 		ln: ln,
 		http: &http.Server{
 			Handler:           Handler(g, cfg.Token),
-			ReadHeaderTimeout: 5 * time.Second,
+			ReadHeaderTimeout: limits.ReadHeaderTimeout,
 			ReadTimeout:       10 * time.Second,
-			WriteTimeout:      handlerTimeout + 5*time.Second,
+			WriteTimeout:      limits.HandlerTimeout + 5*time.Second,
 			IdleTimeout:       60 * time.Second,
-			MaxHeaderBytes:    maxHeaderBytes,
+			MaxHeaderBytes:    limits.MaxHeaderBytes,
 		},
 		log: log,
 	}, nil

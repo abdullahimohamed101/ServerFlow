@@ -3,11 +3,13 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"serverflow/internal/api"
@@ -291,4 +293,91 @@ func sumSeries(t *testing.T, m *metrics, name string) float64 {
 		}
 	}
 	return sum
+}
+
+// histSum returns the sum and per-bucket cumulative counts of the first histogram series of name.
+func histSum(t *testing.T, m *metrics, name string, labels ...string) (sum float64, buckets map[float64]uint64) {
+	t.Helper()
+	fams, err := m.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fams {
+		if f.GetName() != name {
+			continue
+		}
+	next:
+		for _, mm := range f.GetMetric() {
+			for _, want := range labels {
+				k, v, _ := strings.Cut(want, "=")
+				ok := false
+				for _, l := range mm.GetLabel() {
+					ok = ok || (l.GetName() == k && l.GetValue() == v)
+				}
+				if !ok {
+					continue next
+				}
+			}
+			h := mm.GetHistogram()
+			buckets = map[float64]uint64{}
+			for _, b := range h.GetBucket() {
+				buckets[b.GetUpperBound()] = b.GetCumulativeCount()
+			}
+			return h.GetSampleSum(), buckets
+		}
+	}
+	t.Fatalf("no histogram %s%v", name, labels)
+	return 0, nil
+}
+
+// Every duration histogram is in seconds. Observing a known 250 ms must put 0.25 in the sum and the sample in the
+// first bucket whose edge is at least 0.25, so a unit slip (milliseconds, microseconds) fails here.
+func TestDurationHistogramsAreInSeconds(t *testing.T) {
+	const d = 250 * time.Millisecond
+	m := registryMetrics("round-robin")
+	m.RequestStarted(bg, RequestStart{})
+	m.RequestAdmitted(bg, Admission{RateLimitChecked: true, RateLimitDuration: d})
+	m.AttemptStarted(bg, AttemptStart{Number: 1, WorkerID: "w", Model: "m", WorkerState: "READY", WorkerEligible: true, SelectDuration: d, SinceRequestStart: d})
+	m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w", Model: "m", Outcome: AttemptOK})
+	m.RequestCompleted(bg, Completion{Model: "m", Status: 200, Duration: d, TTFT: d, Handled: true})
+	for _, h := range []struct {
+		name   string
+		labels []string
+	}{
+		{"inference_gateway_overhead_seconds", []string{"model=m"}},
+		{"inference_request_duration_seconds", []string{"model=m"}},
+		{"inference_ttft_seconds", []string{"model=m"}},
+		{"scheduler_decision_duration_seconds", []string{"strategy=round-robin"}},
+		{"rate_limit_decision_seconds", nil},
+	} {
+		sum, b := histSum(t, m, h.name, h.labels...)
+		if sum < 0.2499 || sum > 0.2501 {
+			t.Errorf("%s: sum %v for a 250 ms observation, want 0.25", h.name, sum)
+		}
+		if b[0.1] != 0 || b[0.25] != 1 {
+			t.Errorf("%s: buckets le=0.1 -> %d, le=0.25 -> %d; want 0 and 1", h.name, b[0.1], b[0.25])
+		}
+	}
+}
+
+func TestSnapshotAgeIsInSeconds(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	c := newSnapshotCache(nil, time.Second, 10*time.Second, 5*time.Second, slog.New(slog.DiscardHandler))
+	c.now = func() time.Time { return now }
+	c.cur.Store(&snapshot{fetched: now.Add(-250 * time.Millisecond)})
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(newSnapshotCollector(c))
+	fams, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fams {
+		if f.GetName() == "gateway_registry_snapshot_age_seconds" {
+			if v := f.GetMetric()[0].GetGauge().GetValue(); v < 0.2499 || v > 0.2501 {
+				t.Fatalf("age %v for a 250 ms old snapshot, want 0.25", v)
+			}
+			return
+		}
+	}
+	t.Fatal("no snapshot age series")
 }

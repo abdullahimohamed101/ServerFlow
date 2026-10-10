@@ -77,7 +77,13 @@ func (limiter) Allow(_ context.Context, r ratelimit.Request) (ratelimit.Decision
 
 // exported is what a running ServerFlow cluster exposes, family name -> type, gathered over HTTP the way
 // Prometheus would.
-type exported map[string]string
+type exported map[string]famInfo
+
+// famInfo is a family's type and the label names its series carry.
+type famInfo struct {
+	Type   string
+	Labels map[string]bool
+}
 
 func parse(t *testing.T, body io.Reader) exported {
 	t.Helper()
@@ -88,7 +94,13 @@ func parse(t *testing.T, body io.Reader) exported {
 	}
 	out := exported{}
 	for n, f := range fams {
-		out[n] = f.GetType().String()
+		fi := famInfo{Type: f.GetType().String(), Labels: map[string]bool{}}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				fi.Labels[l.GetName()] = true
+			}
+		}
+		out[n] = fi
 	}
 	return out
 }
@@ -358,8 +370,8 @@ func TestRunningClusterExportsTheAdditions(t *testing.T) {
 		"inference_requests_total": "COUNTER", "auth_rejections_total": "COUNTER", "rate_limit_rejections_total": "COUNTER",
 		"go_goroutines": "GAUGE", "process_cpu_seconds_total": "COUNTER",
 	} {
-		if gw[name] != typ {
-			t.Errorf("gateway: %s is %q, want %s", name, gw[name], typ)
+		if gw[name].Type != typ {
+			t.Errorf("gateway: %s is %q, want %s", name, gw[name].Type, typ)
 		}
 	}
 	for name, typ := range map[string]string{
@@ -368,8 +380,8 @@ func TestRunningClusterExportsTheAdditions(t *testing.T) {
 		"registry_workers": "GAUGE", "registry_registrations_total": "COUNTER", "registry_heartbeats_total": "COUNTER",
 		"gpu_utilization_percent": "GAUGE", "gpu_memory_used_bytes": "GAUGE", "serverflow_build_info": "GAUGE",
 	} {
-		if cp[name] != typ {
-			t.Errorf("control plane: %s is %q, want %s", name, cp[name], typ)
+		if cp[name].Type != typ {
+			t.Errorf("control plane: %s is %q, want %s", name, cp[name].Type, typ)
 		}
 	}
 	for name, typ := range map[string]string{
@@ -377,8 +389,8 @@ func TestRunningClusterExportsTheAdditions(t *testing.T) {
 		"worker_request_duration_seconds": "HISTOGRAM", "worker_ttft_seconds": "HISTOGRAM", "worker_queue_duration_seconds": "HISTOGRAM",
 		"serverflow_build_info": "GAUGE",
 	} {
-		if wk[name] != typ {
-			t.Errorf("mock worker: %s is %q, want %s", name, wk[name], typ)
+		if wk[name].Type != typ {
+			t.Errorf("mock worker: %s is %q, want %s", name, wk[name].Type, typ)
 		}
 	}
 	for _, want := range []string{
@@ -410,3 +422,97 @@ func TestRedisAndPostgresFamiliesAreExported(t *testing.T) {
 }
 
 var _ = telemetry.AllowedLabelNames
+
+// TestLabelsUsedByDashboardsAndRulesExist checks the label names inside panel and rule queries (by/without/on clauses
+// and label matchers) against the labels the components really export. A misspelt label ("workerid") is valid PromQL
+// that matches nothing, so the metric-name check cannot see it. For each expression the allowed names are those of the
+// families it uses (a recording rule contributes the labels of its own expression), the labels Prometheus adds to
+// every target (job, instance, component, stack), the mock workers' worker_id from the targets file, and the
+// histogram and ALERTS labels.
+func TestLabelsUsedByDashboardsAndRulesExist(t *testing.T) {
+	gw, cp, wk, _ := runCluster(t)
+	labels := map[string]map[string]bool{}
+	add := func(e exported, extra ...string) {
+		for n, fi := range e {
+			set := labels[n]
+			if set == nil {
+				set = map[string]bool{}
+				labels[n] = set
+			}
+			for l := range fi.Labels {
+				set[l] = true
+			}
+			for _, l := range extra {
+				set[l] = true
+			}
+		}
+	}
+	add(gw)
+	add(cp)
+	add(wk, "worker_id") // the targets file labels the mock workers' targets
+	labels["ALERTS"] = map[string]bool{"alertname": true, "alertstate": true, "severity": true}
+	labels["up"] = map[string]bool{}
+	targetLabels := []string{"job", "instance", "component", "stack", "le"}
+
+	recExpr := map[string]string{}
+	for _, g := range loadRules(t, "observability/prometheus/rules/recording.yml").Groups {
+		for _, r := range g.Rules {
+			recExpr[r.Record] = r.Expr
+		}
+	}
+	var allowed func(name string, depth int) map[string]bool
+	allowed = func(name string, depth int) map[string]bool {
+		out := map[string]bool{}
+		if expr, ok := recExpr[name]; ok && depth < 4 {
+			for _, l := range LabelNames(expr) {
+				out[l] = true
+			}
+			for _, m := range MetricNames(expr) {
+				for l := range allowed(m, depth+1) {
+					out[l] = true
+				}
+			}
+			return out
+		}
+		if f, ok := Family(name, familySet(labels)); ok {
+			for l := range labels[f] {
+				out[l] = true
+			}
+		}
+		return out
+	}
+	check := func(where, expr string) {
+		ok := map[string]bool{}
+		for _, l := range targetLabels {
+			ok[l] = true
+		}
+		for _, m := range MetricNames(expr) {
+			for l := range allowed(m, 0) {
+				ok[l] = true
+			}
+		}
+		for _, l := range LabelNames(expr) {
+			if !ok[l] {
+				t.Errorf("%s: label %q is not exported by any metric this expression uses", where, l)
+			}
+		}
+	}
+	for where, e := range dashboardExprs(t) {
+		check(where, e)
+	}
+	for _, f := range []string{"recording", "alerts"} {
+		for _, g := range loadRules(t, "observability/prometheus/rules/"+f+".yml").Groups {
+			for _, r := range g.Rules {
+				check(f+".yml "+r.Record+r.Alert, r.Expr)
+			}
+		}
+	}
+}
+
+func familySet(m map[string]map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for n := range m {
+		out[n] = true
+	}
+	return out
+}

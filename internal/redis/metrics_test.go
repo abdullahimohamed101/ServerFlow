@@ -120,3 +120,98 @@ func TestCollectorCountsCommandsAgainstARealServer(t *testing.T) {
 		t.Fatalf("%d series", n)
 	}
 }
+
+func errorKinds(t *testing.T, c *redis.Client) map[string]float64 {
+	t.Helper()
+	out := map[string]float64{}
+	for _, k := range []string{"timeout", "connection", "script", "other"} {
+		out[k], _ = sampleOf(t, c, "redis_errors_total", map[string]string{"kind": k})
+	}
+	return out
+}
+
+// A real Redis that stops: the proxy in Cut mode closes every connection and refuses new ones, which is what the
+// driver sees when the server goes away. With a call timeout long enough for the dial to fail the outage must be
+// counted as kind="connection" (never "other"); with a very short timeout the driver gives up on the deadline first
+// and it is "timeout". Either way exactly one error per failed call, and redis_up drops to 0.
+func TestRealStoppedRedisCountsAsConnectionOrTimeoutNeverOther(t *testing.T) {
+	for name, tc := range map[string]struct {
+		timeout time.Duration
+		kinds   []string
+	}{
+		"long timeout":  {2 * time.Second, []string{"connection"}},
+		"short timeout": {30 * time.Millisecond, []string{"connection", "timeout"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := redistest.Config(t)
+			px := redistest.NewProxy(t, cfg.Address)
+			cfg.Address, cfg.Timeout, cfg.Backoff = px.Addr(), tc.timeout, time.Hour
+			c := redistest.NewClientWith(t, cfg)
+			if _, err := c.Run(context.Background(), echo, []string{redistest.Unique("k")}, 1); err != nil {
+				t.Fatal(err)
+			}
+			if v, _ := sampleOf(t, c, "redis_up", nil); v != 1 {
+				t.Fatalf("redis_up before the outage: %v", v)
+			}
+			px.SetMode(redistest.Cut)
+			if _, err := c.Run(context.Background(), echo, []string{redistest.Unique("k")}, 1); err == nil {
+				t.Fatal("the stopped Redis answered")
+			}
+			got := errorKinds(t, c)
+			var total float64
+			for _, v := range got {
+				total += v
+			}
+			if total != 1 || got["other"] != 0 || got["script"] != 0 {
+				t.Fatalf("error kinds after one failed call: %v", got)
+			}
+			ok := false
+			for _, k := range tc.kinds {
+				ok = ok || got[k] == 1
+			}
+			if !ok {
+				t.Fatalf("want one of %v, got %v", tc.kinds, got)
+			}
+			if v, _ := sampleOf(t, c, "redis_up", nil); v != 0 {
+				t.Fatalf("redis_up during the outage: %v", v)
+			}
+		})
+	}
+}
+
+// Scraping never talks to Redis: against a dependency that accepts connections and then hangs, with a command stuck
+// in flight, the collector still answers at once. (A collector that issued a PING would hang with it.)
+func TestCollectorReturnsAtOnceWhileRedisHangs(t *testing.T) {
+	cfg := redistest.Config(t)
+	px := redistest.NewProxy(t, cfg.Address)
+	cfg.Address, cfg.Timeout = px.Addr(), 10*time.Second
+	c := redistest.NewClientWith(t, cfg)
+	if _, err := c.Run(context.Background(), echo, []string{redistest.Unique("k")}, 1); err != nil {
+		t.Fatal(err)
+	}
+	px.SetMode(redistest.Blackhole)
+	stuck := make(chan struct{})
+	go func() {
+		_, _ = c.Run(context.Background(), echo, []string{redistest.Unique("k")}, 1)
+		close(stuck)
+	}()
+	time.Sleep(100 * time.Millisecond) // the command is in flight and will not be answered for 10 s
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c.Collector())
+	start := time.Now()
+	done := make(chan struct{})
+	go func() { _, _ = reg.Gather(); close(done) }()
+	select {
+	case <-done:
+		if d := time.Since(start); d > 500*time.Millisecond {
+			t.Fatalf("a scrape took %v while Redis hung", d)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a scrape hangs while Redis hangs: the collector must read local state only")
+	}
+	px.SetMode(redistest.Cut) // release the stuck call
+	select {
+	case <-stuck:
+	case <-time.After(5 * time.Second):
+	}
+}

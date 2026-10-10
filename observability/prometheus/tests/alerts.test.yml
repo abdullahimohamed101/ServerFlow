@@ -70,6 +70,86 @@ tests:
     alert_rule_test:
       - {eval_time: 120m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
 
+  # --- thresholds and windows of the burn-rate alerts (the budget is 0.1%: fast 14.4x = 1.44%, slow 6x = 0.6%) ----
+  - name: 5xx ratio of 1.478% (just above 1.44%) fires the fast burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+15x480'}
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 14.4x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+  - name: 5xx ratio of 1.381% (just below 1.44%) does not fire the fast burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+14x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+  - name: 5xx ratio of 0.616% (just above 0.6%) fires the slow burn but not the fast one
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+6.2x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+      - eval_time: 100m
+        alertname: ServerFlowAvailabilityBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+  - name: 5xx ratio of 0.575% (just below 0.6%) does not fire the slow burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+5.8x480'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
+  - name: only the 1h window is bad (a burst that ended 10 minutes ago) does not fire the fast burn
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x480'}
+      # clean for 50 minutes, 20 minutes at 9% errors, then clean again
+      - {series: 'inference_requests_total{status="503"}', values: '0x199 0+100x80 8000x200'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
+  - name: only the 30m window is bad (6 hours were clean) does not fire the slow burn
+    interval: 1m
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x420'}
+      # clean for 6h20m, then 40 minutes at 1.2% errors: the 30m ratio is 1.2%, the 6h ratio about 0.13%
+      - {series: 'inference_requests_total{status="503"}', values: '0x379 0+12x40'}
+    alert_rule_test:
+      - {eval_time: 419m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
+  - name: only the 6h window is bad (the last 30 minutes are clean) does not fire the slow burn
+    interval: 1m
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x420'}
+      # 3h20m at 2% errors, then clean: the 6h ratio is about 0.77%, the 30m ratio 0
+      - {series: 'inference_requests_total{status="503"}', values: '0+20x199 3980x220'}
+    alert_rule_test:
+      - {eval_time: 419m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
+  - name: both windows bad for a sustained 0.9% (30m and 6h above 0.6%) fires the slow burn
+    interval: 1m
+    input_series:
+      - {series: 'inference_requests_total{status="200"}', values: '0+1000x420'}
+      - {series: 'inference_requests_total{status="503"}', values: '0+9x420'}
+    alert_rule_test:
+      - eval_time: 419m
+        alertname: ServerFlowAvailabilityBurnSlow
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Inference 5xx ratio is burning the 99.9% availability budget 6x too fast"
+              runbook: "docs/operations/observability.md#runbook-availability-burn"
+
   # --- latency ---------------------------------------------------------------------------------------------------
   - name: routing decision p95 above 10 ms fires after 5 minutes; below it does not
     interval: 15s

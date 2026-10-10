@@ -34,18 +34,26 @@ Environment: `SERVERFLOW_METRICS_LISTEN`, `SERVERFLOW_METRICS_TOKEN`, `SERVERFLO
 - With a token, a request without `Authorization: Bearer <token>` or with a wrong one gets `401`. The token is at least 16 characters, is compared
   in constant time, and never appears in logs, `String()`, JSON or error text. Give Prometheus the token through `authorization.credentials_file`
   in `observability/prometheus/prometheus.yml`.
-- Only `GET /metrics` is served, at most 4 scrapes at once, each bounded to 10 s.
+- Only `GET` (and `HEAD`) on exactly `/metrics` is served; any other path or method gets 404 or 405 and `//metrics` is redirected to `/metrics` by the standard library mux. At most 4 scrapes run at once and each is bounded to 10 s.
 
 ## Running the stack beside a local cluster
 
 ```sh
-make dev-cluster                                   # control plane :9090, workers :9001-9003, gateway :8080 (registry mode)
-cp observability/.env.example observability/.env   # then set GRAFANA_ADMIN_PASSWORD in the new file
-make obs-up                                        # Prometheus http://127.0.0.1:9091, Grafana http://127.0.0.1:3000 (user admin)
-go run ./cmd/benchmark run --target http://127.0.0.1:8080 --control-plane http://127.0.0.1:9090 --duration 120s --concurrency 12
-make obs-logs                                      # follow both containers
+WORKER_CONCURRENCY=8 WORKER_QUEUE=64 make dev-cluster   # control plane :9090, workers :9001-9003, gateway :8080 (registry mode)
+cp observability/.env.example observability/.env        # then set GRAFANA_ADMIN_PASSWORD in the new file
+make obs-up                                             # Prometheus http://127.0.0.1:9091, Grafana http://127.0.0.1:3000 (user admin)
+go run ./cmd/benchmark run --target http://127.0.0.1:8080 --control-plane http://127.0.0.1:9090 --scheduler least-active --workers 3 --model mock-model --duration 120s --concurrency 12
+make obs-logs                                           # follow both containers
 make obs-down
 ```
+
+Why those flags: `make dev-cluster` serves the model `mock-model`, but the benchmark asks for `qwen-7b` unless told otherwise (every request would be a 404), so pass
+`--model mock-model`. `--scheduler least-active` only records what the gateway runs (start the cluster with `STRATEGY=least-active make dev-cluster` to make it true) and
+`--workers 3` records the worker count. The workers must be sized for the load: by default each mock worker takes 4 concurrent requests and queues 32, and 12 clients over
+three such workers overload them (the scheduler refuses with `NO_CAPACITY`, the benchmark marks the run invalid, and Cluster Overview shows the 5xx ratio climbing). With
+`WORKER_CONCURRENCY=8 WORKER_QUEUE=64` the same run is valid. The same applies to any load you aim at a cluster: clients must stay below about half of workers times
+per-worker concurrency.
+
 
 - `observability/.env` is untracked and holds the Grafana admin password; compose refuses to start without it and no default password is
   committed. It can also change the host ports (`OBS_PROMETHEUS_PORT`, `OBS_GRAFANA_PORT`), the retention and the targets file

@@ -46,3 +46,23 @@ func TestFamily(t *testing.T) {
 		t.Error("an unknown family matched")
 	}
 }
+
+func TestLabelNames(t *testing.T) {
+	for expr, want := range map[string][]string{
+		`sum by (worker_id, le) (rate(x_bucket{model=~"$model", result="failed"}[5m]))`: {"le", "model", "result", "worker_id"},
+		`a / ignoring(worker_id) group_left(model) b`:                                   {"model", "worker_id"},
+		`max by (model) (q) - min by (model) (q)`:                                       {"model"},
+		`ALERTS{alertstate="firing", alertname=~"ServerFlow.*"}`:                        {"alertname", "alertstate"},
+		`rate(x{status=~"5..", note="a by (zz)"}[1m])`:                                  {"note", "status"},
+		`sum without (instance) (up{job!="x"})`:                                         {"instance", "job"},
+		`sum(rate(x[5m]))`:                                                              {},
+	} {
+		got := LabelNames(expr)
+		if len(got) == 0 && len(want) == 0 {
+			continue
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s\n got  %v\n want %v", expr, got, want)
+		}
+	}
+}

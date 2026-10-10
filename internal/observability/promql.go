@@ -100,3 +100,35 @@ func Family(name string, families map[string]bool) (string, bool) {
 	}
 	return "", false
 }
+
+var reLabelItem = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=~|!~|!=|=)?`)
+
+// LabelNames returns the label names an expression mentions: those in by/without/on/ignoring/group_left/group_right
+// clauses and in {label matchers}, sorted and without duplicates. String literals are removed first, so a regular
+// expression or a legend text is never read as a name. Like MetricNames it is a tokenizer, not a parser; it exists to
+// catch a misspelt label (a "workerid" for "worker_id") that is still valid PromQL and matches nothing.
+func LabelNames(expr string) []string {
+	s := reString.ReplaceAllString(SubstituteVariables(expr), `""`)
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`\b(?:by|without|on|ignoring|group_left|group_right)\s*\(([^)]*)\)`).FindAllStringSubmatch(s, -1) {
+		for _, item := range strings.Split(m[1], ",") {
+			if n := strings.TrimSpace(item); n != "" {
+				seen[n] = true
+			}
+		}
+	}
+	for _, m := range reBraces.FindAllStringSubmatch(s, -1) {
+		body := strings.TrimSuffix(strings.TrimPrefix(m[0], "{"), "}")
+		for _, item := range strings.Split(body, ",") {
+			if mm := reLabelItem.FindStringSubmatch(item); mm != nil {
+				seen[mm[1]] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}

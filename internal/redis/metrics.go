@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
 	goredis "github.com/redis/go-redis/v9"
@@ -28,7 +29,8 @@ func classify(err error) int {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
 		return errTimeout
-	case errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.As(err, &ne):
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, goredis.ErrClosed) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.As(err, &ne):
 		return errConnection
 	case errors.As(err, &re):
 		return errScript
