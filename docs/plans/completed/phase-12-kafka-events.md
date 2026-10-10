@@ -298,3 +298,34 @@ CI runs it).
 - franz-go is pinned at v1.21.7 below the version that would raise the repo's Go floor to 1.26.
 - Ephemeral port exhaustion: a full-suite run right after the overhead benchmarks hit `can't assign requested address` in unrelated
   packages until TIME_WAIT sockets drained (about two minutes); reruns passed.
+
+### Fix round (independent verification)
+
+After the first completion an independent verifier found the items below; each was verified and fixed, with the tests named.
+
+- **CI image (false claim).** `docker.redpanda.com` fronts Docker Hub (token realm `auth.docker.io`, anonymous limit 100 pulls per hour).
+  Checked anonymously on 2026-10-10: `public.ecr.aws` (`redpandadata/redpanda`, `redpanda/redpanda`) 404, `quay.io` 401, `ghcr.io` 403. No
+  unauthenticated mirror exists, so CI caches the image (`actions/cache` of a `docker save` tarball keyed by the image reference) and pulls
+  with five attempts and backoff on a miss. A cold pull from a GitHub runner has still not been run.
+- **Client text in events.** `received` no longer carries a model (registry mode admits before it knows the model); `routed` and terminal
+  events carry only a model the gateway confirmed. `TestClientModelTextNeverReachesAnyEvent`, `TestUnknownModelTextNeverReachesTheRecords`;
+  both mutants (client model on `received`, terminal taking the stored model) killed by hand.
+- **Unbounded numbers.** Tokens at most 10^10 and durations at most 10^12 ms in `Validate`; the summary sums as numeric text.
+  `TestEventsWithAbsurdNumbersAreRejected`, `TestUsageSummariesAreExactToTheInstantAndOverflowSafe`.
+- **Scanner.** Refuses fractions, exponents, signs, leading zeros, strings, duplicate keys, two usage objects and oversize numbers; bytes
+  forwarded are unchanged (`TestHostileUsageBodiesReachTheClientByteIdentical`). Decision: counts far above `max_tokens` are not rejected.
+- **consumer_lag** is the broker's committed against end offsets every 5 s (`TestConsumerLagIsTheGroupsRealBacklog`); the `Lag() == 0`
+  mutant is killed.
+- **`usage summary --since`** is exact to the instant (reads `usage_records`).
+- **Docs:** migration order and the older-binary refusal, no retention (cleanup SQL), a least-privilege role tested against a real restricted
+  role, the event ID derivation with a test vector, the verified `rpk group seek --to start --topics T`, the sleep-related facts below.
+- **Redaction:** `*kafka.Producer`, `*kafka.Consumer` and `*kafka.Admin` print only the redacted configuration under every verb and slog;
+  the scrub also covers hex, JSON-escaped and base64 of the PLAIN message.
+- **Survivors killed by hand:** M9 (payload logged), M16 (wall clock for `occurred_at`), M20 (database error swallowed at shutdown), M22
+  (leader ack, no idempotence, no cancellation: asserted on the options of the client actually built, not on a broker round trip).
+- **Environment finding.** This laptop runs on battery and takes 'Maintenance Sleep' naps mid-run (`pmset -g log`); wall clock jumps of 37 to
+  51 seconds appeared inside a 3 second test and made the client time records out. That, and the shared machine's load, caused nine failed
+  gate attempts across unrelated timing tests (Phase 6 registry thresholds, Phase 8 renewal, a Phase 8 test whose `Fatalf` skips
+  `close(release)` and then hangs `httptest.Server.Close`) and my own SIGTERM test (which now uses a 5 minute delivery timeout and the 5 s
+  production flush timeout). The tenth gate passed: lint 0 issues, unit, race, postgres 4, redis 7, kafka 8 named tests, build, mod verify,
+  tidy unchanged.
