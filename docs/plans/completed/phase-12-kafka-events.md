@@ -1,6 +1,6 @@
 # Phase 12 — Kafka: Lifecycle Events and a Usage Consumer
 
-Status: Proposed (awaiting approval of the decisions below)
+Status: Completed 2026-10-10 (all decisions D1-D20 approved with their defaults; see Implementation Notes for deviations)
 Owner: coding agent
 Depends on: the prep plan `prep-lifecycle-observer-and-config-split.md` (the `gateway.Observer` seam and the per-feature config files) must be merged first; Phase 9 (tenants, API keys, migrations) and Phase 8 (the "must run, not skip" CI pattern, the Redis-style client package, the overhead measurements).
 Spec: `docs/architecture/serverflow-spec.md` §6 (lifecycle), §7 (IDs), §17 (cost estimate), §19 (usage_records), §20–22 (Kafka, consumers, delivery semantics), §27 (no unbounded queues), §29 (Kafka metrics), §36 (Kafka outage), §45 (tenants), §58 Phase 12, §63 (agent rules)
@@ -111,7 +111,7 @@ Each decision has a default; "approve all defaults" is a valid answer.
 - **D17. Broker for local development and CI.** `scripts/dev-kafka.sh start|stop|status|reset|brokers|…` modelled on `dev-redis.sh` (fixed port `127.0.0.1:59092`, one named container per port, public throwaway credentials, no persistence, creates the topic). Image: **Redpanda, `docker.redpanda.com/redpandadata/redpanda:v25.1.1`**: a single-binary Kafka-API broker that starts in seconds with `--mode dev-container`, with no Docker Hub dependency (I confirmed the manifest is reachable from this machine; I have not pulled or run it). Why not `apache/kafka`: it is the reference implementation, but its official image is published on Docker Hub only (not found on `public.ecr.aws`, `quay.io` or `ghcr.io` when probed), and Docker Hub rate-limited this repo's CI runners. Trade-off, stated plainly: Redpanda is Kafka API compatible, not Kafka; behaviour differences could hide a bug. Mitigations: tests use only the standard protocol features (produce, group consume, commit); the verification run repeats the integration suite once against `apache/kafka:3.9.1` on the Mac (Docker Hub pull, authenticated if needed) and the result goes in the PR; whether a nightly job runs against Apache Kafka is an open question. Redpanda's licence (BSL for the community edition, free for this use) is noted in the docs. The broker enables SASL/SCRAM with a fixed public test user when that works within a one-hour timebox, so a client that forgets credentials fails locally the way it would in CI (the Phase 8 lesson); otherwise plaintext on loopback with SASL covered by unit tests plus one manual run, and that is said in the PR. `docker-compose.yml`'s Bitnami service is left for Phase 16.
 - **D18. CI and the "must run, not skip" pattern.** `ci.yml`'s integration job gains a "Start Kafka" step (`docker run` of the Redpanda image, wait until it answers, create the topic), job name unchanged. `scripts/quality.sh` gains `must_run kafka SERVERFLOW_TEST_KAFKA_BROKERS "SERVERFLOW_TEST_KAFKA_BROKERS is not set" "./internal/kafka/... ./internal/events/... ./internal/usage/... ./tests/integration/..." <named tests>` (initial names: `TestProducerDeliversToRealBroker`, `TestBrokerOutageDoesNotBlockAndDropsAreCounted`, `TestConsumerGroupCommitsAfterDatabase`, `TestUsageStopAndReplay`, `TestGatewayEventsEndToEnd`), the integration step fails on a skip or a missing named test, and `full` includes it only when the Kafka variable is set (loud notice otherwise, like Postgres and Redis). Test clients pass credentials (a guard test, as in Phase 8). Each broker test uses a unique topic and group name so parallel packages and reruns do not interact.
 - **D19. What is tested without a broker.** `Sink` and `Source` are interfaces. `eventstest` provides a recording sink, a blocking/slow/failing sink, and an in-memory broker (partitions by key hash, offsets, consumer groups with manual commit, a "crash before commit" hook). Without Kafka we can fully test: Observer-to-event mapping and sequences, schema, fixtures and canaries, buffer-full and drop accounting, shutdown flush, never-blocks, the consumer's dedupe, commit-after-DB ordering, poison handling and replay, config and redaction. Only a real broker proves: client settings (acks, idempotence), real outages and reconnects, rebalance, lag, and protocol-level SASL/TLS.
-- **D20. Overhead budget.** Observer cost per event is tens of nanoseconds to low microseconds and allocation-light; the budget is: with events on and the broker **up**, **down**, and **slow**, gateway p95 overhead is within run-to-run spread of events off and never more than +1 ms (the Phase 2 25 ms p95 budget is not touched), memory flat, goroutine count flat. Measured with the Phase 2 overhead test and the Phase 7 harness, with the broker killed mid-run and slowed by a TCP proxy (the Phase 8 failure-matrix technique), recorded in `docs/benchmarks/phase-12-events-overhead.md`. A Go benchmark of the Observer with a fake sink pins ns/op and allocs/op.
+- **D20. Overhead budget.** Observer cost per event is tens of nanoseconds to low microseconds and allocation-light; the budget is: with events on and the broker **up**, **down**, and **slow**, gateway p95 overhead is within run-to-run spread of events off and never more than +1 ms (the Phase 2 25 ms p95 budget is not touched), memory flat, goroutine count flat. Measured with the Phase 2 overhead test and the Phase 7 harness, with the broker killed mid-run and slowed by a TCP proxy (the Phase 8 failure-matrix technique), recorded in `docs/benchmarks/phase-12-kafka-events.md`. A Go benchmark of the Observer with a fake sink pins ns/op and allocs/op.
 
 ## Proposed Design
 
@@ -145,7 +145,7 @@ type Store  interface { InsertUsage(ctx context.Context, rows []Row) (inserted i
 
 ## Affected Files / Components
 
-New: `pkg/protocol/events.go` (+tests, `testdata/events/v1/`), `internal/events/` (+`eventstest`), `internal/kafka/`, `internal/usage/`, `internal/postgres/usage.go`, `migrations/0003_usage_records.sql`, `internal/config/events.go`, `scripts/dev-kafka.sh`, ADR-016 or next free number (events, delivery semantics, client library, broker choice), `docs/operations/kafka-and-usage.md`, `docs/benchmarks/phase-12-events-overhead.md`, `docs/events/inference-lifecycle-v1.md` (the schema reference and evolution rules).
+New: `pkg/protocol/events.go` (+tests, `testdata/events/v1/`), `internal/events/` (+`eventstest`), `internal/kafka/`, `internal/usage/`, `internal/postgres/usage.go`, `migrations/0003_usage_records.sql`, `internal/config/events.go`, `scripts/dev-kafka.sh`, ADR-016 or next free number (events, delivery semantics, client library, broker choice), `docs/operations/kafka-and-usage.md`, `docs/benchmarks/phase-12-kafka-events.md`, `docs/events/inference-lifecycle-v1.md` (the schema reference and evolution rules).
 Changed: `cmd/gateway` (build and register the observer, flush on shutdown), `cmd/usage-consumer` (replace the stub), `cmd/admin` (`usage summary`), `internal/gateway` (token capture and `Completion` fields only, D8), `internal/config/config.go` (one `Events` field), `.github/workflows/ci.yml`, `scripts/quality.sh`, `Makefile` (`dev-kafka`, `test-kafka`), `docs/development/ci.md`, `ARCHITECTURE.md` (Shared Services, Kafka paragraph), README phase table, `go.mod`/`go.sum` (franz-go and transitive modules, listed in the PR).
 Untouched: scheduler, registry, rate limiter, auth, worker code, benchmark harness (except use).
 
@@ -205,3 +205,86 @@ Untouched: scheduler, registry, rate limiter, auth, worker code, benchmark harne
 Steps 1, 2 and 6 (logic against fakes) can proceed in parallel once the prep plan is merged; 4 and 7 need the broker.
 
 **Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
+
+## Implementation Notes
+
+Written after the work, 2026-10-10. Decisions D1 to D20 were implemented as approved except where listed under Deviations. Records of the
+design: ADR-019, `docs/events/inference-lifecycle-v1.md`, `docs/operations/kafka-and-usage.md`, `docs/benchmarks/phase-12-kafka-events.md`.
+
+### What was built
+
+`pkg/protocol/events.go` (contract, codec, validation, deterministic IDs, five golden fixtures); `internal/events` (Observer, bounded
+publisher, `Sink`, `eventstest` with recording, blocking, full, failing and slow sinks, an in-memory broker and store);
+`internal/config/events.go`; `internal/kafka` (producer, consumer, admin helpers, health, `kafkatest`); `internal/usage` (consumer
+loop); `internal/postgres/usage.go` and `migrations/0003_usage_records.sql` (table, rejects, `usage_hourly` view); `cmd/usage-consumer`;
+`serverflow-admin usage summary`; `scripts/dev-kafka.sh`; the token scanner in `internal/gateway/tokens.go`; CI, `quality.sh` and
+Makefile wiring.
+
+### Acceptance criteria to evidence
+
+| # | Evidence |
+| --- | --- |
+| 1 Schema and mapping | `TestEventSequencesThroughAStaticGateway` (non-stream, stream, error, drop, unavailable, timeout, client leaves, four refusals emit nothing), `TestEventsAfterARetryListEveryAttemptInOrder` (registry retry; one terminal per request), `TestTerminalClassification`, `TestRefusedRequestsEmitNothing`. Authentication and rate-limit refusals are covered at observer level (the gateway sequence for them is pinned by `internal/gateway/observer_test.go`); a gateway-level test of those two needs Postgres or Redis wiring and was not added |
+| 2 Fixtures and evolution | `TestFixturesWrittenOnceAndDecodeUnderCurrentCode`, `TestUnknownFieldsAreIgnoredAndNewerVersionIsRejected`, `TestValidateRefusals`, consumer `TestPoisonRecordsAreRejectedAndTheStreamKeepsMoving` |
+| 3 Event ID | `TestEventIDDeterministicAndDistinct` (5,000 random inputs), `Validate` refuses a wrong or missing ID |
+| 4 Privacy canary | `TestNoPromptResponseOrKeyReachesAnEvent` (encoded bytes, `%v %+v %#v`, logs at debug), `TestEventTypesHoldOnlyPrimitives` (reflection) |
+| 5 Never blocks | `TestStuckSinkNeverBlocksAndDropsAreCounted` (1,000,000 calls, depth, goroutines, drop count equals metric, bounded Close), `TestFullBufferDropsTheNewestAndKeepsTheOldest` |
+| 6 Outage matrix | `TestBrokerOutageDoesNotBlockAndDropsAreCounted` (private broker: crash, restart, freeze; max Enqueue 0.36 ms; every event delivered or counted; one outage line and one recovery line; goroutines back to baseline), `TestMissingTopicDropsAreCountedAndNothingBlocks`, `TestProducerStartsWithoutABrokerAndBoundsItsBuffer`, `TestProcessGatewayStartsWithKafkaDownAndStopsOnTime`. "Slow" is covered by the frozen broker and `SlowSink`; a broker that is slow but alive with network latency was not run |
+| 7 Shutdown | `TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests` (five in-flight streams, all five `completed` events delivered; mutation: skipping `Close` fails it), `TestCloseFlushesEverythingAccepted`, stuck-sink Close bound, `TestProcessGatewayStartsWithKafkaDownAndStopsOnTime` |
+| 8 Delivery semantics | `TestProducerDeliversToRealBroker` (all events received, key = request ID, one partition per request, in order), `TestUsageCrashBetweenDatabaseAndOffsetCommit`, `TestReplayAndDuplicatesAreAbsorbed` |
+| 9 Consumer correctness | `internal/usage` tests (only terminal events, commit after DB, poison, bad row isolated, DB failure pauses and recovers, shutdown finishes the batch), `TestConsumerGroupCommitsAfterDatabase` (real broker), Postgres tests |
+| 10 Stop / replay | `TestUsageStopAndReplay`: 50 rows, consumer stopped, 200 more sent, rows still 50, lag 600 events (200 requests), restart inserts exactly the 200, lag 0, fresh-group replay reads 250 duplicates and totals are identical. **10 consecutive runs passed** (1.05 to 1.32 s each). Runbook section in `docs/operations/kafka-and-usage.md`; the manual broker-CLI offset reset (`rpk group seek --to-start`) is documented but was not run by hand beyond the fresh-group variant |
+| 11 Migration | `TestMigration0003CreatesUsageTablesAndTheViewMatchesDirectSums`, `TestInsertUsageIsIdempotentAndUniqueOnRequest`, `TestInsertUsageReportsBadDataAndLeavesNothingBehind`, `TestRecordRejectsIsRepeatable`, `migrations` and `internal/postgres` migration tests (checksum, idempotence) |
+| 12 Config and secrets | `internal/config/events_test.go` (off ignores a malformed section, validation table, redaction under every verb, slog and JSON, env overrides, errors never echo values), `internal/kafka` `TestConfigNeverPrintsThePassword`, `TestHostileBrokerCannotMakeTheClientEchoThePassword` (a fake broker echoes the password in its SASL error; mutation: without scrubbing the test fails), process tests check the logs |
+| 13 Metrics | `metric()` assertions in `internal/events` tests; `TestProcessGatewayStartsWithKafkaDown...` reads `event_publish_failures_total` from `/metrics`; `TestProcessUsageConsumerEndToEnd` reads `usage_consumer_records_total`; `consumer_lag` is exposed and `Consumer.Lag()` is asserted to be 0 after commit. A test asserting the lag metric while the consumer is stopped is not separate: the stopped-state lag is asserted with the broker's own group offsets |
+| 14 Overhead | `docs/benchmarks/phase-12-kafka-events.md`: events up/down/frozen within the spread of off (+10 to +30 us non-stream, +110 to +170 us streaming TTFT when up), Observer 2.0 us and 35 allocs per lifecycle, scanner 130 ns and 0 allocs per chunk, token capture indistinguishable from master in five alternating runs |
+| 15 Build hygiene | `go.mod` still `go 1.25.0`; `go mod tidy -diff` clean; gate results below |
+
+### Deviations from the plan
+
+- `events.batch_max_bytes` (default 1 MiB) replaces `batch_max_records`: the client has no record-count cap.
+- `AllowIdempotentProduceCancellation` is set on the producer. Without it the client never fails a record whose request may have reached the
+  broker, so a dead broker kept 100 buffered records pending for over 40 seconds against a 4 second delivery timeout. See ADR-019.
+- Metrics are registered through a new option `gateway.WithExtraCollectors` because each gateway Server owns a private registry.
+  Phase 10's registry changes may fold this in.
+- Per-request observer state is on the request context (no map). `NewObserver` takes no registerer; `Collectors()` is used instead.
+- The terminal event's model is the gateway-confirmed one only; `received` carries the model as asked (bounded).
+- `Admission.APIKeyID` and `Completion.TokensSource/InputTokens/OutputTokens` were added (additive).
+- The admin helpers in `internal/kafka` (`Admin`: create and delete topic, partitions, group lag, record count, produce) exist for tests and
+  runbook tooling; the gateway never creates topics.
+- The plan named the benchmark file `phase-12-events-overhead.md`; it is `phase-12-kafka-events.md`.
+- `TestEventsOverhead` and the per-test private broker use Docker; both skip without it.
+
+### Verification beyond the tests
+
+- **Mutation checks** (one change each, a named test fails): block on a full buffer; drop the oldest uncounted; zero the event ID; retype
+  `ttft_ms`; add a `Prompt` field to an event (reflection and fixture tests fail); write usage for non-terminal events; swallow undecodable
+  records; commit offsets before the database write; remove `ON CONFLICT`; skip `Close` at shutdown (needed a long linger in the test to be
+  caught, now fixed); key by event ID instead of request ID; skip the password scrub. All 12 were killed. Not run: "flush before the HTTP
+  server drains" (the process test depends on the order but no separate mutation was applied), "pass an unredacted password into an error"
+  beyond the scrub mutation.
+- **Apache Kafka compatibility** (one-off, `apache/kafka:3.9.1`, KRaft, SASL/PLAIN, pulled from Docker Hub without rate limiting): the
+  producer, consumer, unauthenticated-refusal, missing-topic, end-to-end, stop/replay, crash, SIGTERM-flush and usage-consumer process
+  tests all passed. The outage test was not run against it (it uses a private Redpanda container). SASL/SCRAM against Apache's own
+  implementation was not exercised; the Apache run used PLAIN.
+- **CI image**: `docker.redpanda.com/redpandadata/redpanda:v25.1.1` pulls and runs here without Docker Hub. Whether GitHub's runners can
+  reach `docker.redpanda.com` was not verified from here; the `Start Kafka` step fails loudly if not. The CI job uses the same script,
+  port 59092 and `docker logs` on failure.
+- No Apache Kafka job was added to the nightly workflow (open question D17 answered "no").
+
+### What could not be verified
+
+Multi-broker clusters; TLS to a real managed Kafka; SASL/SCRAM on Apache Kafka; rebalancing with more than one consumer; real vLLM
+response shapes for token capture (Phase 13; the scanner is tested on the OpenAI format and the mock worker; a server that puts `usage`
+before the choices in a non-streaming body falls back to `estimate`); the GitHub-hosted runner pulling the Redpanda image; behaviour under
+the Go 1.25 toolchain itself (built and tested with 1.27.1; CI uses the `go.mod` version); `govulncheck` (not installed on this machine,
+CI runs it).
+
+### Risks left
+
+- A hard kill, OOM or host crash loses the unsent buffer and that loss is not counted.
+- Usage is undercounted by drops and is not billing grade; the `tokens_source` label must be respected by anything that reads the table.
+- The stop/replay and outage tests run against Redpanda in CI; Redpanda is not Kafka, and only the one-off Apache run above covers the difference.
+- franz-go is pinned at v1.21.7 below the version that would raise the repo's Go floor to 1.26.
+- Ephemeral port exhaustion: a full-suite run right after the overhead benchmarks hit `can't assign requested address` in unrelated
+  packages until TIME_WAIT sockets drained (about two minutes); reruns passed.
