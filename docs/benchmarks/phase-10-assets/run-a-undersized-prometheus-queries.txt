@@ -1,0 +1,73 @@
+## capture: end of run A (undersized workers: harness marked the run invalid) 21:45:46
+
+# targets up
+up
+  {"component": "control-plane", "instance": "host.docker.internal:58002", "job": "serverflow-control-plane"} = 1
+  {"component": "mock-worker", "instance": "host.docker.internal:58012", "job": "serverflow-mock-worker", "worker_id": "mock-2"} = 1
+  {"component": "gateway", "instance": "host.docker.internal:58003", "job": "serverflow-gateway"} = 1
+  {"component": "mock-worker", "instance": "host.docker.internal:58013", "job": "serverflow-mock-worker", "worker_id": "mock-3"} = 1
+  {"component": "mock-worker", "instance": "host.docker.internal:58011", "job": "serverflow-mock-worker", "worker_id": "mock-1"} = 1
+
+# requests/s (cluster:inference_requests:rate1m)
+cluster:inference_requests:rate1m
+  {} = 4.87336124
+
+# latency p50
+cluster:inference_request_duration_seconds:p50_rate5m
+  {} = 0.84822467
+
+# latency p95
+cluster:inference_request_duration_seconds:p95_rate5m
+  {} = 3.67285838
+
+# latency p99
+cluster:inference_request_duration_seconds:p99_rate5m
+  {} = 4.73457167
+
+# TTFT p95
+cluster:inference_ttft_seconds:p95_rate5m
+  {} = 0.40407033
+
+# tokens/s from worker counters
+cluster:worker_output_tokens:rate1m
+  {} = 264.583398
+
+# tokens/s per worker
+worker:worker_output_tokens:rate1m
+  {"worker_id": "mock-2"} = 87.9769420
+  {"worker_id": "mock-3"} = 33.4683046
+  {"worker_id": "mock-1"} = 143.138151
+
+# 5xx ratio
+cluster:inference_errors:ratio_rate5m
+  {} = 0.20034826
+
+# eligible workers per model
+model:worker_health:sum
+  {"model": "mock-model"} = 3
+
+# queue imbalance
+model:worker_queue_depth:imbalance
+  {"model": "mock-model"} = 0
+
+# routing decision p95
+cluster:scheduler_decision_duration_seconds:p95_rate5m
+  {} = 0.00004814
+
+# gateway overhead p95
+cluster:inference_gateway_overhead_seconds:p95_rate5m
+  {} = 0.00044004
+
+# selections by worker (increase over 3m)
+sum by (worker_id) (increase(scheduler_selections_total[3m]))
+  {"worker_id": "mock-1"} = 417.628667
+  {"worker_id": "mock-2"} = 279.065928
+  {"worker_id": "mock-3"} = 96.1212247
+
+# ineligible selections (must be 0)
+scheduler_ineligible_selections_total
+  {"component": "gateway", "instance": "host.docker.internal:58003", "job": "serverflow-gateway"} = 0
+
+# firing alerts
+ALERTS{alertstate="firing"}
+  (no samples)

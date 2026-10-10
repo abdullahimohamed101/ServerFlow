@@ -1,0 +1,21 @@
+    overhead_test.go:126: non-stream direct p50/p95/p99 = 171µs / 530.958µs / 717.25µs
+    overhead_test.go:127: non-stream gateway p50/p95/p99 = 552.709µs / 1.046917ms / 1.334583ms
+    overhead_test.go:128: non-stream p95 overhead = 515.959µs (budget 25ms)
+    overhead_test.go:126: stream-ttft direct p50/p95/p99 = 162.375µs / 463.875µs / 698.875µs
+    overhead_test.go:127: stream-ttft gateway p50/p95/p99 = 369.666µs / 953.75µs / 1.122167ms
+    overhead_test.go:128: stream-ttft p95 overhead = 489.875µs (budget 25ms)
+ok  	serverflow/internal/gateway	0.581s
+    overhead_test.go:126: non-stream direct p50/p95/p99 = 179.292µs / 608.333µs / 837µs
+    overhead_test.go:127: non-stream gateway p50/p95/p99 = 569.833µs / 1.081833ms / 1.364667ms
+    overhead_test.go:128: non-stream p95 overhead = 473.5µs (budget 25ms)
+    overhead_test.go:126: stream-ttft direct p50/p95/p99 = 165.791µs / 496.5µs / 750.625µs
+    overhead_test.go:127: stream-ttft gateway p50/p95/p99 = 363.917µs / 957.667µs / 1.094167ms
+    overhead_test.go:128: stream-ttft p95 overhead = 461.167µs (budget 25ms)
+ok  	serverflow/internal/gateway	0.561s
+    overhead_test.go:126: non-stream direct p50/p95/p99 = 191.833µs / 573.708µs / 727.542µs
+    overhead_test.go:127: non-stream gateway p50/p95/p99 = 574.209µs / 1.138708ms / 1.422084ms
+    overhead_test.go:128: non-stream p95 overhead = 565µs (budget 25ms)
+    overhead_test.go:126: stream-ttft direct p50/p95/p99 = 163.875µs / 460.75µs / 717.708µs
+    overhead_test.go:127: stream-ttft gateway p50/p95/p99 = 370.625µs / 931.709µs / 1.04725ms
+    overhead_test.go:128: stream-ttft p95 overhead = 470.959µs (budget 25ms)
+ok  	serverflow/internal/gateway	0.539s

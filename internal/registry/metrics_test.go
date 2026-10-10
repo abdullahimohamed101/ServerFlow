@@ -289,11 +289,18 @@ func TestSlowScrapeDoesNotBlockHeartbeats(t *testing.T) {
 	}()
 	<-ch // the collector has its snapshot and is now emitting; stall the consumer
 	start := time.Now()
-	if err := r.Heartbeat("w0", regs["w0"], hb(regs["w0"], protocol.StateReady)); err != nil {
-		t.Fatal(err)
-	}
-	if d := time.Since(start); d > 50*time.Millisecond {
-		t.Fatalf("a heartbeat waited %v behind a stalled scrape", d)
+	beat := make(chan error, 1)
+	go func() { beat <- r.Heartbeat("w0", regs["w0"], hb(regs["w0"], protocol.StateReady)) }()
+	select {
+	case err := <-beat:
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := time.Since(start); d > 50*time.Millisecond {
+			t.Fatalf("a heartbeat waited %v behind a stalled scrape", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a heartbeat is blocked behind a stalled scrape: the collector holds the registry lock while emitting")
 	}
 	for {
 		select {

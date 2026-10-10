@@ -61,6 +61,15 @@ tests:
     alert_rule_test:
       - {eval_time: 106m, alertname: ServerFlowAvailabilityBurnFast, exp_alerts: []}
 
+  - name: a 12-minute error burst does not fire the slow burn before its 15-minute hold
+    interval: 15s
+    input_series:
+      - {series: 'inference_requests_total{model="a",status="200"}', values: '0+15x480'}
+      # clean for 108 minutes, then 12 minutes at one error per two successes
+      - {series: 'inference_requests_total{model="a",status="503"}', values: '0x432 0+7.5x48'}
+    alert_rule_test:
+      - {eval_time: 120m, alertname: ServerFlowAvailabilityBurnSlow, exp_alerts: []}
+
   # --- latency ---------------------------------------------------------------------------------------------------
   - name: routing decision p95 above 10 ms fires after 5 minutes; below it does not
     interval: 15s
