@@ -1,12 +1,42 @@
-# Prometheus scrape configuration for ServerFlow.
-
-# Phase 0: no targets exist yet; the file is a skeleton so the
-# docker-compose service has something to mount. Targets are added
-# as components come online (gateway:8080/metrics, etc..
+# Prometheus configuration for ServerFlow (Phase 10, ADR-017).
+#
+# Targets come from file service discovery (targets/*.yml) so the same file serves the local stack
+# (targets/local.yml, host processes) and, in Phase 16, the compose stack (targets/compose.yml, service names).
+# Each target group carries a `component` label that picks its scrape job; mock workers also carry `worker_id`
+# so their worker-side counters line up with the control plane's per-worker gauges.
+#
+# The gateway and control plane serve /metrics on a loopback listener of their own (metrics.listen). A
+# listener that is not loopback needs a bearer token: put it in a file and uncomment `authorization` below.
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: serverflow
+
+rule_files:
+  - rules/*.yml
 
 scrape_configs:
-  # - job_name: serverflow-gateway
-  #   static_configs:
-  #     - targets: ["gateway:8080"]
+  - job_name: serverflow-gateway
+    sample_limit: 20000 # last line of defence against a cardinality blow-up (ADR-017 D5)
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/secrets/metrics_token
+    file_sd_configs:
+      - files: [targets/*.yml]
+    relabel_configs:
+      - {source_labels: [component], regex: gateway, action: keep}
+
+  - job_name: serverflow-control-plane
+    sample_limit: 20000
+    file_sd_configs:
+      - files: [targets/*.yml]
+    relabel_configs:
+      - {source_labels: [component], regex: control-plane, action: keep}
+
+  - job_name: serverflow-mock-worker
+    sample_limit: 20000
+    file_sd_configs:
+      - files: [targets/*.yml]
+    relabel_configs:
+      - {source_labels: [component], regex: mock-worker, action: keep}

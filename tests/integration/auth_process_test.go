@@ -189,8 +189,12 @@ func TestProcessAuthEndToEnd(t *testing.T) {
 	if r, _ := authGet(t, gwAddr, "/healthz", ""); r.StatusCode != 200 {
 		t.Fatalf("/healthz %d", r.StatusCode)
 	}
-	if r, _ := authGet(t, gwAddr, "/metrics", ""); r.StatusCode != 200 {
-		t.Fatalf("/metrics %d", r.StatusCode)
+	// /metrics is not on the data port (ADR-017); it answers on the gateway's metrics listener.
+	if r, _ := authGet(t, gwAddr, "/metrics", ""); r.StatusCode != 404 {
+		t.Fatalf("/metrics on the data port: %d, want 404", r.StatusCode)
+	}
+	if r, _ := authGet(t, strings.TrimPrefix(gw.metricsURL(t), "http://"), "/metrics", ""); r.StatusCode != 200 {
+		t.Fatalf("/metrics on the metrics listener: %d", r.StatusCode)
 	}
 	r1, b1 := authChat(t, gwAddr, "")
 	r2, b2 := authChat(t, gwAddr, "sf_deadbeef_"+strings.Repeat("A", 43))

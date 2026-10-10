@@ -44,7 +44,7 @@ func TestProcessRateLimitingEndToEnd(t *testing.T) {
 	if last.Header.Get("Retry-After") == "" || !strings.Contains(lastBody, "RATE_LIMITED") {
 		t.Fatalf("%v %s", last.Header, lastBody)
 	}
-	_, metrics := authGet(t, gwAddr, "/metrics", "")
+	_, metrics := authGet(t, strings.TrimPrefix(gw.metricsURL(t), "http://"), "/metrics", "")
 	if !strings.Contains(metrics, `rate_limit_rejections_total{limit="model"} 2`) || !strings.Contains(metrics, "rate_limit_decision_seconds_count") {
 		t.Fatalf("metrics:\n%s", grepLines(metrics, "rate_limit"))
 	}
