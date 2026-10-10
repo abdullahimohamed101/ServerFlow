@@ -389,3 +389,52 @@ func TestUnknownModelTextNeverReachesTheRecords(t *testing.T) {
 		}
 	})
 }
+
+// With events off the gateway's registry has no event series at all; with events on, exactly the documented ones, with
+// the only label being the closed set of drop reasons (D16, ADR-017's cardinality rule).
+func TestEventMetricsAppearOnTheGatewayRegistryOnlyWhenEventsAreOn(t *testing.T) {
+	mock, _ := startMock(t)
+	cfg := config.Default().Gateway
+	cfg.UpstreamURL, cfg.Models = mock.URL, []string{model}
+	names := func(srv *gateway.Server) (map[string]int, map[string]bool) {
+		mfs, err := srv.MetricsGatherer().Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		series, labels := map[string]int{}, map[string]bool{}
+		for _, mf := range mfs {
+			n := mf.GetName()
+			if !strings.HasPrefix(n, "event") {
+				continue
+			}
+			series[n] += len(mf.GetMetric())
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					labels[l.GetName()] = true
+				}
+			}
+		}
+		return series, labels
+	}
+	if s, _ := names(gateway.New(cfg, quiet())); len(s) != 0 {
+		t.Fatalf("events off must add no series, got %v", s)
+	}
+	obs, _ := newEventsObserver(t, quiet())
+	opts := []gateway.Option{gateway.WithObserver(obs)}
+	for _, c := range obs.Collectors() {
+		opts = append(opts, gateway.WithCollector(c))
+	}
+	s, labels := names(gateway.New(cfg, quiet(), opts...))
+	want := map[string]int{"events_published_total": 1, "events_buffer_depth": 1, "event_publish_failures_total": 5, "event_publish_latency_seconds": 1}
+	if len(s) != len(want) {
+		t.Fatalf("series = %v, want %v", s, want)
+	}
+	for n, c := range want {
+		if s[n] != c {
+			t.Fatalf("%s has %d series, want %d", n, s[n], c)
+		}
+	}
+	if len(labels) != 1 || !labels["reason"] {
+		t.Fatalf("event series may only be labelled by reason, got %v", labels)
+	}
+}
