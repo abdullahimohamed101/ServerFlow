@@ -133,8 +133,8 @@ func TestMetricsSeriesGoldenStatic(t *testing.T) {
 		resp, _ := env.do(t, http.MethodPost, chatCompletionsPath, body, hdr...)
 		return resp.StatusCode
 	}, key, &mode)
-	if resp, _ := env.do(t, http.MethodGet, "/metrics", ""); resp.StatusCode != 200 {
-		t.Fatalf("/metrics status %d", resp.StatusCode)
+	if scrape(t, env.gw) == "" {
+		t.Fatal("empty scrape")
 	}
 	checkGolden(t, "testdata/metrics_series_static.golden", seriesCatalogue(t, env.gw))
 }
@@ -144,7 +144,10 @@ func TestMetricsSeriesGoldenStatic(t *testing.T) {
 func TestMetricsSeriesGoldenRegistry(t *testing.T) {
 	good := newScriptWorker(t, "w-good", sseOrJSON)
 	bad := refusing(t, "w-bad")
-	env := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{bad, good.snapshot("qwen-7b")})
+	// A worker for a second model that is not eligible: requests for that model get NO_CAPACITY.
+	parked := good.snapshot("llama-8b")
+	parked.WorkerID, parked.Eligible = "w-parked", false
+	env := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{bad, good.snapshot("qwen-7b"), parked})
 	logs := &lockedBuffer{}
 	store := newAuthStore()
 	env.gw.SetAuthenticator(newAuthenticator(store, logs, &testClock{t: time.Now()}))
@@ -176,11 +179,23 @@ func TestMetricsSeriesGoldenRegistry(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}
+	open := store.add("globex", nil, quotas(100, 100000, 10))
+	if resp, err := env.client.Do(authedChat(env.url, open, "llama-8b")); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
 	got := seriesCatalogue(t, env.gw)
-	for _, want := range []string{"inference_retries_total", "inference_attempts_total", "rate_limit_bypassed_total", "auth_rejections_total"} {
+	for _, want := range []string{"scheduler_no_capacity_total", "scheduler_decisions_total", "inference_failures_total", "inference_retries_total", "inference_attempts_total", "rate_limit_bypassed_total", "auth_rejections_total"} {
 		if !*updateGolden && !strings.Contains(got, want) {
 			t.Fatalf("the scenario did not exercise %s:\n%s", want, got)
 		}
 	}
 	checkGolden(t, "testdata/metrics_series_registry.golden", got)
+}
+
+func authedChat(base, key, model string) *http.Request {
+	req, _ := http.NewRequest(http.MethodPost, base+chatCompletionsPath, strings.NewReader(chatBody(model)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	return req
 }

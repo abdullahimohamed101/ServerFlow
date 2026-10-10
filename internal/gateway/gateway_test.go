@@ -609,10 +609,10 @@ func TestMetrics(t *testing.T) {
 	readAll(t, env.post(t, `{"model":"nope","messages":[{"role":"user","content":"x"}]}`).Body) // 404
 
 	eventually(t, 2*time.Second, func() bool {
-		_, body := env.get(t, "/metrics")
+		body := scrape(t, env.gw)
 		return strings.Contains(body, `inference_requests_total{model="qwen-7b",status="200"} 1`)
 	}, "request counter")
-	_, body := env.get(t, "/metrics")
+	body := scrape(t, env.gw)
 	for _, want := range []string{
 		`inference_requests_total{model="unknown",status="404"} 1`,
 		`inference_requests_active 0`,
@@ -801,7 +801,7 @@ func TestAbortedNonStreamResponseIsRecordedAsFailure(t *testing.T) {
 		}
 		return false
 	}, "aborted response logged as 502 INFERENCE_FAILED")
-	_, body := env.get(t, "/metrics")
+	body := scrape(t, env.gw)
 	if !strings.Contains(body, `inference_requests_total{model="qwen-7b",status="502"} 1`) {
 		t.Fatalf("aborted response must be counted as 502 in metrics\n%s", body)
 	}
