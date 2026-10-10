@@ -206,13 +206,22 @@ func (s *Server) relay(w http.ResponseWriter, r *http.Request, rc *http.Response
 	// reuses this connection.
 	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
 
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// Token counts for the Completion event (D8): a bounded pass over bytes already on their way to the client.
+		info.scan = &tokenScanner{}
+		defer func() { info.tokSource, info.tokIn, info.tokOut = info.scan.result(isSSE) }()
+	}
 	src := &idleReader{r: body, timer: idle, d: s.cfg.UpstreamIdleTimeout}
 	if isSSE {
 		s.relayStream(r.Context(), rc, w, src, info, start)
 		return
 	}
 
-	clientErr, err := s.pump(rc, w, src, false, nil)
+	var onBody func([]byte)
+	if info.scan != nil {
+		onBody = info.scan.feed
+	}
+	clientErr, err := s.pump(rc, w, src, false, onBody)
 	switch {
 	case err == nil:
 	case clientErr || r.Context().Err() != nil:
@@ -274,6 +283,9 @@ func (s *Server) relayStream(ctx context.Context, rc *http.ResponseController, w
 		if first {
 			first = false
 			s.obs.FirstToken(attemptContext(ctx, info), FirstToken{RequestID: info.id, AttemptID: info.attemptID, TTFT: info.ttft})
+		}
+		if info.scan != nil {
+			info.scan.feed(b)
 		}
 		tail = append(tail, b...)
 		if len(tail) > 4 {

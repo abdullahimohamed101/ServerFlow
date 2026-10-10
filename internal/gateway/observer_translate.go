@@ -76,6 +76,7 @@ func completionFrom(info *reqInfo, status int, d time.Duration) Completion {
 	return Completion{
 		RequestID: info.id, Model: info.model, Stream: info.stream, TenantID: info.tenantID, Status: status,
 		ErrorCode: info.errCode, Duration: d, Attempts: info.attempted, TTFT: info.ttft, Handled: info.inference,
+		TokensSource: info.tokSource, InputTokens: info.tokIn, OutputTokens: info.tokOut,
 	}
 }
 
