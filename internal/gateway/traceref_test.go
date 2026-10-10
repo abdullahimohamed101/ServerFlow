@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -135,5 +136,32 @@ func TestDuplicateTraceparentHeadersAreDropped(t *testing.T) {
 	defer rec.mu.Unlock()
 	if th := rec.starts[0].TraceHeaders; th.Traceparent != "" || th.Tracestate != "a=b" {
 		t.Errorf("trace headers: %+v", th)
+	}
+}
+
+func TestTracingSeriesExistOnlyWhenEnabled(t *testing.T) {
+	scrape := func(opts ...Option) string {
+		url, c, _ := staticObsServer(t, http.HandlerFunc(okUpstream), opts...)
+		resp, err := c.Get(url + "/metrics")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if out := scrape(); strings.Contains(out, "tracing_") {
+		t.Errorf("a gateway without tracing must have no tracing series:\n%s", out)
+	}
+	out := scrape(WithTracingStats(func() TracingStats { return TracingStats{Exported: 7, Dropped: 3, Failures: 2} }))
+	for _, want := range []string{"tracing_spans_exported_total 7", "tracing_spans_dropped_total 3", "tracing_export_failures_total 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "tracing_") && strings.Contains(line, "{") {
+			t.Errorf("tracing series must have no labels: %s", line)
+		}
 	}
 }
