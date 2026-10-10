@@ -195,9 +195,11 @@ Completed on branch `feature/phase-11-otel`. ADR-018, `docs/operations/tracing.m
 **Measured** (details in `docs/benchmarks/phase-11-tracing.md`): gateway binary +5.9 MB (33.0 to 38.9 MB), mock worker +12.1 MB (10.0 to 22.0 MB; larger than the plan's "about the same");
 in-process cost 1.4 us and 18 allocs unsampled, 8.9 to 11.6 us and 53 to 80 allocs sampled; over HTTP the added p95 at 100% sampling was 0.04 to 0.19 ms (target under 1 ms).
 
-- **Criterion 14 ("govulncheck is clean") is not met as written.** After bumping grpc to v1.83.2, govulncheck still reports five `golang.org/x/net@v0.58.0`
-  advisories whose fix (v0.60.0) needs Go 1.26; see ADR-018 "Known vulnerability exception" and the handling proposed there (not applied). The Go toolchain
-  stdlib advisories fixed in Go 1.27.2 are independent of this change.
+- **Criterion 14 ("govulncheck is clean") is met with a documented, enforced exception.** After bumping grpc to v1.83.2, govulncheck still reports five
+  `golang.org/x/net@v0.58.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) whose fix (v0.60.0) needs Go 1.26. `scripts/quality.sh vuln` excepts
+  exactly those five (module and id), prints them on every run, and fails on anything else; the block is deleted when the Go floor is raised
+  (ADR-018 "Known vulnerability exception", `scripts/vulnfilter`). With the Go 1.27.2 toolchain `quality.sh vuln` passes ("no called vulnerabilities outside
+  the exception list (5 excepted)"); with this machine's default Go 1.27.1 it fails on 11 standard-library findings that the toolchain update fixes.
 - **Worker recording (D6):** a caller reaching the mock worker directly with a sampled `traceparent` does make it record; the claim that it cannot was
   wrong and is corrected. No guard was added (the mock worker is a development tool; a real worker decides its own in Phase 13).
 - **Endpoint path:** `/v1/traces` is appended only when the configured URL has no path; a URL with a path is used as given.

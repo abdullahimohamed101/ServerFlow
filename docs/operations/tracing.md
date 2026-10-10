@@ -123,8 +123,9 @@ will fail on it). When the floor is raised, remove the ignore entry in `.github/
 They are accepted for now for the same reason as the OpenTelemetry pin: taking the fix raises the Go floor. The affected HTTP/2 code is linked
 through gRPC types the OTLP/HTTP exporter imports but does not use; govulncheck's source mode still marks them reachable through
 over-approximated call traces, so "not reachable at runtime" is the expectation from the code structure, not something the tool confirms.
-`scripts/quality.sh vuln` and the nightly job will fail until the floor is raised or an exception list is added (see ADR-018).
-
+`scripts/quality.sh vuln` (and so the nightly job) accepts exactly these five ids for `golang.org/x/net` through an enforced, visible exception
+list (the `VULN_EXCEPTIONS` block in `scripts/quality.sh`, filtered by `scripts/vulnfilter`) and fails on every other called vulnerability,
+including the same id in a different module. Delete the block when the Go floor is raised to 1.26 and x/net v0.60.0 or later is taken (ADR-018).
 ## Known limits
 
 - Clocks are not corrected: a worker whose clock is ahead of the gateway's can show a child starting before its parent.
