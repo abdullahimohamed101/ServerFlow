@@ -55,7 +55,8 @@ type EventsConfig struct {
 	BufferSize         int           `yaml:"buffer_size"`
 	MaxBufferedRecords int           `yaml:"max_buffered_records"`
 	Linger             time.Duration `yaml:"linger"`
-	BatchMaxRecords    int           `yaml:"batch_max_records"`
+	// BatchMaxBytes caps one produce batch (the client has no record-count cap; a batch is also sent every Linger).
+	BatchMaxBytes int `yaml:"batch_max_bytes"`
 	// DeliveryTimeout is how long an unacknowledged event is retried before it is dropped.
 	DeliveryTimeout      time.Duration `yaml:"delivery_timeout"`
 	ShutdownFlushTimeout time.Duration `yaml:"shutdown_flush_timeout"`
@@ -76,7 +77,7 @@ type EventsConsumerConfig struct {
 func defaultEvents() EventsConfig {
 	return EventsConfig{
 		Mode: EventsOff, Topic: "inference.lifecycle.v1", ClientID: "serverflow", SASLMechanism: SASLNone, Compression: "snappy",
-		BufferSize: 10_000, MaxBufferedRecords: 10_000, Linger: 50 * time.Millisecond, BatchMaxRecords: 500,
+		BufferSize: 10_000, MaxBufferedRecords: 10_000, Linger: 50 * time.Millisecond, BatchMaxBytes: 1 << 20,
 		DeliveryTimeout: 30 * time.Second, ShutdownFlushTimeout: 5 * time.Second,
 		Consumer: EventsConsumerConfig{GroupID: "serverflow-usage", StartOffset: EventsStartEarliest, BatchSize: 500,
 			BatchTimeout: time.Second, MetricsAddr: "127.0.0.1:9103"},
@@ -114,10 +115,11 @@ func (e EventsConfig) MarshalJSON() ([]byte, error) {
 
 // Bounds for the events settings.
 const (
-	maxEventsBuffer   = 1_000_000
-	maxEventsBatch    = 100_000
-	maxEventsDuration = 10 * time.Minute
-	maxEventsBrokers  = 32
+	maxEventsBuffer     = 1_000_000
+	maxEventsBatch      = 100_000
+	maxEventsBatchBytes = 8 << 20
+	maxEventsDuration   = 10 * time.Minute
+	maxEventsBrokers    = 32
 )
 
 // validateConnection checks what both the publisher and the consumer need. Errors name the key, never a value.
@@ -193,8 +195,8 @@ func (e *EventsConfig) validate(gatewayShutdown time.Duration) error {
 	if e.MaxBufferedRecords < 1 || e.MaxBufferedRecords > maxEventsBuffer {
 		return fmt.Errorf("events.max_buffered_records must be in 1-%d", maxEventsBuffer)
 	}
-	if e.BatchMaxRecords < 1 || e.BatchMaxRecords > maxEventsBatch {
-		return fmt.Errorf("events.batch_max_records must be in 1-%d", maxEventsBatch)
+	if e.BatchMaxBytes < 1024 || e.BatchMaxBytes > maxEventsBatchBytes {
+		return fmt.Errorf("events.batch_max_bytes must be in 1024-%d", maxEventsBatchBytes)
 	}
 	for _, d := range []struct {
 		key string
@@ -277,7 +279,7 @@ func applyEventsEnv(cfg *Config, env func(string) (string, bool)) {
 	}
 	for k, dst := range map[string]*int{
 		"EVENTS_BUFFER_SIZE": &e.BufferSize, "EVENTS_MAX_BUFFERED_RECORDS": &e.MaxBufferedRecords,
-		"EVENTS_BATCH_MAX_RECORDS": &e.BatchMaxRecords, "EVENTS_CONSUMER_BATCH_SIZE": &e.Consumer.BatchSize,
+		"EVENTS_BATCH_MAX_BYTES": &e.BatchMaxBytes, "EVENTS_CONSUMER_BATCH_SIZE": &e.Consumer.BatchSize,
 	} {
 		if v, ok := env(k); ok {
 			if n, err := strconv.Atoi(v); err == nil {

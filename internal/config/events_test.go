@@ -65,7 +65,7 @@ func TestEventsValidation(t *testing.T) {
 		"zero buffer":      func(c *Config) { c.Events.BufferSize = 0 },
 		"huge buffer":      func(c *Config) { c.Events.BufferSize = maxEventsBuffer + 1 },
 		"zero client buf":  func(c *Config) { c.Events.MaxBufferedRecords = 0 },
-		"zero batch":       func(c *Config) { c.Events.BatchMaxRecords = 0 },
+		"tiny batch":       func(c *Config) { c.Events.BatchMaxBytes = 10 },
 		"zero linger":      func(c *Config) { c.Events.Linger = 0 },
 		"zero delivery":    func(c *Config) { c.Events.DeliveryTimeout = 0 },
 		"flush > shutdown": func(c *Config) { c.Events.ShutdownFlushTimeout = c.Gateway.ShutdownTimeout + time.Second },
@@ -166,7 +166,7 @@ func TestEventsEnvOverrides(t *testing.T) {
 	t.Setenv("SERVERFLOW_EVENTS_CONSUMER_GROUP_ID", "g")
 	t.Setenv("SERVERFLOW_EVENTS_CONSUMER_BATCH_SIZE", "5")
 	t.Setenv("SERVERFLOW_EVENTS_CONSUMER_START_OFFSET", "latest")
-	t.Setenv("SERVERFLOW_EVENTS_BATCH_MAX_RECORDS", "nonsense") // ignored, like every unparsable value
+	t.Setenv("SERVERFLOW_EVENTS_BATCH_MAX_BYTES", "nonsense") // ignored, like every unparsable value
 	c, err := Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestEventsEnvOverrides(t *testing.T) {
 	e := c.Events
 	if e.Mode != EventsOn || len(e.Brokers) != 2 || e.Topic != "t.v1" || e.SASLMechanism != SASLScram256 || e.SASLPassword != canaryPassword ||
 		e.BufferSize != 77 || e.Linger != 7*time.Millisecond || !e.TLS || e.Consumer.GroupID != "g" || e.Consumer.BatchSize != 5 ||
-		e.Consumer.StartOffset != "latest" || e.BatchMaxRecords != 500 {
+		e.Consumer.StartOffset != "latest" || e.BatchMaxBytes != 1<<20 {
 		t.Fatalf("env not applied: %+v", e)
 	}
 }
