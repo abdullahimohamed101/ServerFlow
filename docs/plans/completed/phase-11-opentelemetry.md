@@ -1,6 +1,6 @@
 # Phase 11 — OpenTelemetry: Distributed Tracing
 
-Status: Proposed (awaiting approval of the decisions below)
+Status: Completed 2026-10-10 (all decisions D1-D18 approved with their defaults; see Implementation Notes at the end)
 Owner: coding agent
 Depends on: the prep PR (`docs/plans/active/prep-lifecycle-observer-and-config-split.md`: the `gateway.Observer` seam and the per-feature config split) merged first. Phases 6 (attempts), 8 (rate limit) and 9 (auth) are merged.
 Spec: `docs/architecture/serverflow-spec.md` §6 (lifecycle, step 23), §7 (IDs, `trace_id`, attempt history), §8, §10, §12, §23, §25, §28, §58 Phase 11, §63
@@ -171,3 +171,31 @@ Untouched: `internal/worker`, `internal/registry`, `internal/scheduler`, `intern
 Steps 1 and 2 can proceed independently; 3 needs prep merged; 4 and 5 build on 1-3.
 
 **Local container note (verified):** this Mac runs Docker under Colima, which shares only the home directory with containers. A bind mount from `/tmp` or the macOS scratch directories appears EMPTY (a first Grafana provisioning check failed this way). Compose files and scripts must mount paths inside the repository, and nothing may rely on `/tmp`. Containers reach a service bound to the Mac's loopback through `host.docker.internal` (checked).
+
+## Implementation Notes
+
+Completed on branch `feature/phase-11-otel`. ADR-018, `docs/operations/tracing.md`, `docs/benchmarks/phase-11-tracing.md`.
+
+**Deviations from the plan**
+
+- **Seam (D2, D3).** The prep work had already landed, so no amendment was needed: context-returning `RequestStarted`/`AttemptStarted`, static-mode attempt
+  events, `TraceHeaders`, `SelectDuration` and `NextWorkerUnavailable` existed. Added only `Admission.RateLimitStart` and `Rejection.DecisionStart`.
+  `Rejection.DecisionDuration` now carries the selection time for capacity/model refusals (before, it carried the limiter's time for every kind).
+  A repeated `traceparent`/`tracestate` header is dropped.
+- **Own batch processor (D13 open point).** The SDK's `BatchSpanProcessor` exposes no drop count, so `internal/tracing/processor.go` (about 150 lines)
+  replaces it; accounting is exact and tested. `otel.SetErrorHandler` is therefore not used and no OpenTelemetry global state is set at all.
+- **Resource and environment.** `sdktrace.WithResource` merges `OTEL_RESOURCE_ATTRIBUTES`, found by a test; exported spans are wrapped so the resource is exactly
+  service name, version and instance ID.
+- **Metrics.** `tracing_export_failures_total` counts failed batches; failed spans are in the pipeline stats but not a series.
+- **Failed `scheduler.select` span** is created for capacity/model refusals that came from selection (it needed the extra event field above).
+- **Mock worker** gets `--otlp-endpoint`/`--trace-insecure-ok` through `mockworker.Config` and `mockworker.WithTracing`.
+- **Dependabot** ignore entry added as its own commit.
+- Test layout: two-process tests live in `tests/integration/tracing_test.go` (separate providers, real HTTP hop, real registry and agents).
+
+**Measured** (details in `docs/benchmarks/phase-11-tracing.md`): gateway binary +5.9 MB (33.0 to 38.9 MB), mock worker +12.1 MB (10.0 to 22.0 MB; larger than the plan's "about the same");
+in-process cost 1.4 us and 18 allocs unsampled, 8.9 to 11.6 us and 53 to 80 allocs sampled; over HTTP the added p95 at 100% sampling was 0.04 to 0.19 ms (target under 1 ms).
+
+**Not verified**
+
+- The Jaeger UI in a browser (the trace was read through Jaeger's query API only); behaviour on any other OS or CPU; behaviour with a vendor backend or a real
+  collector other than Jaeger v2.22.0; clock skew across hosts; `govulncheck` (not installed on this machine, see the final report).
