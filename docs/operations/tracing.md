@@ -111,22 +111,11 @@ make dev-tracing-stop
 Collector skeleton of Phase 0 was deleted, because ADR-018 sends OTLP straight to Jaeger); this standalone file stays for host-process development. Search the UI
 for service `serverflow-gateway`, tag `serverflow.request_id`.
 
-## Dependency note: OpenTelemetry v1.46 and the follow-up bump
+## Dependency note: OpenTelemetry v1.47
 
-OpenTelemetry Go is pinned at **v1.46.0**. Versions 1.47.0 and later declare `go 1.26.0`. That used to be above this module's Go floor; the floor is
-now 1.26, so the bump is possible, but it is a separate follow-up pull request (it also takes `golang.org/x/net` v0.60.0 or later, deletes the
-vulnerability exception below, and removes the `go.opentelemetry.io/otel*` ignore from `.github/dependabot.yml`). Until then Dependabot is told not to
-propose v1.47+. Do not bump OpenTelemetry piecemeal: review the whole set of `go.opentelemetry.io/*` modules together.
-
-## Known vulnerability exception
-
-`govulncheck` reports five `golang.org/x/net@v0.59.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed in v0.60.0. They are accepted until the
-follow-up pull request above takes v0.60.0. The affected HTTP/2 code is linked
-through gRPC types the OTLP/HTTP exporter imports but does not use; govulncheck's source mode still marks them reachable through
-over-approximated call traces, so "not reachable at runtime" is the expectation from the code structure, not something the tool confirms.
-`scripts/quality.sh vuln` (and so the nightly job) accepts exactly these five ids for `golang.org/x/net` through an enforced, visible exception
-list (the `VULN_EXCEPTIONS` block in `scripts/quality.sh`, filtered by `scripts/vulnfilter`) and fails on every other called vulnerability,
-including the same id in a different module. The follow-up pull request deletes the block (ADR-018).
+OpenTelemetry Go is at **v1.47.0** (all `go.opentelemetry.io/otel*` modules together; `golang.org/x/net` v0.61.0). Do not bump the OpenTelemetry
+modules piecemeal: review the whole set together. There is no vulnerability exception any more: the five `golang.org/x/net` advisories that
+ADR-018 once accepted are fixed, and `scripts/quality.sh vuln` is plain `govulncheck ./...`, failing on any finding.
 
 ## Known limits
 

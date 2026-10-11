@@ -157,21 +157,6 @@ build() {
   go mod tidy -diff || fail "go.mod/go.sum are not tidy (run go mod tidy)"
 }
 
-# ---------------------------------------------------------------------------------------------------------
-# EXCEPTION LIST for `vuln`. Each entry is module:OSV-id and covers exactly that advisory in exactly that
-# module (an excepted id in another module, or another id in the same module, still fails). They are
-# printed on every run; they are NOT fixed. Why: ADR-018 "Known vulnerability exception". The fix for
-# these five golang.org/x/net advisories is x/net v0.60.0. It needed Go 1.26, which master now has; the
-# follow-up pull request that bumps golang.org/x/net (and OpenTelemetry) to versions that need it
-# DELETES THIS BLOCK. Until then these five are accepted, visibly.
-VULN_EXCEPTIONS=(
-  golang.org/x/net:GO-2026-6617
-  golang.org/x/net:GO-2026-6612
-  golang.org/x/net:GO-2026-6611
-  golang.org/x/net:GO-2026-6610
-  golang.org/x/net:GO-2026-6603
-)
-# ---------------------------------------------------------------------------------------------------------
 # Phase 10: the Prometheus configuration, recording and alert rules and their promtool tests, then the dashboard
 # and rule checks against the metrics a running cluster exports (internal/observability). promtool comes from
 # scripts/promtool.sh (a binary on PATH, else a container); without either this fails here, and `full` reports
@@ -269,21 +254,16 @@ deploy() {
 
 have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
 
+# Fails on any vulnerability govulncheck reports as called (stdlib findings included; the toolchain CI uses
+# fixes those). There is no exception list: ADR-018 records the one that existed and its removal.
 # v1.1.4 panics ("unexpected expr: *ast.KeyValueExpr") on Go 1.27, which CI's "stable" resolves to.
-# govulncheck exits 0 in JSON mode, so scripts/vulnfilter decides: it fails on any called vulnerability that
-# is not in VULN_EXCEPTIONS (stdlib findings included; they are fixed by the toolchain CI uses).
 vuln() {
   step "govulncheck"
   if ! command -v govulncheck >/dev/null 2>&1; then
     go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
     PATH="$(go env GOPATH)/bin:$PATH"
   fi
-  local json args=() e
-  json="$(mktemp "${TMPDIR:-/tmp}/serverflow-vuln.XXXXXX")"
-  govulncheck -format json ./... >"$json" || { rm -f "$json"; fail "govulncheck itself failed"; }
-  for e in "${VULN_EXCEPTIONS[@]}"; do args+=(-allow "$e"); done
-  go run ./scripts/vulnfilter "${args[@]}" <"$json" || { rm -f "$json"; fail "govulncheck: vulnerabilities outside the exception list"; }
-  rm -f "$json"
+  govulncheck ./... || fail "govulncheck: vulnerabilities found"
 }
 
 full() {
