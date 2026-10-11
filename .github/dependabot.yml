@@ -33,6 +33,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Major versions of the stack's services change on-disk layout, flags and file formats, so each one is a deliberate
+    # project, not a weekly bump. The first Dependabot PR (#31) proposed Postgres 16->18 (the 18+ image wants its data
+    # mount at /var/lib/postgresql, so the tmpfs at the old path left the container unhealthy and the compose smoke job
+    # failed), Redis 7->8, Redpanda v25->v26, Prometheus 2->3, Grafana 11->13 and nginx 1.27->1.31 in one group. Minor
+    # and patch updates still arrive; take a major by hand, with the smoke test and a plan note
+    # (docs/operations/docker-deployment.md, ADR-021 "Operational notes").
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       compose-images:
         patterns: ["*"]
