@@ -249,7 +249,7 @@ services:
   redpanda:
     <<: *hardened
     profiles: [events]
-    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.1.1@sha256:e52ef1cfa21307cdbed3a21826c0a004739fa679bda196fd6c84e7764f01274e}
+    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.3.17@sha256:c96a71811ec85eee436b7471e4d2777b70ceb4d6a0bc5447094854b3150511c1}
     user: "101:101"
     env_file: [.dev/kafka.env]
     entrypoint:
@@ -290,7 +290,7 @@ services:
   redpanda-init:
     <<: *hardened
     profiles: [events]
-    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.1.1@sha256:e52ef1cfa21307cdbed3a21826c0a004739fa679bda196fd6c84e7764f01274e}
+    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.3.17@sha256:c96a71811ec85eee436b7471e4d2777b70ceb4d6a0bc5447094854b3150511c1}
     user: "101:101"
     env_file: [.dev/kafka.env]
     entrypoint: ["/bin/bash", "-c"]
@@ -340,7 +340,7 @@ services:
   prometheus:
     <<: *hardened
     profiles: [observability]
-    image: ${PROMETHEUS_IMAGE:-quay.io/prometheus/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    image: ${PROMETHEUS_IMAGE:-quay.io/prometheus/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3}
     user: "65534:65534"
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -363,7 +363,7 @@ services:
   grafana:
     <<: *hardened
     profiles: [observability]
-    image: ${GRAFANA_IMAGE:-mirror.gcr.io/grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5}
+    image: ${GRAFANA_IMAGE:-mirror.gcr.io/grafana/grafana:11.6.16@sha256:d67af92050b8d93b393dc741864752a69c9da1ffa39c1bb9af49ad5d9e47d2c3}
     user: "472:0"
     env_file: [.dev/grafana.env]
     environment:
@@ -407,7 +407,7 @@ services:
   lb:
     <<: *hardened
     profiles: [scale]
-    image: ${NGINX_IMAGE:-public.ecr.aws/nginx/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0}
+    image: ${NGINX_IMAGE:-public.ecr.aws/nginx/nginx-unprivileged:1.31-alpine@sha256:b9241c6e7b8e9a862f129d8d4199ab64b10390949a78bdd5603379b32c844083}
     volumes:
       - ./deploy/compose/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     tmpfs: ["/tmp:uid=101,gid=101,mode=1777,size=16m"]
