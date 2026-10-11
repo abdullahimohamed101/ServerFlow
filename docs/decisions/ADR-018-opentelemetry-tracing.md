@@ -44,11 +44,8 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
   `tracing.include_tenant_id` is false. The resource carries only `service.name`, `service.version` and `service.instance.id`: the
   `OTEL_*` environment variables are not honoured (a test proves `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_RESOURCE_ATTRIBUTES`,
   `OTEL_TRACES_SAMPLER` and the span-limit variables have no effect), and no global tracer provider or propagator is set.
-- **Dependencies: OpenTelemetry Go v1.46.0, pinned.** The SDK, the OTLP/HTTP exporter and W3C parsing are not worth hand-rolling.
-  **v1.47.0 sets `go 1.26.0`; the floor was 1.25.0 when this was written, so it was not used.** The repository's floor has since become
-  Go 1.26 (ADR-014 update), so v1.47 and later are now possible, but this change deliberately stays on v1.46.0: a separate follow-up
-  pull request bumps OpenTelemetry and `golang.org/x/net`, deletes the vulnerability exception below and removes the Dependabot ignore for
-  `go.opentelemetry.io/otel*` from 1.47.0 (`.github/dependabot.yml`), which exists only to hold the pin until then. The
+- **Dependencies: OpenTelemetry Go, pinned (v1.46.0 when written, v1.47.0 since 2026-10-11; see "Removal of the vulnerability exception").** The SDK, the OTLP/HTTP exporter and W3C parsing are not worth hand-rolling.
+  **v1.47.0 sets `go 1.26.0`; the floor was 1.25.0 when this was written, so v1.46.0 was used until the floor became 1.26.** The
   change adds about 13 indirect modules (grpc, genproto, protobuf bump, grpc-gateway, backoff, logr, uuid, proto/otlp, auto/sdk) and
   grows the binaries (measured in `docs/benchmarks/phase-11-tracing.md`).
 - **Exporter: OTLP/HTTP (protobuf).** In a scratch build the gRPC exporter added almost nothing over HTTP (the HTTP exporter's proto
@@ -79,7 +76,7 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
   `allow_insecure_transport`; validation errors never echo the endpoint, and the config prints it redacted. With `enabled: false` nothing
   else is validated. The mock worker has `--otlp-endpoint` (and `--trace-insecure-ok`) instead of a config file.
 
-## Known vulnerability exception (golang.org/x/net)
+## Known vulnerability exception (golang.org/x/net) (historical, removed 2026-10-11)
 
 `govulncheck` (v1.8.0) on this branch reports GO-2026-6617, 6612, 6611, 6610 and 6603 in `golang.org/x/net@v0.59.0`, fixed in v0.60.0. v0.59.0
 and v0.60.0 declare `go 1.26.0`; when this was written the floor was 1.25.0, so they could not be taken, and no older release carries the
@@ -102,6 +99,15 @@ finding, and flags an exception that matched nothing. The block must be **delete
 govulncheck JSON: only excepted ids pass with the notice; an excepted id in another module fails; an unrelated new id fails; stdlib
 findings fail; empty findings pass; invalid JSON fails. The plan's criterion 14 is therefore **met with a documented, enforced
 exception**, not "clean".
+
+## Removal of the vulnerability exception (2026-10-11)
+
+The follow-up pull request `chore/otel-xnet-bump` removed the exception above. OpenTelemetry Go moved v1.46.0 to v1.47.0 (all modules together) and
+`golang.org/x/net` v0.59.0 to v0.61.0, both possible since the Go floor became 1.26. `govulncheck` v1.8.0 under the Go 1.27.2 toolchain then reports no
+vulnerabilities in source mode and in binary mode for the gateway, usage-consumer, admin, control-plane and mock-worker, so criterion 14 of the Phase 11
+plan is now met without an exception. `VULN_EXCEPTIONS`, the `scripts/vulnfilter` command and its tests are deleted (nothing else used them), and
+`scripts/quality.sh vuln` is plain `govulncheck ./...` again, failing on any finding. The Dependabot ignore for `go.opentelemetry.io/otel*` is
+removed with it. The tracing guarantees in this ADR are unchanged and their tests pass unmodified. Record: docs/plans/completed/chore-otel-xnet-bump.md.
 
 ## Consequences
 

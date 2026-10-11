@@ -210,3 +210,5 @@ in-process cost 1.4 us and 18 allocs unsampled, 8.9 to 11.6 us and 53 to 80 allo
 
 - The Jaeger UI in a browser (the trace was read through Jaeger's query API only); behaviour on any other OS or CPU; behaviour with a vendor backend or a real
   collector other than Jaeger v2.22.0; clock skew across hosts; `govulncheck` (not installed on this machine, see the final report).
+
+- **Update 2026-10-11:** criterion 14 is now met without an exception. The follow-up bumped OpenTelemetry to v1.47.0 and `golang.org/x/net` to v0.61.0, govulncheck reports nothing, and the exception block, `scripts/vulnfilter` and the Dependabot ignore are deleted (ADR-018, docs/plans/completed/chore-otel-xnet-bump.md). The text above describes the state at the time.
