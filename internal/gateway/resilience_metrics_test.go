@@ -176,8 +176,7 @@ func TestResilienceSeriesCeilingWithAThousandWorkersAndModels(t *testing.T) {
 	m.configure(config.Default().Metrics)
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	rs := newResilienceState(cfg, log, resilienceDeps{})
-	cache := newSnapshotCache(&fakeLister{}, time.Second, 10*time.Second, 5*time.Second, log)
-	m.enableResilience(rs, cache)
+	m.enableResilience(rs)
 	var members []resilience.Member
 	models := map[string]string{}
 	for i := 0; i < 1000; i++ {

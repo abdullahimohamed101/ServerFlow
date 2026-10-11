@@ -196,3 +196,27 @@ func TestTheProbeHeaderTimeoutEndsWithTheHeaders(t *testing.T) {
 		t.Fatalf("the probe stream should have closed the breaker: %v", e.state("a-flaky"))
 	}
 }
+
+// All attempts together stay within the first-byte deadline: a fast failure, then a retry that hangs, ends at the
+// deadline (plus a tolerance), not at the header timeout.
+func TestAttemptsTogetherNeverOutlastTheDeadline(t *testing.T) {
+	a := newScriptWorker(t, "a-1", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		openAPI503("mock_failure")(w, r)
+	})
+	b := newScriptWorker(t, "b-2", func(w http.ResponseWriter, r *http.Request) { hold(r) })
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")}, noBreaker, deadline(400*time.Millisecond),
+		func(c *config.Config) { c.Resilience.Retry.MinRemaining = 50 * time.Millisecond })
+	start := time.Now()
+	resp, body := e.chat(t, "qwen-7b")
+	took := time.Since(start)
+	if resp.StatusCode != 504 || errorCode(t, body) != "UPSTREAM_TIMEOUT" {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if took < 350*time.Millisecond || took > 1500*time.Millisecond {
+		t.Fatalf("took %v for a 400ms deadline (header timeout is 2s)", took)
+	}
+	if h := resp.Header.Get(headerAttempts); h != "2" {
+		t.Fatalf("attempts %q, want 2", h)
+	}
+}

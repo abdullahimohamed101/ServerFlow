@@ -219,7 +219,7 @@ func (s *Server) enableResilience(cfg config.Config, d resilienceDeps) {
 	s.res = rs
 	s.router.res = rs
 	s.router.cache.onSync = rs.sync
-	s.metrics.enableResilience(rs, s.router.cache)
+	s.metrics.enableResilience(rs)
 }
 
 func (s *Server) deliverBreakerChange(ev BreakerChange) {

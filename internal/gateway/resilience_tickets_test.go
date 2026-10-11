@@ -266,13 +266,16 @@ func TestConcurrentRequestsAndRefreshesLeakNothing(t *testing.T) {
 // observer that calls back into the router must not deadlock.
 func TestATransitionInsideAcquireIsDeliveredOutsideTheRouterLock(t *testing.T) {
 	flag, _, _, ws := twoWorkers(t)
-	e := newResEnv(t, ws, func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 1 })
+	e := newResEnv(t, ws, func(c *config.Config) {
+		c.Resilience.Breaker.ConsecutiveFailures = 1
+		c.Resilience.Breaker.CoolDown, c.Resilience.Breaker.MaxCoolDown = 100*time.Millisecond, time.Second
+	})
 	for i := 0; i < 4; i++ {
 		e.do(t)
 	}
 	flag.set(okJSON("a-flaky"))
-	e.advance(t, 10*time.Second)
-	e.rs.nonClosed.Store(0) // skip the Admissible pass: only Acquire sees the cool-down end
+	e.clock.Advance(200 * time.Millisecond) // no refresh: a sync would apply the lazy change before the routing does
+	e.rs.nonClosed.Store(0)                 // skip the Admissible pass: only Acquire sees the cool-down end
 	var ran atomic.Int32
 	WithObserver(&callbackObserver{fn: func() {
 		done := make(chan struct{})
@@ -317,5 +320,43 @@ func TestEjectedWorkersDoNotSkewTheRotationOfTheOthers(t *testing.T) {
 		if n != 10 {
 			t.Fatalf("worker %s served %d of 30 requests, want an even 10", name, n)
 		}
+	}
+}
+
+// A half-open worker sees at most probe_concurrency live requests at a time, however many arrive.
+func TestAHalfOpenWorkerSeesNoMoreProbesThanTheConcurrencyAtOnce(t *testing.T) {
+	var cur, peak atomic.Int64
+	flag := &workerFlag{}
+	flag.set(openAPI503("mock_failure"))
+	a := newScriptWorker(t, "a-flaky", func(w http.ResponseWriter, r *http.Request) {
+		n := cur.Add(1)
+		defer cur.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		flag.serve(w, r)
+	})
+	b := newScriptWorker(t, "b-good", okJSON("b-good"))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")}, func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 1 })
+	for i := 0; i < 4; i++ {
+		e.do(t)
+	}
+	flag.set(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		okJSON("a-flaky")(w, r)
+	})
+	e.advance(t, 10*time.Second)
+	peak.Store(0)
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); e.do(t) }()
+	}
+	wg.Wait()
+	if p := peak.Load(); p > 1 {
+		t.Fatalf("%d concurrent requests reached the half-open worker, probe_concurrency is 1", p)
 	}
 }

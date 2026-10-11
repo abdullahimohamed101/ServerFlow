@@ -24,7 +24,7 @@ type resilienceMetrics struct {
 // Probe results (circuit_breaker_probes_total{result}).
 var probeResults = []string{VerdictOK, VerdictFault, VerdictNeutral}
 
-func (m *metrics) enableResilience(rs *resilienceState, cache *snapshotCache) {
+func (m *metrics) enableResilience(rs *resilienceState) {
 	rm := &resilienceMetrics{
 		transitions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "circuit_breaker_transitions_total",
@@ -48,7 +48,7 @@ func (m *metrics) enableResilience(rs *resilienceState, cache *snapshotCache) {
 		}, []string{"model"}),
 	}
 	m.res = rm
-	m.reg.MustRegister(rm.transitions, rm.probes, rm.denied, rm.suppressed, rm.deadline, newBreakerCollector(m, rs, cache))
+	m.reg.MustRegister(rm.transitions, rm.probes, rm.denied, rm.suppressed, rm.deadline, newBreakerCollector(m, rs))
 }
 
 // breakerChange counts a breaker transition, or a trip the ejection cap held back.
@@ -103,14 +103,13 @@ func (mi *modelInst) deadlineCounter(m *metrics) prometheus.Counter {
 type breakerCollector struct {
 	m     *metrics
 	rs    *resilienceState
-	cache *snapshotCache
 	state *prometheus.Desc
 	open  *prometheus.Desc
 }
 
-func newBreakerCollector(m *metrics, rs *resilienceState, cache *snapshotCache) *breakerCollector {
+func newBreakerCollector(m *metrics, rs *resilienceState) *breakerCollector {
 	return &breakerCollector{
-		m: m, rs: rs, cache: cache,
+		m: m, rs: rs,
 		state: prometheus.NewDesc("circuit_breaker_state",
 			"State of a circuit breaker that is not closed: 1 half-open (probing), 2 open. A closed breaker has no series. worker_id is capped like the other worker labels (later workers are \"other\", with the highest state).", []string{"worker_id", "model"}, nil),
 		open: prometheus.NewDesc("circuit_breakers_open",
