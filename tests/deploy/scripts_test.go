@@ -204,3 +204,21 @@ func TestComposeLeavesNoDefaultSecrets(t *testing.T) {
 		}
 	}
 }
+
+// TestDevUpDoesNotUseComposeWait: `docker compose up --wait` fails on Compose 2.38 (the CI runner) for any service without a
+// healthcheck, and the worker agents have none; dev-up.sh waits itself.
+func TestDevUpDoesNotUseComposeWait(t *testing.T) {
+	for _, f := range []string{"scripts/dev-up.sh", "scripts/dev-smoke.sh", "Makefile", ".github/workflows/ci.yml", ".github/workflows/nightly.yml"} {
+		for i, line := range strings.Split(read(t, f), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue
+			}
+			if strings.Contains(line, "--wait") {
+				t.Errorf("%s:%d uses --wait: %s", f, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	if !strings.Contains(read(t, "scripts/dev-up.sh"), "wait_stack") {
+		t.Error("dev-up.sh must wait with wait_stack")
+	}
+}

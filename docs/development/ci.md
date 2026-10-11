@@ -85,6 +85,14 @@ load (where flaky tests show up first), the gateway overhead budget test, `govul
 gateway scaling and the shared quota, runs; plus `make dev-audit`) and an advisory Trivy report (HIGH and CRITICAL findings with a fix, six
 ServerFlow images, scanner pinned by digest on `public.ecr.aws`; its vulnerability database download can be rate limited, which is why it never gates).
 
+### Lessons of the first Phase 16 run
+
+The runner's Compose is v2.38.2 (local development uses a newer one). Three things differed: `docker compose config -q` checks that `env_file` entries exist
+even with `--no-env-resolution` (the static job now creates empty placeholder files with `scripts/dev-placeholders.sh` and removes them), `up --wait` rejects
+services without a healthcheck (`dev-up.sh` waits itself), and a step output that nothing wrote became `docker save ""` (outputs are now read with a guard, and
+`TestWorkflowOutputsAndDockerCommands` checks every `steps.X.outputs.Y`). To reproduce locally, put the v2.38.2 `docker-compose` release binary behind a `docker`
+wrapper that handles the `compose` subcommand, clone the branch with `--depth 1` into a fresh directory and run the workflow steps in order.
+
 ## Required checks (owner action)
 
 Branch protection can only be set by the repository owner. In GitHub: Settings, Branches, add a rule for
