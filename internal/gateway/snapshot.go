@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"serverflow/internal/registry/client"
+	"serverflow/internal/resilience"
 	"serverflow/pkg/protocol"
 )
 
@@ -41,11 +43,20 @@ type snapshotCache struct {
 	// the age reported before any snapshot exists. Both feed the Prometheus collector.
 	refreshFailures atomic.Int64
 	created         time.Time
+
+	// onSync, when set (resilience is effective), receives the registry view after every successful refresh and
+	// whenever aging turns an eligible worker suspect, as breaker members plus a worker-to-model map. syncMu
+	// serializes those calls so a late one for a superseded snapshot cannot overwrite a newer view.
+	onSync func(members []resilience.Member, models map[string]string)
+	syncMu sync.Mutex
 }
 
 type snapshot struct {
 	byModel map[string][]protocol.WorkerSnapshot
 	fetched time.Time // when the request that produced it was sent (the conservative end)
+	// nextAge is the snapshot age, in nanoseconds, at which the next worker that is eligible now turns suspect
+	// (math.MaxInt64 when none will). Only used when onSync is set.
+	nextAge atomic.Int64
 }
 
 func newSnapshotCache(src workerLister, refresh, maxStale, suspectAfter time.Duration, log *slog.Logger) *snapshotCache {
@@ -95,8 +106,58 @@ func (c *snapshotCache) Refresh(ctx context.Context) error {
 		// Kept in ID order so the scheduler's sorted-input fast path always applies.
 		sort.Slice(list, func(i, j int) bool { return list[i].WorkerID < list[j].WorkerID })
 	}
-	c.cur.Store(&snapshot{byModel: by, fetched: started})
+	snap := &snapshot{byModel: by, fetched: started}
+	snap.nextAge.Store(math.MaxInt64)
+	c.cur.Store(snap)
+	if c.onSync != nil {
+		c.syncMu.Lock()
+		c.runSync(snap, c.now().Sub(started))
+		c.syncMu.Unlock()
+	}
 	return nil
+}
+
+// runSync reports the view of snapshot s at the given age to onSync. The caller holds syncMu.
+func (c *snapshotCache) runSync(s *snapshot, age time.Duration) {
+	suspect := c.suspectAfter.Seconds()
+	members := make([]resilience.Member, 0, len(s.byModel)*2)
+	models := make(map[string]string, len(s.byModel)*2)
+	next := int64(math.MaxInt64)
+	for model, list := range s.byModel {
+		for i := range list {
+			w := &list[i]
+			eligible := schedulable(w)
+			if eligible && w.HeartbeatAgeSeconds+age.Seconds() >= suspect {
+				eligible = false
+			}
+			if eligible {
+				// The age at which this worker turns suspect; compared as seconds, like age().
+				if secs := suspect - w.HeartbeatAgeSeconds; secs < float64(math.MaxInt64)/1e9 {
+					next = min(next, int64(math.Ceil(secs*1e9)))
+				}
+			}
+			members = append(members, resilience.Member{Key: keyOf(w), Eligible: eligible})
+			models[w.WorkerID] = model
+		}
+	}
+	s.nextAge.Store(next)
+	c.onSync(members, models)
+}
+
+// syncAged re-reports the view when aging has made a worker suspect since the last report, so the breakers'
+// ejection cap sees the same eligible set the router does.
+func (c *snapshotCache) syncAged(s *snapshot, age time.Duration) {
+	if c.onSync == nil || int64(age) < s.nextAge.Load() {
+		return
+	}
+	if !c.syncMu.TryLock() {
+		return // someone is reporting; the next request checks again
+	}
+	defer c.syncMu.Unlock()
+	if c.cur.Load() != s || int64(age) < s.nextAge.Load() {
+		return
+	}
+	c.runSync(s, age)
 }
 
 // believable reports whether a snapshot's numbers and address are sane. The
@@ -160,6 +221,7 @@ func (c *snapshotCache) View(model string) (workers []protocol.WorkerSnapshot, o
 	if !ok {
 		return nil, false
 	}
+	c.syncAged(s, age)
 	return c.age(s.byModel[model], age), true
 }
 

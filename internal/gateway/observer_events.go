@@ -106,7 +106,8 @@ type AttemptStart struct {
 	WorkerEligible bool
 	// Probe is true when the attempt is a circuit breaker's trial request to a worker it had taken out of
 	// routing. QueueWait is how long the request waited in the admission queue before this attempt (it is
-	// excluded from the gateway overhead measurement). Both are zero until Phase 15 fires them.
+	// excluded from the gateway overhead measurement). Probe is set with resilience on; QueueWait stays zero
+	// until the admission queue arrives (Phase 15 PR E).
 	Probe     bool
 	QueueWait time.Duration
 }
@@ -146,8 +147,14 @@ type AttemptEnd struct {
 	// the scheduling decision counters, as a first routing's refusal does.
 	NextRouteResult string
 	// RetryDenied says why a wanted retry was not made although another worker might exist: one of the
-	// RetryDenied* constants, or "". Never set until Phase 15 adds the retry budget and deadline.
+	// RetryDenied* constants, or "". Set only with resilience on (the retry budget and the deadline).
 	RetryDenied string
+	// Probe is true when the attempt was a circuit breaker's trial request, and Verdict what the breaker was
+	// told about the attempt: one of the Verdict* constants, or "" without resilience (and for an attempt that
+	// ended before its verdict, which the breaker counts as neutral). A probe attempt with the verdict ""
+	// is counted as neutral.
+	Probe   bool
+	Verdict string
 }
 
 // Values of AttemptEnd.NextRouteResult.
@@ -180,8 +187,10 @@ type QueueWait struct {
 	Result    string // one of the Queue* constants
 }
 
-// BreakerChange is a worker's circuit breaker changing state (Phase 15, not yet fired). It is delivered on a
-// background context and is not part of any request.
+// BreakerChange is a worker's circuit breaker changing state (Phase 15, resilience on). It is delivered on a
+// background context and is not part of any request, by whichever goroutine finds the queue of pending changes
+// next (never under a gateway lock). A trip that the ejection cap held back arrives as To "closed" with Reason
+// "suppressed".
 type BreakerChange struct {
 	WorkerID string
 	Model    string

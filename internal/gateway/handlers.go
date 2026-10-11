@@ -143,7 +143,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Static mode has one attempt per request and no worker ID (the single upstream is the whole fleet).
 	info.attempted = 1
-	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, 1, "", ireq.Model, "", "", false, 0))
+	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, 1, "", ireq.Model, "", "", false, 0, false))
 	info.attemptCtx = octx
 	attemptBegan := time.Now()
 	var upStatus int

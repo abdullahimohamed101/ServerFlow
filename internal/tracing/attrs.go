@@ -37,6 +37,8 @@ const (
 	KeyPromptTokens     = attribute.Key("serverflow.prompt_tokens")
 	KeyOutputTokens     = attribute.Key("serverflow.output_tokens")
 	KeyInjectedFailure  = attribute.Key("serverflow.injected_failure")
+	KeyBreakerProbe     = attribute.Key("serverflow.breaker.probe")
+	KeyRetryDenied      = attribute.Key("serverflow.retry.denied")
 	KeyServiceName      = attribute.Key("service.name")
 	KeyServiceVersion   = attribute.Key("service.version")
 	KeyServiceInstance  = attribute.Key("service.instance.id")
@@ -48,7 +50,7 @@ var AllowedKeys = map[attribute.Key]struct{}{
 	KeyAttempts: {}, KeyWorkerID: {}, KeyModel: {}, KeyStream: {}, KeyTenantID: {}, KeyErrorCode: {}, KeyRejectKind: {},
 	KeyAttemptOutcome: {}, KeyAttemptClass: {}, KeyNextWorkerAbsent: {}, KeyNextAttempt: {}, KeyRateOutcome: {}, KeyRateLimit: {},
 	KeyEstCost: {}, KeyStrategy: {}, KeySelectOutcome: {}, KeyTTFTMillis: {}, KeyClientClosed: {}, KeyLink: {}, KeyQueueMillis: {},
-	KeyPromptTokens: {}, KeyOutputTokens: {}, KeyInjectedFailure: {}, KeyServiceName: {}, KeyServiceVersion: {}, KeyServiceInstance: {},
+	KeyPromptTokens: {}, KeyOutputTokens: {}, KeyInjectedFailure: {}, KeyBreakerProbe: {}, KeyRetryDenied: {}, KeyServiceName: {}, KeyServiceVersion: {}, KeyServiceInstance: {},
 }
 
 // Span names. All are fixed strings: a name never carries request data.
@@ -62,6 +64,7 @@ const (
 	SpanInference     = "inference"
 	SpanQueueWait     = "queue_wait"
 	EventRetry        = "retry"
+	EventRetryDenied  = "retry.denied"
 	EventFirstToken   = "first_token"
 	LinkRetryOf       = "retry_of"
 	LinkClientTrace   = "client_traceparent"

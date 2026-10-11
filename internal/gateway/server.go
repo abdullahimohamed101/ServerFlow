@@ -40,6 +40,8 @@ type Server struct {
 	router *router
 	// retry decides which failed attempts may move to another worker (registry mode).
 	retry retryPolicy
+	// res is the Phase 15 fault tolerance state; nil unless resilience.mode is on in registry mode.
+	res *resilienceState
 	// background, when set, runs for the life of Serve (the snapshot refresher).
 	background func(ctx context.Context)
 	ready      *readiness
@@ -221,6 +223,9 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	requireIfConfigured(cfg.Auth.Mode)(s)
 	requireLimitIfConfigured(cfg.RateLimit.Mode)(s)
 	WithMetricsConfig(cfg.Metrics)(s)
+	if cfg.Resilience.Effective(config.WorkerSourceRegistry) {
+		s.enableResilience(cfg, resilienceDeps{})
+	}
 	for _, o := range opts {
 		o(s)
 	}

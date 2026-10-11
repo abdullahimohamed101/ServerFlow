@@ -58,6 +58,9 @@ type metrics struct {
 	workers *telemetry.LabelGuard
 	tenants *telemetry.LabelGuard
 
+	// res holds the Phase 15 series; nil unless resilience is effective (metrics_resilience.go).
+	res *resilienceMetrics
+
 	// strategy is the scheduler strategy in registry mode, "" otherwise. It is set before the server serves.
 	strategy string
 	// decisionDurChild is the strategy's histogram, resolved once.
@@ -233,10 +236,14 @@ type modelInst struct {
 	// decisions is indexed by decisionIndex.
 	decisions [4]counterSlot
 
-	retries    counterCache
-	failures   counterCache
-	noCapacity counterCache
-	selections counterCache
+	retries counterCache
+	// Phase 15 children, resolved lazily like the others (only used with resilience on).
+	probes       counterCache
+	denied       counterCache
+	deadlineHits counterSlot
+	failures     counterCache
+	noCapacity   counterCache
+	selections   counterCache
 }
 
 func newModelInst(m *metrics, label string) *modelInst {
@@ -495,6 +502,7 @@ func (m *metrics) AttemptEnded(_ context.Context, e AttemptEnd) {
 	if e.NextRouteResult != "" {
 		m.retryRoutingRefused(mi, e.NextRouteResult)
 	}
+	m.resilienceAttemptEnded(mi, &e)
 }
 
 // retryRoutingRefused records the scheduling decision of a retry whose second routing found no worker. A first
@@ -513,9 +521,12 @@ func (m *metrics) retryRoutingRefused(mi *modelInst, result string) {
 	}
 }
 
-// QueueWaited and BreakerTransition have no series yet: the features that fire them arrive in Phase 15.
-func (m *metrics) QueueWaited(context.Context, QueueWait)           {}
-func (m *metrics) BreakerTransition(context.Context, BreakerChange) {}
+// QueueWaited has no series yet: the admission queue arrives in Phase 15 PR E. A breaker transition feeds the
+// circuit breaker series (present only with resilience on).
+func (m *metrics) QueueWaited(context.Context, QueueWait) {}
+func (m *metrics) BreakerTransition(_ context.Context, e BreakerChange) {
+	m.breakerChange(e)
+}
 
 // RequestCompleted records a finished inference request that reached the handler.
 func (m *metrics) RequestCompleted(_ context.Context, e Completion) {
