@@ -205,9 +205,8 @@ func TestClosedPortAndRecovery(t *testing.T) {
 	t.Cleanup(srv2.Close)
 	emit(p, 5)
 	waitFor(t, "recovery", func() bool { return p.Stats().Exported >= 5 })
-	if !strings.Contains(buf.String(), "recovered") {
-		t.Errorf("expected a recovery line: %s", buf.String())
-	}
+	// Exported is counted just before the recovery line is logged, so the log is polled, not read once.
+	waitFor(t, "the recovery line", func() bool { return strings.Contains(buf.String(), "recovered") })
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = p.Shutdown(ctx)

@@ -363,3 +363,83 @@ func TestMissingWorkerCountsMakeTheBalancePartialAndAreRecorded(t *testing.T) {
 		t.Fatalf("%+v %v", r.Imbalance, r.StatsMissing)
 	}
 }
+
+func chaosResult(id, resilience string, success float64) Result {
+	r := Result{SchemaVersion: SchemaVersion, RunID: id, Valid: true, NotMeasured: map[string]string{}}
+	r.Metadata.Resilience = resilience
+	att := 1.2
+	r.Chaos = &Chaos{Scenario: "worker-freeze", Windows: []ChaosWindow{{Name: "fault"}}, Params: map[string]string{"header_timeout": "2s"},
+		Measures: ChaosMeasures{FaultSuccessRate: success, FaultAttemptsPerRequest: &att}}
+	return r
+}
+
+func TestCompareWarnsWhenGroupsDifferInResilience(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		warn bool
+	}{{"absent", "absent", false}, {"absent", "off", true}, {"on", "off", true}, {"", "absent", true}, {"on", "on", false}} {
+		c := Compare(chaosResult("run_001", tc.a, 0.9), chaosResult("run_002", tc.b, 0.9))
+		found := false
+		for _, w := range c.Warnings {
+			found = found || strings.Contains(w, "differ in resilience")
+		}
+		if found != tc.warn {
+			t.Errorf("%q vs %q: warned=%v want %v (%v)", tc.a, tc.b, found, tc.warn, c.Warnings)
+		}
+		if tc.warn && tc.a != "" && !c.Unfair() {
+			t.Errorf("%q vs %q: the resilience difference must make the comparison unfair", tc.a, tc.b)
+		}
+	}
+}
+
+func TestCompareWarnsWhenAGroupMixesResilience(t *testing.T) {
+	g := []Result{chaosResult("run_001", "on", 1), chaosResult("run_002", "off", 1), chaosResult("run_003", "on", 1)}
+	c := CompareGroups(g[0], g[0], g, g)
+	found := false
+	for _, w := range c.Warnings {
+		found = found || strings.Contains(w, "mixes resilience")
+	}
+	if !found {
+		t.Fatalf("%v", c.Warnings)
+	}
+}
+
+func TestChaosMeasuresAreComparedAndOrdinaryRunsHideThem(t *testing.T) {
+	var buf strings.Builder
+	if err := Compare(chaosResult("run_001", "absent", 0.5), chaosResult("run_002", "absent", 0.9)).Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "fault-window success rate (primary)") {
+		t.Fatalf("%s", buf.String())
+	}
+	buf.Reset()
+	plain := Result{SchemaVersion: SchemaVersion, RunID: "run_001", Valid: true}
+	if err := Compare(plain, plain).Write(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "primary") {
+		t.Fatalf("an ordinary comparison shows chaos rows: %s", buf.String())
+	}
+}
+
+func TestChaosSectionIsRenderedAndSurvivesARoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	r := chaosResult("run_001", "absent", 0.75)
+	r.Chaos.Gate = []ChaosCheck{{Name: "fault evidenced", OK: false, Detail: "no request touched\x1b[2J"}}
+	if err := Write(dir, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(dir)
+	if err != nil || got.Chaos == nil || got.Chaos.Measures.FaultSuccessRate != 0.75 || got.Metadata.Resilience != "absent" {
+		t.Fatalf("%+v %v", got.Chaos, err)
+	}
+	md := Markdown(got)
+	for _, want := range []string{"## Chaos: worker-freeze", "Resilience | absent", "fault evidenced: FAILED", "75.00%"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	if strings.Contains(md, "\x1b") {
+		t.Error("an escape sequence from the file reached the report")
+	}
+}

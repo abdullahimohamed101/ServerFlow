@@ -141,3 +141,25 @@ func TestCompareErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestChaosListAndBadFlags(t *testing.T) {
+	code, out, _ := exec(t, "chaos", "-list")
+	if code != 0 || !strings.Contains(out, "worker-freeze") || !strings.Contains(out, "Cannot show") {
+		t.Fatalf("%d %q", code, out)
+	}
+	if strings.Contains(out, "flapping") && !strings.Contains(out, "Cannot show") {
+		t.Fatal("flapping health is not a scenario")
+	}
+	if code, _, errOut := exec(t, "chaos"); code != 1 || !strings.Contains(errOut, "--scenario") {
+		t.Fatalf("%d %q", code, errOut)
+	}
+	if code, _, errOut := exec(t, "chaos", "--scenario", "nope"); code != 1 || !strings.Contains(errOut, "unknown scenario") {
+		t.Fatalf("%d %q", code, errOut)
+	}
+	if code, _, errOut := exec(t, "chaos", "--scenario", "all", "--resilience", "x"); code != 1 || !strings.Contains(errOut, "resilience") {
+		t.Fatalf("%d %q", code, errOut)
+	}
+	if code, out, _ := exec(t, "help"); code != 0 || !strings.Contains(out, "benchmark chaos") {
+		t.Fatalf("%d %q", code, out)
+	}
+}

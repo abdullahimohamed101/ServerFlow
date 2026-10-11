@@ -29,6 +29,7 @@ func ParseFlags(args []string, usage io.Writer) (Config, string, error) {
 	fs.Int64Var(&cfg.Seed, "seed", 0, "random seed for failure injection (default: random, logged at startup)")
 	fs.DurationVar(&cfg.StartupDelay, "startup-delay", cfg.StartupDelay, "stay not-ready for this long after starting")
 	fs.DurationVar(&cfg.DrainTimeout, "drain-timeout", cfg.DrainTimeout, "how long SIGTERM waits for in-flight requests")
+	fs.DurationVar(&cfg.DrainAnnounce, "drain-announce", cfg.DrainAnnounce, "on SIGTERM report draining but keep serving this long before refusing (0: refuse at once); set it above the heartbeat plus the gateway's registry refresh")
 	fs.StringVar(&cfg.OTLPEndpoint, "otlp-endpoint", cfg.OTLPEndpoint, "OTLP/HTTP base URL to export traces to, e.g. http://127.0.0.1:4318 (default: tracing off)")
 	fs.BoolVar(&cfg.TraceInsecureOK, "trace-insecure-ok", cfg.TraceInsecureOK, "allow plaintext http:// to a non-loopback --otlp-endpoint")
 	fs.StringVar(&logLevel, "log-level", "info", "log level: debug, info, warn, error")

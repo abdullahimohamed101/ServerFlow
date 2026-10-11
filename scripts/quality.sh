@@ -58,12 +58,15 @@ race() {
 }
 
 # show_failures prints what went wrong in a verbose go test log before its tail: the names of failed tests,
-# failed packages, panics and data races. CI keeps only the last lines of a long log, and by then the failing
-# test's name has usually scrolled away.
+# failed packages, panics and data races, each with the lines that follow it (go test -v prints a failed test's
+# t.Fatalf output right after its "--- FAIL" line, and a panic or race report is several lines long). CI keeps
+# only the last lines of a long log, and by then the failing test's name and message have usually scrolled away.
 show_failures() {
   local log="$1"
-  printf '\n--- failed tests, packages, panics and races in the full log ---\n' >&2
-  grep -E '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' "$log" >&2 || printf '(none matched; see the tail below)\n' >&2
+  printf '\n--- failed tests, packages, panics and races in the full log (with the lines after each) ---\n' >&2
+  local found
+  found="$(grep -E -A12 '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' "$log" | head -300 || true)"
+  printf '%s\n' "${found:-(none matched; see the tail below)}" >&2
   printf -- '--- last 80 lines ---\n' >&2
 }
 

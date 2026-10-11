@@ -6,11 +6,12 @@
 # never be exposed to a network. Nothing is persisted (the container is removed on stop).
 #
 # Redpanda is Kafka API compatible, not Apache Kafka (ADR-019). It is used because it starts in seconds. NOTE: its
-# registry host, docker.redpanda.com, is only a front for Docker Hub (the token realm is auth.docker.io and an
-# anonymous pull counts against Docker Hub's 100-per-hour limit), and no unauthenticated mirror exists on
-# public.ecr.aws, quay.io or ghcr.io (checked 2026-10-10, docs/development/ci.md). So `pull` retries with
-# backoff, and CI caches the image. The image's licence (BSL for the community edition) allows this use.
-# DEV_KAFKA_IMAGE overrides the image.
+# own registry host, docker.redpanda.com, is only a front for Docker Hub (the token realm is auth.docker.io and an
+# anonymous pull counts against Docker Hub's 100-per-hour limit, which shared CI runners exhaust), and public.ecr.aws,
+# quay.io and ghcr.io have no anonymous copy (checked 2026-10-10, docs/development/ci.md). mirror.gcr.io (Google's
+# pull-through cache) serves the SAME digest anonymously for amd64 and arm64 (checked 2026-10-11), so it is the default;
+# `pull` retries with backoff and then falls back to docker.redpanda.com, and CI caches the image. The image's
+# licence (BSL for the community edition) allows this use. DEV_KAFKA_IMAGE overrides the image.
 #
 # One named container per port (serverflow-test-kafka-<port>), so several worktrees can each run their own and
 # stop only their own. Set DEV_KAFKA_PORT to use another port.
@@ -23,7 +24,8 @@ set -euo pipefail
 
 port="${DEV_KAFKA_PORT:-59092}"
 name="${DEV_KAFKA_CONTAINER:-serverflow-test-kafka-$port}"
-image="${DEV_KAFKA_IMAGE:-docker.redpanda.com/redpandadata/redpanda:v25.1.1}"
+image="${DEV_KAFKA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.1.1}"
+fallback_image="${DEV_KAFKA_FALLBACK_IMAGE:-docker.redpanda.com/redpandadata/redpanda:v25.1.1}"
 user=serverflow-test
 password=serverflow-test-kafka-password
 topic=inference.lifecycle.v1
@@ -44,6 +46,11 @@ pull() {
       delay=$((delay * 3))
     fi
   done
+  # The mirror is a cache without an availability guarantee: fall back to the vendor host (same digest) once.
+  if [ -n "$fallback_image" ] && [ "$fallback_image" != "$image" ]; then
+    echo "dev-kafka: falling back to $fallback_image" >&2
+    if docker pull "$fallback_image" >/dev/null && docker tag "$fallback_image" "$image"; then return 0; fi
+  fi
   echo "dev-kafka: could not pull $image (rate limited? log in with docker login, or load a saved image)" >&2
   return 1
 }

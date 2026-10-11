@@ -21,26 +21,32 @@ jobs:
     name: race tests under CPU load
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:16  # ECR mirror: Docker Hub rate-limits shared runners
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # PostgreSQL 16 with password authentication, started here instead of as a `services:` container because the
+      # runner pulls a service image without retries and an anonymous pull from a shared runner is rate limited
+      # ("toomanyrequests: Rate exceeded"). The image is cached as a tarball and pulled with retries on a miss.
+      - name: Digest of the PostgreSQL image (cache key)
+        id: pgimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/postgres:16)" >> "$GITHUB_OUTPUT"
+      - name: Cache the PostgreSQL image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/images/postgres.tar
+          key: image-public.ecr.aws/docker/library/postgres:16-${{ steps.pgimg.outputs.digest }}
+      - name: Start PostgreSQL
+        run: |
+          scripts/ci-docker-pull.sh public.ecr.aws/docker/library/postgres:16 "$RUNNER_TEMP/images/postgres.tar"
+          docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres public.ecr.aws/docker/library/postgres:16
+          for i in $(seq 1 60); do
+            docker exec postgres pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "PostgreSQL did not start"; docker logs --tail 50 postgres; exit 1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
