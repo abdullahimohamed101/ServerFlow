@@ -1,6 +1,6 @@
 # Phase 16 — Dockerized Multi-Service Deployment
 
-Status: Proposed (2026-10-11). Decisions D1-D30 await approval; each states its default.
+Status: Completed (2026-10-11). Decisions D1-D30 and W1-W4 approved with their defaults; see Implementation Notes for deviations. ADR-021 (not 020: Phase 15 uses 020).
 Owner: coding agent
 Depends on: Phases 0-12 merged (this plan was written against master `4b9fd32`). Phases 13-15 are not prerequisites: the stack runs mock workers, and Phase 15's chaos runs reuse it (D18).
 Spec: `docs/architecture/serverflow-spec.md` §5 (shared services), §10 (worker agent), §18-21 (Redis, PostgreSQL, Kafka and consumers), §28-30 (observability), §48 (repository layout: `deploy/docker`, root `docker-compose.yml`), §50 (configuration), §53-55 (mock worker, simulation, CI "Docker build"), §58 Phase 16 ("control plane, mock workers, redis, kafka, postgres, prometheus, grafana, otel, one-command dev-up"), §63 (agent rules), §66-67 (demonstration script)
@@ -186,7 +186,7 @@ services:
 
 ## Affected Files / Components
 
-New: `deploy/docker/Dockerfile`, `deploy/compose/{nginx.conf,.env.example}`, `docker-compose.persist.yml`, `.dockerignore`, `scripts/dev-up.sh`, `scripts/dev-pull.sh`, `cmd/healthcheck/`, `tests/deploy/`, `observability/prometheus/prometheus.compose.yml`, `observability/prometheus/targets/compose.yml`, `docs/operations/docker-deployment.md`, `docs/decisions/ADR-020-containerized-deployment.md`, `docs/benchmarks/phase-16-docker-deployment.md` (measured cold start, sizes, memory, smoke timings; D8/AC 19-20).
+New: `deploy/docker/Dockerfile`, `deploy/compose/{nginx.conf,.env.example}`, `docker-compose.persist.yml`, `.dockerignore`, `scripts/dev-up.sh`, `scripts/dev-pull.sh`, `cmd/healthcheck/`, `tests/deploy/`, `observability/prometheus/prometheus.compose.yml`, `observability/prometheus/targets/compose.yml`, `docs/operations/docker-deployment.md`, `docs/decisions/ADR-021-containerized-deployment.md`, `docs/benchmarks/phase-16-docker-deployment.md` (measured cold start, sizes, memory, smoke timings; D8/AC 19-20).
 Replaced: root `docker-compose.yml`. Deleted: `observability/otel/otel-collector.yml`.
 Changed: `internal/config` (W1, W3: `controlplane.go`, `gateway.go`, `worker.go`, `tracing.go`, `load.go`, tests), `internal/telemetry/buildinfo.go` and `internal/tracing/ident.go` (W2), `Makefile` (D24; `dev-cluster` untouched), `.gitignore` (`.dev/`), `.github/workflows/{ci.yml,nightly.yml}`, `.github/dependabot.yml`, `scripts/quality.sh` (a `deploy` mode, the `observability` mode gains `--syntax-only` on the compose config), `docs/development/ci.md`, `docs/operations/{observability,tracing}.md`, `README.md`, `ARCHITECTURE.md`.
 Not changed: `observability/docker-compose.yml`, `observability/tracing/docker-compose.yml`, `observability/prometheus/prometheus.yml`, rules, dashboards, `scripts/dev-{postgres,redis,kafka}.sh`.
@@ -253,3 +253,52 @@ Not changed: `observability/docker-compose.yml`, `observability/tracing/docker-c
 10. Independent `verify-change` with the brief above, `review-change` with explicit attention to W1 and the secrets handling, fixes, a narrower second verification, `harden-change`, small commits, `prepare-pr`, and stop for approval. Plan moves to `docs/plans/completed/` with Implementation Notes.
 
 Steps 1 and 2 can proceed in parallel; 3 to 6 are sequential; 7 and 8 can start once 5 is stable.
+
+## Implementation Notes
+
+Built on branch `feature/phase-16-docker-deployment`, then merged with `origin/master` (Phases 10-12, Dependabot and the OpenTelemetry bump; one trivial conflict in `.github/dependabot.yml`). Evidence and numbers: `docs/benchmarks/phase-16-docker-deployment.md`; the security review of W1 is in ADR-021.
+
+### Deviations from the plan
+
+- **ADR-021**, not 020 (Phase 15 owns 020).
+- **Secrets in seven files, not one `secrets.env`**: `postgres.env`, `dsn.env`, `redis.env`, `kafka.env`, `controlplane.env`, `metrics.env`, `grafana.env`, so a service receives only what it needs. Redis reads its password from a tmpfs config file (not argv), the Redpanda bootstrap user comes from `RP_BOOTSTRAP_USER` built inside the container, so `redpanda-init` needs no admin API.
+- **Container Prometheus files live in `observability/prometheus/compose/`** (`prometheus.yml`, `targets.yml`), not `prometheus.compose.yml` and `targets/compose.yml`: the host-process stack mounts the whole directory and loads `targets/*.yml`, so a compose targets file there would have been scraped (and reported down) by it. `TestHostStackIgnoresContainerTargets` pins this.
+- **Three override files** instead of in-file conditionals: `docker-compose.scale.yml` (gateway stops publishing; `lb` publishes), `docker-compose.private-control-plane.yml` (empty `CONTROL_PLANE_PORT`), `docker-compose.persist.yml`. They use `!reset` / `!override` (Compose 2.24+).
+- **Extra commands/files**: `make dev-audit` (runtime hardening audit), an `admin` service in profile `tools`, `DEV_UP_WAIT_TIMEOUT` and `DEV_UP_NO_CACHE`, a `LABEL` on the build stage so `dev-reset` can remove the 2+ GB dangling build stages the classic builder leaves, removal of containers of profiles that are no longer active (the stale load balancer held the gateway port).
+- **Builds are serial** (`COMPOSE_PARALLEL_LIMIT=1`): five parallel Go compilations OOM-killed the compiler on the 4 GB VM.
+- **Redpanda needs tmpfs on `/etc/redpanda` and `~/.config`** and an RPC address on loopback; any service using an image with a `VOLUME` (including the one-shot `redpanda-init`) needs a tmpfs there or Docker creates an anonymous volume (found by the audit).
+- **`MOCK_n_SEED` defaults to n** (a flag cannot be empty). `mock-worker-n` failure mode `error` (500) is not retried by the gateway; the doc says so and shows `unavailable`.
+- **Smoke**: S9 uses a fresh throwaway tenant so earlier rows cannot satisfy it; S11 judges the registry's `eligible` field through the published control plane; S4 timestamps chunks with perl when present; the last line is exactly `smoke: N of N checks passed, 0 failed, 0 skipped` and a `duration:` line precedes it.
+- Trivy is pinned by digest (`public.ecr.aws/aquasecurity/trivy:0.69.3`); `shellcheck` in CI is the runner's, not a pinned binary; hadolint is the pinned v2.15.1 release with checksum.
+- No change was needed in `internal/config` beyond W1 and W3: W2 is `internal/version` (link-time `Version`, `Commit`).
+
+### Acceptance criteria and evidence
+
+| AC | Evidence |
+| --- | --- |
+| 1 | `make dev-up && make dev-smoke && make dev-down` from a fresh clone, see the final run recorded in the report; 13 of 13 with `GATEWAYS=3` |
+| 2 | `make dev-audit`; `TestComposeStructure`; no shell: `docker run ... sh` starts the gateway with `sh` as an argument |
+| 3 | audit (ports on 127.0.0.1, only five services publish); `TestComposeStructure` |
+| 4 | secrets hunt (benchmark note), smoke S12, `TestNoSecretsCommitted` |
+| 5 | `down` removes containers, networks and anonymous volumes (`dev-up.sh down` verifies); audit finds no anonymous mount |
+| 6 | 401 without and 200 with the token from a peer container; binaries refuse to start without the token |
+| 7 | postgres made unhealthy: `up` fails in 8 s naming it, gateway and consumer stay `Created`; `TestStartupOrdering`; Redpanda stopped: requests 200, S9 fails honestly |
+| 8 | `PROFILES=core,data` 7 of 13 passed, 6 skipped; `core` 5 passed, 8 skipped; all subsets pass `docker compose config` (`quality.sh deploy`) |
+| 9 | forced failure prints the service, the `ps` table and 20 log lines each, no secret |
+| 10-12 | `TestEnvVariablesAreHonoured`, `TestControlPlaneClientsOptIntoPlainHTTP`, `TestControlPlaneInsecureTransport*`, `TestDevUpCheckEnv` (about 40 hostile inputs) |
+| 11 | each of the five ports occupied in turn: abort before any container, variable named, recovery works; a second copy side by side was not run (see below) |
+| 13 | recreate only the changed worker; retries visible; kill/pause/agent-kill timings |
+| 14 | `GATEWAYS=3`: 13 of 13, quota admitted 3 of 12 across replicas |
+| 15 | `quality.sh observability` unchanged; Grafana log clean; 29 panels with data |
+| 16 | static: every image digest-pinned, none from Docker Hub; the daemon-blocked-Hub build was **not** run |
+| 17 | identical SHA-256 for all seven binaries; `serverflow_build_info` shows the build stamp |
+| 18 | hadolint v2.15.1 clean; `quality.sh deploy`; mutation checks below |
+| 19-20 | benchmark note; memory about 460 MiB; 60 s at concurrency 12 with no restart or OOM |
+| 21 | host Makefile targets unchanged (`TestMakefileTargets`); full gate in the report |
+| 22 | **not verifiable here** (no push): the two CI jobs have not run on GitHub |
+
+Mutation checks (each killed by a named test unless noted): published port without loopback, `read_only: false`, `:latest`, Docker Hub image, unpinned digest, secret in `environment`, missing/short-form `depends_on`, removed `required: false`, agent id differing from the target label, a data path without tmpfs, `no-new-privileges`/`cap_drop` removed, docker socket or anonymous mount, non-internal backend, token dropped from the Prometheus job, `FROM` pin removed, secret `ENV`, `COPY .env`, root user, a missing target, W1 on by default or ignored by either guard, W1 env unparsed, the agent opt-in dropped, a typo in a `SERVERFLOW_` name, healthcheck accepting any host or redirects. Runtime: wrong healthcheck URL (`up` fails), a baked secret (found by the layer scan). **Not detectable**: removing `proxy_buffering off` from nginx, even with `proxy_ignore_headers X-Accel-Buffering`: nginx still delivered the small SSE stream incrementally, so that directive is defence in depth with no test.
+
+### Not verified, risks
+
+linux/amd64, Docker Desktop, rootful Linux Docker, Podman, Compose below 5.6.0, a cold pull from a GitHub runner, Dependabot on non-Hub registries, the CI jobs (AC 22), a Docker-Hub-blocked build (AC 16), two stacks side by side from separate checkouts. The VM disk filled once during a `--no-cache` experiment (six uncached build stages of 2.4 GB each); cleaned with the label-scoped prune. Worker agent liveness (Phase 17), no TLS, and the plain-http control-plane token (W1) are the stated security limits.
