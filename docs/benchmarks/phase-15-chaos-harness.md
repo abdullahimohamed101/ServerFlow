@@ -153,7 +153,7 @@ Taken with the binary built from commit `92c5488` (clean tree), `darwin/arm64, 1
 | drain-roll | 028,029,030 (3) | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 168 / 168 / 168 |
 | overload | 031,032,033 (3) | 67.30 / 67.98 / 68.34 | 0.672 / 0.679 / 0.683 | not reached | 1.0 / 1.0 / 1.0 | 163 / 164 / 164 ; 168 / 168 / 169 |
 
-**Conditions, honestly.** The Mac was running on and off AC power (charging, 22% at the start) with `caffeinate`, and was shared with other
+**Conditions, honestly.** The Mac was on AC power (charging, 22% when checked) with `caffeinate` on, and was shared with other
 agent sessions: the one-minute load average at the start of the runs was between 2.7 and 6.2 (15 CPUs), recorded in every run's notes. No full test suite
 held `/tmp/sf-fullsuite.lock` before any scenario (the script waited on it; it never had to). Load shows in tail latency, not in the validity gate;
 the p95/p99 columns are nevertheless within 1 ms across repeats, so it did not move these groups visibly. The harness was restarted twice before
