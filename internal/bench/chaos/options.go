@@ -55,8 +55,10 @@ type Options struct {
 	// AllowDirty waives the clean-tree check, for development runs.
 	AllowDirty bool
 
-	OutDir  string
-	Verbose bool
+	OutDir string
+	// SaveRequests also writes requests.jsonl with every request (megabytes per run).
+	SaveRequests bool
+	Verbose      bool
 }
 
 // DefaultMinRequests is the fewest requests a window must hold at a time scale.
@@ -133,6 +135,7 @@ func ParseFlags(args []string) (o Options, list bool, err error) {
 	fs.IntVar(&o.MinRequests, "min-requests", 0, "fewest requests a window may hold (default: 100 times --scale, at least 20)")
 	fs.BoolVar(&o.AllowDirty, "allow-dirty", false, "waive the clean-working-tree check of the validity gate (development runs)")
 	fs.StringVar(&o.OutDir, "out", "benchmark/runs", "directory for run_NNN result directories")
+	fs.BoolVar(&o.SaveRequests, "save-requests", false, "also write requests.jsonl with every request (large)")
 	fs.BoolVar(&o.Verbose, "verbose", false, "show the embedded cluster's logs on stderr")
 	if err := fs.Parse(args); err != nil {
 		return o, false, fmt.Errorf("%w\n\n%s", err, usage.String())

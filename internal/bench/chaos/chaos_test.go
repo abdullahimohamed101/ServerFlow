@@ -3,6 +3,7 @@ package chaos
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -839,10 +840,22 @@ func TestRunWritesResultsAndReportsInvalidRuns(t *testing.T) {
 			t.Fatalf("%s: %v %+v", id, err, r.Chaos)
 		}
 	}
+	if _, err := os.Stat(o.OutDir + "/run_001/" + report.RequestsFile); err == nil {
+		t.Error("requests.jsonl was written without --save-requests")
+	}
 	for _, want := range []string{"fault-window success rate", "(primary)", "Only 2 valid run(s)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
+	}
+
+	o3 := testOptions(t, "worker-freeze")
+	o3.SaveRequests = true
+	if _, err := Run(context.Background(), o3, d, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(o3.OutDir + "/run_001/" + report.RequestsFile); err != nil {
+		t.Errorf("--save-requests wrote no requests.jsonl: %v", err)
 	}
 
 	// The same run with a dirty tree is recorded as invalid and Run says so.

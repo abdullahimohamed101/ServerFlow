@@ -362,13 +362,17 @@ func Run(ctx context.Context, o Options, d Deps, out io.Writer) ([]report.Result
 			if gid == "" {
 				gid = fmt.Sprintf("%s-%d", id, time.Now().Unix())
 			}
-			say(out, "%s: %s, repeat %d of %d (load average %s)\n", id, sc.Name, i, o.Repeat, loadAverage())
+			loadStart := loadAverage()
+			say(out, "%s: %s, repeat %d of %d (load average %s)\n", id, sc.Name, i, o.Repeat, loadStart)
 			res, recs, err := RunOnce(ctx, o, sc, d, id, report.Repeat{Index: i, Of: o.Repeat, Group: gid})
 			if err != nil {
 				_ = os.Remove(dir)
 				return all, err
 			}
-			res.Notes = append(res.Notes, "Load average at the end of the run: "+loadAverage()+".")
+			res.Notes = append(res.Notes, "Load average (1, 5 and 15 minutes) at the start of the run: "+loadStart+"; at the end: "+loadAverage()+".")
+			if !o.SaveRequests {
+				recs = nil
+			}
 			if err := report.Write(dir, res, recs); err != nil {
 				return all, err
 			}
