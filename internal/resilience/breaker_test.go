@@ -152,8 +152,8 @@ func TestRatioRule(t *testing.T) {
 		{"just below the ratio", []step{{OK, 6}, {Fault, 2}, {RatioFault, 2}}, false},                    // 4/10
 		{"at the ratio exactly", []step{{OK, 5}, {Fault, 2}, {RatioFault, 3}}, true},                     // 5/10
 		{"unlisted 5xx alone trips the ratio", []step{{RatioFault, 10}}, true},
-		{"neutral outcomes do not count towards volume", []step{{Fault, 5}, {Neutral, 5}}, false}, // 5 counted, not 10
-		{"neutral outcomes are not faults", []step{{OK, 5}, {Fault, 4}, {Neutral, 1}}, false},    // 9 counted
+		{"neutral outcomes do not count towards volume", []step{{Fault, 5}, {Neutral, 5}}, false},                       // 5 counted, not 10
+		{"neutral outcomes are not faults", []step{{OK, 5}, {Fault, 4}, {Neutral, 1}}, false},                           // 9 counted
 		{"neutral outcomes do not dilute the ratio", []step{{Fault, 5}, {Neutral, 50}, {OK, 4}, {RatioFault, 1}}, true}, // 6/10
 		{"an ok can complete the volume", []step{{Fault, 4}, {RatioFault, 1}, {OK, 4}, {OK, 1}}, true},
 	} {
