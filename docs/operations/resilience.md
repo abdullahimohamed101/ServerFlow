@@ -76,7 +76,7 @@ resilience:
     min_remaining: 1s        # 0-1m; no retry starts with less than this left
   queue:
     max_model_depth: 128     # 0-100000; 0 = no queue
-    max_wait: 3s             # 100ms-1m, and <= the effective first-byte deadline
+    max_wait: 0              # 0 = default, min(3s, effective first-byte deadline); else 100ms-1m and <= that deadline
     max_tenant_share: 0.5    # 0-1; 0 = off; authenticated tenants only
   drain:
     readiness_grace: 5s      # unset = default, min(5s, gateway.shutdown_timeout / 2); explicit 0-5m (0 = none), shorter than shutdown_timeout
@@ -93,7 +93,7 @@ Validation:
 - `mode` is always checked. The **ranges and cross-checks** of everything else are checked only when the feature is effective (`on` and registry), so an
   out-of-range value does not stop a gateway that does not use it. A value of the wrong **type** (`cool_down: banana`, `consecutive_failures: abc`) is a
   YAML parse error and stops the gateway whether or not the feature is effective.
-- Two defaults follow the gateway: an unset `probe_header_timeout` is `min(10s, upstream_header_timeout)` and an unset `readiness_grace` is
+- Three defaults follow the gateway: an unset `probe_header_timeout` is `min(10s, upstream_header_timeout)`, an unset `queue.max_wait` is `min(3s, first-byte deadline)` and an unset `readiness_grace` is
   `min(5s, shutdown_timeout / 2)`, so configurations that are valid today stay valid. Only explicit values are cross-validated.
 - Cross-checks: `queue.max_wait` must not exceed the effective first-byte deadline; an explicit `first_byte_deadline` below
   `gateway.upstream_header_timeout` is refused (it would cut requests the gateway serves today); `probe_header_timeout` must not exceed the

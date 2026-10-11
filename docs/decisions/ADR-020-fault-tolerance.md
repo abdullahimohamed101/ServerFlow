@@ -108,8 +108,13 @@ returns a `Reservation`; `Refund` takes it back from the bucket it was taken in 
   the model busy must enqueue. `Handoff(model, value)` removes the head waiter and gives it `value` in one step under the queue lock; the caller holds its own
   lock around it (the router's), so the lock order is caller then queue and the queue never calls out.
 - A refresh wakes waiters with `Wake(model, n)`: they receive `Reroute`, stay in place, route through the normal path, and call `Done` (served) or `Park`
-  (still full). If a slot was released while the head was routing, `Handoff` declines (the head will take it) and remembers; `Park` then reports the missed
-  hand-off so the waiter routes once more. When the routing waiter ends with `Done` or `Leave` after such a miss, the next waiter that is not already routing is told to route, so a freed slot is not left unused while waiters exist. Not guaranteed: the order in which concurrently woken waiters win slots.
+  (still full). A slot released while the head is routing cannot be handed over (`Handoff` declines and the caller frees it normally); it becomes one unit of
+  **credit** on the model's queue. Credit is spent at once on the first waiter, in queue order, that is not routing (it receives `Reroute`); if every waiter is
+  routing it waits, and is spent when a routing waiter stops: `Park` returns true (route again), `Done` and `Leave` pass it on, a new waiter takes it at
+  `Enqueue`, and a waiter that leaves without having used its wake-up (timeout, cancel) gives that wake-up back as credit. Invariant: credit is outstanding only
+  while every waiter is routing, so a freed slot is never left unused while a waiter that could take it is idle. A unit of credit can be spurious (the routing
+  waiter took the slot itself); the cost is one failed routing attempt, and every unit is spent once, so nothing loops or ping-pongs. Hand-offs stay strictly FIFO;
+  the order in which concurrently woken waiters win slots is not guaranteed. `Flush` ends all waiters and settles nothing.
 - `Leave` removes a waiter at once and, if a hand-off had already been delivered, returns it so the slot is never dropped; `Wait` applies the same rule when the
   timer or the request context fires. `Flush` hands every waiter `Flushed` (gateway drain); `Close` makes `Enqueue` fail with `ErrDraining`.
 - Refusals: depth (`ErrQueueFull`), tenant share (`ErrTenantShare`), no queue for the model (`ErrNoQueue`: depth 0, or more distinct queued models than
@@ -119,7 +124,7 @@ returns a `Reservation`; `Refund` takes it back from the bucket it was taken in 
 - `Admission` is an atomic counter with idempotent `Slot.Release`; `admission.max_global_requests` is its cap (0 would mean unlimited in the library, config
   validation keeps the key above 0).
 
-**Configuration** (`internal/config/resilience.go`). Defaults, bounds and cross-checks are those of D1, except that two defaults follow the gateway's own settings so a configuration that is valid today stays valid when the default flips to `on`: an unset `probe_header_timeout` is min(10s, `upstream_header_timeout`) and an unset `readiness_grace` is min(5s, `shutdown_timeout`/2); only explicit values are cross-validated (`EffectiveProbeHeaderTimeout`, `EffectiveReadinessGrace`). A suppressed consecutive trip happens on the next counted fault of either kind. `Reservation` is a pointer and `Refund` idempotent. The environment overlay covers every key
+**Configuration** (`internal/config/resilience.go`). Defaults, bounds and cross-checks are those of D1, except that two defaults follow the gateway's own settings so a configuration that is valid today stays valid when the default flips to `on`: an unset `probe_header_timeout` is min(10s, `upstream_header_timeout`) and an unset `readiness_grace` is min(5s, `shutdown_timeout`/2); only explicit values are cross-validated (`EffectiveProbeHeaderTimeout`, `EffectiveReadinessGrace`). A suppressed consecutive trip happens on the next counted fault of either kind. An unset `queue.max_wait` is min(3s, the effective first-byte deadline) (`EffectiveMaxWait`), so a configuration with small upstream timeouts stays valid. Tickets carry the breaker's epoch (the number of times it has opened): a verdict or late fault from a request that started before the breaker last opened is ignored in every state. `Reservation` is a pointer and `Refund` idempotent. The environment overlay covers every key
 (`SERVERFLOW_RESILIENCE_*`), ignores values that do not parse or are not finite, and keeps a mode other than `on`/`off` so that it fails validation
 (deviation: a silently ignored typo in the kill switch would leave the default, which becomes `on`, in force).
 
