@@ -64,7 +64,7 @@ func TestBudgetDeniedReserveConsumesNothing(t *testing.T) {
 
 func TestBudgetRefundGivesTheRetryBack(t *testing.T) {
 	b, _ := newTestBudget(std())
-	res := make([]Reservation, 0, 10)
+	res := make([]*Reservation, 0, 10)
 	for i := 0; i < 10; i++ {
 		r, ok := b.Reserve("m")
 		if !ok {
@@ -82,7 +82,7 @@ func TestBudgetRefundGivesTheRetryBack(t *testing.T) {
 	if _, ok := b.Reserve("m"); ok {
 		t.Fatal("exactly one place was freed")
 	}
-	b.Refund(Reservation{}) // zero value is harmless
+	b.Refund(nil) // a denied Reserve returns nil: harmless
 }
 
 func TestBudgetRefundAfterTheWindowMovedOnChangesNothing(t *testing.T) {
@@ -239,4 +239,20 @@ func TestBudgetBoundsAmplification(t *testing.T) {
 		t.Fatalf("%d attempts for %d requests exceeds 1 + budget_ratio plus the minimum (%v)", attempts, requests, max)
 	}
 	t.Logf("attempts per request: %.3f", float64(attempts)/requests)
+}
+
+// A second Refund of the same reservation must not grant a second retry.
+func TestBudgetRefundIsIdempotent(t *testing.T) {
+	b, _ := newTestBudget(std())
+	var res []*Reservation
+	for i := 0; i < 10; i++ {
+		r, _ := b.Reserve("m")
+		res = append(res, r)
+	}
+	b.Refund(res[0])
+	b.Refund(res[0])
+	b.Refund(res[0])
+	if got := reserveUpTo(b, "m", 10); got != 1 {
+		t.Fatalf("one refunded retry freed %d places", got)
+	}
 }

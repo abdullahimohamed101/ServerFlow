@@ -215,9 +215,12 @@ func (q *Queue) Enqueue(model, tenant string) (*Waiter, error) {
 	return w, nil
 }
 
-// leaveLocked removes a waiter from its queue's bookkeeping.
-func (q *Queue) leaveLocked(w *Waiter) {
+// leaveLocked removes a waiter from its queue's bookkeeping. With cascade, a slot that was released while the
+// waiter was routing (a missed hand-off) is not forgotten: the next waiter that is not already routing is told to
+// route, so a freed slot does not sit unused while waiters exist.
+func (q *Queue) leaveLocked(w *Waiter, cascade bool) {
 	mq := q.models[w.model]
+	missed := w.missed
 	w.left = true
 	w.woken, w.missed = false, false
 	if mq == nil || w.elem == nil {
@@ -232,6 +235,17 @@ func (q *Queue) leaveLocked(w *Waiter) {
 	}
 	if mq.waiters.Len() == 0 {
 		delete(q.models, w.model)
+		return
+	}
+	if cascade && missed {
+		for e := mq.waiters.Front(); e != nil; e = e.Next() {
+			if next := e.Value.(*Waiter); !next.woken {
+				next.woken = true
+				next.missed = false
+				next.send(Grant{Kind: Reroute})
+				break
+			}
+		}
 	}
 }
 
@@ -262,7 +276,7 @@ func (q *Queue) Handoff(model string, value any) bool {
 		head.missed = true
 		return false
 	}
-	q.leaveLocked(head)
+	q.leaveLocked(head, false)
 	head.send(Grant{Kind: Handoff, Value: value})
 	return true
 }
@@ -329,7 +343,7 @@ func (q *Queue) Leave(w *Waiter) (Grant, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if !w.left {
-		q.leaveLocked(w)
+		q.leaveLocked(w, true)
 		select { // a pending Reroute is moot
 		case g := <-w.ch:
 			if g.Kind != Reroute {
@@ -393,7 +407,7 @@ func (q *Queue) Flush(model string) int {
 		}
 		for mq.waiters.Len() > 0 {
 			w := mq.waiters.Front().Value.(*Waiter)
-			q.leaveLocked(w)
+			q.leaveLocked(w, false)
 			w.send(Grant{Kind: Flushed})
 			n++
 		}

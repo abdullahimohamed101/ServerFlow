@@ -98,16 +98,67 @@ func TestLostWorkersOpenBreakerDoesNotBlockEjectingARealFailure(t *testing.T) {
 	r.want("w1", Open)
 }
 
-// The same arithmetic in reverse: a worker that comes back from UNHEALTHY with an open breaker counts again.
+// A worker that tripped while it was ineligible takes no room. When it turns eligible again the cap is enforced:
+// the most recently ejected breaker is closed, so open + half-open <= cap again (the verifier's sequence: 2 workers,
+// cap 1; A opens; B is ineligible, takes an in-flight fault and opens; B turns eligible again).
+func TestReEligibleWorkerDoesNotExceedTheCap(t *testing.T) {
+	r := newRig(t, capParams(), "A", "B", "C") // cap = floor(0.5 x 3) = 1
+	r.sendN("A", Fault, 5)
+	r.want("A", Open)
+	setEligible(r, map[string]bool{"A": true, "C": true}) // B is unhealthy: cap = floor(0.5 x 2) = 1, A still fits
+	r.want("A", Open)
+	r.clk.Advance(time.Second)
+	r.sendN("B", Fault, 5) // B's in-flight failures finish; an ineligible worker takes no room
+	r.want("B", Open)
+	setEligible(r, map[string]bool{"A": true, "B": true, "C": true})
+	_, open, half := r.bs.Counts()
+	if open+half != 1 {
+		t.Fatalf("open %d half-open %d after B became eligible again, want 1 (cap)", open, half)
+	}
+	r.want("A", Open)   // the older ejection is kept
+	r.want("B", Closed) // the most recent one is relaxed
+	if !r.bs.Admissible(key("B")) {
+		t.Fatal("the model must keep an admissible worker")
+	}
+	last := r.changes[len(r.changes)-1]
+	if last.Key.ID != "B" || last.To != Closed || last.Reason != ReasonCapRelaxed {
+		t.Fatalf("change = %+v", last)
+	}
+}
+
+// The cap also shrinks when healthy workers turn unhealthy: with 4 eligible (cap 2) and 2 open, losing both healthy
+// ones leaves 2 eligible (cap 1), so one open breaker is relaxed.
+func TestCapShrinksWhenOtherWorkersLeave(t *testing.T) {
+	r := newRig(t, capParams(), ids(4)...)
+	r.sendN("w1", Fault, 5)
+	r.clk.Advance(time.Second)
+	r.sendN("w2", Fault, 5)
+	_, open, _ := r.bs.Counts()
+	if open != 2 {
+		t.Fatalf("open = %d", open)
+	}
+	setEligible(r, map[string]bool{"w1": true, "w2": true})
+	_, open, half := r.bs.Counts()
+	if open+half != 1 {
+		t.Fatalf("open+half-open = %d, want 1 of 2 eligible", open+half)
+	}
+	r.want("w1", Open)
+	r.want("w2", Closed)
+}
+
+// An open breaker of a worker that is eligible again counts at once: no new trip until there is room.
 func TestOpenBreakerCountsAgainWhenTheWorkerIsEligibleAgain(t *testing.T) {
 	r := newRig(t, capParams(), ids(3)...)
 	r.sendN("w3", Fault, 5)
 	setEligible(r, map[string]bool{"w1": true, "w2": true})
+	r.clk.Advance(time.Second)
 	r.sendN("w1", Fault, 5)
 	r.want("w1", Open)
 	setEligible(r, map[string]bool{"w1": true, "w2": true, "w3": true})
+	r.want("w3", Open) // the older ejection stays; w1 was relaxed to respect the cap of 1
+	r.want("w1", Closed)
 	r.sendN("w2", Fault, 5)
-	r.want("w2", Closed) // 2 open of 3 eligible would exceed the cap of 1
+	r.want("w2", Closed) // suppressed: w3 holds the only place
 }
 
 func TestHalfOpenCountsAgainstTheCap(t *testing.T) {

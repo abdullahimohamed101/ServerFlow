@@ -155,6 +155,7 @@ func (bs *Breakers) Sync(members []Member) {
 			delete(bs.byID, id)
 		}
 	}
+	bs.enforceCap()
 }
 
 // Prune drops every breaker whose worker is not in keep, without touching the others.
@@ -171,6 +172,37 @@ func (bs *Breakers) Prune(keep []Key) {
 		}
 	}
 	bs.recountEligible()
+	bs.enforceCap()
+}
+
+// enforceCap closes breakers until open + half-open among eligible workers is within the cap again. The cap can
+// shrink or the numerator can grow without any new trip: a worker that tripped while it was ineligible turns
+// eligible again, or healthy workers turn unhealthy. Leaving it would eject more than max_open_fraction and could
+// leave a model with no admissible worker for a whole cool-down. The most recently ejected breakers (ties: the
+// larger worker ID) are closed first, so the longest-standing evidence is kept; a closed breaker starts with a
+// fresh window and keeps its cool-down level.
+func (bs *Breakers) enforceCap() {
+	limit := MaxOpen(bs.p.MaxOpenFraction, bs.eligible)
+	now := bs.now()
+	for {
+		var victim *breaker
+		open := 0
+		for _, b := range bs.byID {
+			if !b.eligible || b.state == Closed {
+				continue
+			}
+			open++
+			if victim == nil || b.ejectedAt.After(victim.ejectedAt) || (b.ejectedAt.Equal(victim.ejectedAt) && b.key.ID > victim.key.ID) {
+				victim = b
+			}
+		}
+		if open <= limit || victim == nil {
+			return
+		}
+		from := victim.state
+		victim.close(now)
+		bs.emit(Change{Key: victim.key, From: from, To: Closed, Reason: ReasonCapRelaxed})
+	}
 }
 
 func (bs *Breakers) recountEligible() {
@@ -256,12 +288,35 @@ func (bs *Breakers) Record(t Ticket, v Verdict) {
 	bs.recordLocked(t, v)
 }
 
-// RecordLate records a verdict for which no ticket exists any more: a stream that aborted after its first byte.
-// Only a closed breaker counts it.
-func (bs *Breakers) RecordLate(k Key, v Verdict) {
+// RecordLate records a fault that is only known after the attempt's verdict was taken: a stream that aborted after
+// its first byte. Pass the attempt's own ticket (the one Record already consumed). While the breaker is closed the
+// fault counts like any other. If the ticket was a probe and its half-open period is still current, the probe did
+// not really succeed: the breaker reopens with a doubled cool-down (so with probe_successes > 1 an aborted stream
+// cannot count as a success). A fault from a request that started before the breaker opened, or from an earlier
+// open period, is ignored: the breaker already acted on the evidence.
+func (bs *Breakers) RecordLate(t Ticket, v Verdict) {
+	if !t.valid || (v != Fault && v != RatioFault) {
+		return
+	}
 	bs.mu.Lock()
 	defer bs.unlock()
-	bs.recordLocked(Ticket{key: k, valid: true}, v)
+	b := bs.lookup(t.key)
+	if b == nil {
+		return
+	}
+	now := bs.now()
+	bs.advanceLocked(b, now)
+	if t.probe {
+		if b.epoch != t.epoch {
+			return
+		}
+		if b.state == HalfOpen {
+			b.open(now, true, &bs.p, bs.rnd)
+			bs.emit(Change{Key: b.key, From: HalfOpen, To: Open, Reason: ReasonProbeFailed, CoolDown: b.coolDown})
+			return
+		}
+	}
+	bs.countClosed(b, now, v)
 }
 
 func (bs *Breakers) recordLocked(t Ticket, v Verdict) {
@@ -292,6 +347,11 @@ func (bs *Breakers) recordLocked(t Ticket, v Verdict) {
 		}
 		return
 	}
+	bs.countClosed(b, now, v)
+}
+
+// countClosed counts an outcome of a closed breaker and trips it if a rule says so and the ejection cap has room.
+func (bs *Breakers) countClosed(b *breaker, now time.Time, v Verdict) {
 	if b.state != Closed || v == Neutral {
 		return
 	}

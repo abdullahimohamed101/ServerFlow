@@ -26,7 +26,7 @@ func TestResilienceDefaults(t *testing.T) {
 	want.Breaker = ResilienceBreakerConfig{
 		ConsecutiveFailures: 5, FailureRatio: 0.5, MinVolume: 10, Window: 10 * time.Second,
 		CoolDown: 10 * time.Second, MaxCoolDown: 2 * time.Minute, ProbeConcurrency: 1, ProbeSuccesses: 1,
-		ProbeHeaderTimeout: 10 * time.Second, MaxOpenFraction: 0.5,
+		MaxOpenFraction: 0.5,
 	}
 	if r.Breaker != want.Breaker {
 		t.Errorf("breaker defaults = %+v", r.Breaker)
@@ -37,8 +37,14 @@ func TestResilienceDefaults(t *testing.T) {
 	if r.Queue != (ResilienceQueueConfig{MaxModelDepth: 128, MaxWait: 3 * time.Second, MaxTenantShare: 0.5}) {
 		t.Errorf("queue defaults = %+v", r.Queue)
 	}
-	if r.Drain.ReadinessGrace != 5*time.Second {
-		t.Errorf("drain defaults = %+v", r.Drain)
+	if r.Drain.ReadinessGrace != nil || r.Breaker.ProbeHeaderTimeout != 0 {
+		t.Errorf("probe_header_timeout and readiness_grace default to unset (derived from the gateway): %+v %+v", r.Breaker, r.Drain)
+	}
+	if got := r.Breaker.EffectiveProbeHeaderTimeout(60 * time.Second); got != 10*time.Second {
+		t.Errorf("effective probe header timeout = %v", got)
+	}
+	if got := r.Drain.EffectiveReadinessGrace(30 * time.Second); got != 5*time.Second {
+		t.Errorf("effective readiness grace = %v", got)
 	}
 	c := Default()
 	if err := c.Validate(); err != nil {
@@ -105,7 +111,9 @@ var resilienceEnvCases = []resilienceEnvCase{
 	{"QUEUE_MAX_MODEL_DEPTH", "64", func(r ResilienceConfig) bool { return r.Queue.MaxModelDepth == 64 }},
 	{"QUEUE_MAX_WAIT", "1500ms", func(r ResilienceConfig) bool { return r.Queue.MaxWait == 1500*time.Millisecond }},
 	{"QUEUE_MAX_TENANT_SHARE", "0.3", func(r ResilienceConfig) bool { return r.Queue.MaxTenantShare == 0.3 }},
-	{"DRAIN_READINESS_GRACE", "2s", func(r ResilienceConfig) bool { return r.Drain.ReadinessGrace == 2*time.Second }},
+	{"DRAIN_READINESS_GRACE", "2s", func(r ResilienceConfig) bool {
+		return r.Drain.ReadinessGrace != nil && *r.Drain.ReadinessGrace == 2*time.Second
+	}},
 }
 
 func TestResilienceEnvOverlayEveryKey(t *testing.T) {
@@ -222,7 +230,7 @@ resilience:
 	if r.Mode != ResilienceOn || r.Breaker.ConsecutiveFailures != 3 || r.Breaker.CoolDown != 500*time.Millisecond ||
 		r.Breaker.MaxCoolDown != 5*time.Second || r.Breaker.FailureRatio != 0.6 || r.Retry.BudgetRatio != 0.3 ||
 		r.Retry.FirstByteDeadline != 3*time.Minute || r.Queue.MaxModelDepth != 10 || r.Queue.MaxWait != 2*time.Second ||
-		r.Drain.ReadinessGrace != time.Second {
+		r.Drain.ReadinessGrace == nil || *r.Drain.ReadinessGrace != time.Second {
 		t.Errorf("yaml not applied: %+v", r)
 	}
 	if r.Breaker.MinVolume != 10 { // untouched keys keep their defaults
@@ -322,13 +330,13 @@ func TestResilienceValidation(t *testing.T) {
 		{"tenant share 0 = off", func(c *Config) { c.Resilience.Queue.MaxTenantShare = 0 }, ""},
 		{"tenant share 1.1", func(c *Config) { c.Resilience.Queue.MaxTenantShare = 1.1 }, "max_tenant_share"},
 		{"tenant share NaN", func(c *Config) { c.Resilience.Queue.MaxTenantShare = nan() }, "max_tenant_share"},
-		{"grace negative", func(c *Config) { c.Resilience.Drain.ReadinessGrace = -1 }, "readiness_grace"},
-		{"grace 0", func(c *Config) { c.Resilience.Drain.ReadinessGrace = 0 }, ""},
-		{"grace equals shutdown timeout", func(c *Config) { c.Resilience.Drain.ReadinessGrace = c.Gateway.ShutdownTimeout }, "shutdown_timeout"},
-		{"grace just below shutdown timeout", func(c *Config) { c.Resilience.Drain.ReadinessGrace = c.Gateway.ShutdownTimeout - 1 }, ""},
+		{"grace negative", func(c *Config) { c.Resilience.Drain.ReadinessGrace = dur(-1) }, "readiness_grace"},
+		{"grace 0", func(c *Config) { c.Resilience.Drain.ReadinessGrace = dur(0) }, ""},
+		{"grace equals shutdown timeout", func(c *Config) { c.Resilience.Drain.ReadinessGrace = dur(c.Gateway.ShutdownTimeout) }, "shutdown_timeout"},
+		{"grace just below shutdown timeout", func(c *Config) { c.Resilience.Drain.ReadinessGrace = dur(c.Gateway.ShutdownTimeout - 1) }, ""},
 		{"grace over 5m", func(c *Config) {
 			c.Gateway.ShutdownTimeout = time.Hour
-			c.Resilience.Drain.ReadinessGrace = 5*time.Minute + 1
+			c.Resilience.Drain.ReadinessGrace = dur(5*time.Minute + 1)
 		}, "readiness_grace"},
 		{"mode typo", func(c *Config) { c.Resilience.Mode = "enabled" }, "resilience.mode"},
 		{"mode empty", func(c *Config) { c.Resilience.Mode = "" }, "resilience.mode"},
@@ -350,6 +358,8 @@ func TestResilienceValidation(t *testing.T) {
 	}
 }
 
+func dur(d time.Duration) *time.Duration { return &d }
+
 func nan() float64 { var z float64; return z / z }
 
 // While the feature is not effective only the mode is checked: static workers and mode off ignore bad settings.
@@ -362,7 +372,7 @@ func TestResilienceSettingsIgnoredUnlessEffective(t *testing.T) {
 		r.Retry.BudgetRatio = 9
 		r.Retry.FirstByteDeadline = time.Nanosecond
 		r.Queue.MaxWait = time.Hour
-		r.Drain.ReadinessGrace = 24 * time.Hour
+		r.Drain.ReadinessGrace = dur(24 * time.Hour)
 	}
 	for _, tc := range []struct {
 		name         string
@@ -394,5 +404,80 @@ func TestResilienceModeOnWithStaticWorkersStarts(t *testing.T) {
 	}
 	if cfg.Resilience.Effective(cfg.Gateway.WorkerSource) {
 		t.Error("static workers must make the feature a no-op")
+	}
+}
+
+// Defaults that depend on the gateway's own timeouts are derived when unset and clamped to them, so a valid master
+// configuration with a short header or shutdown timeout stays valid when the feature defaults to on.
+func TestResilienceDerivedDefaultsFollowTheGateway(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		header       time.Duration
+		shutdown     time.Duration
+		wantProbe    time.Duration
+		wantGrace    time.Duration
+		explicitGood bool
+	}{
+		{"production defaults", 60 * time.Second, 30 * time.Second, 10 * time.Second, 5 * time.Second, true},
+		{"header 10s: probe equals the cap", 10 * time.Second, 30 * time.Second, 10 * time.Second, 5 * time.Second, true},
+		{"header 9s clamps the probe", 9 * time.Second, 30 * time.Second, 9 * time.Second, 5 * time.Second, true},
+		{"header 5s", 5 * time.Second, 30 * time.Second, 5 * time.Second, 5 * time.Second, true},
+		{"shutdown 10s: grace stays 5s", 60 * time.Second, 10 * time.Second, 10 * time.Second, 5 * time.Second, true},
+		{"shutdown 9s halves", 60 * time.Second, 9 * time.Second, 10 * time.Second, 4500 * time.Millisecond, true},
+		{"shutdown 5s", 60 * time.Second, 5 * time.Second, 10 * time.Second, 2500 * time.Millisecond, true},
+		{"shutdown 1s", 60 * time.Second, time.Second, 10 * time.Second, 500 * time.Millisecond, true},
+		{"both short", time.Second, 2 * time.Second, time.Second, time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := resilienceRegistryConfig()
+			c.Gateway.UpstreamHeaderTimeout = tc.header
+			c.Gateway.ShutdownTimeout = tc.shutdown
+			// the queue wait must fit the derived first-byte deadline of a short idle timeout
+			c.Gateway.UpstreamIdleTimeout = 10 * time.Second
+			if err := c.Validate(); err != nil {
+				t.Fatalf("a config that is valid without the feature must stay valid with it: %v", err)
+			}
+			if got := c.Resilience.Breaker.EffectiveProbeHeaderTimeout(c.Gateway.UpstreamHeaderTimeout); got != tc.wantProbe {
+				t.Errorf("probe header timeout = %v, want %v", got, tc.wantProbe)
+			}
+			if got := c.Resilience.Drain.EffectiveReadinessGrace(c.Gateway.ShutdownTimeout); got != tc.wantGrace {
+				t.Errorf("readiness grace = %v, want %v", got, tc.wantGrace)
+			}
+		})
+	}
+}
+
+// Only explicit values are cross-validated against the gateway.
+func TestResilienceExplicitValuesAreStillCheckedAgainstTheGateway(t *testing.T) {
+	c := resilienceRegistryConfig()
+	c.Gateway.UpstreamHeaderTimeout = 5 * time.Second
+	c.Resilience.Breaker.ProbeHeaderTimeout = 6 * time.Second
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "probe_header_timeout") {
+		t.Errorf("explicit probe header timeout above the gateway's: %v", err)
+	}
+	c.Resilience.Breaker.ProbeHeaderTimeout = 5 * time.Second
+	if err := c.Validate(); err != nil {
+		t.Errorf("explicit value equal to the gateway's: %v", err)
+	}
+	c = resilienceRegistryConfig()
+	c.Gateway.ShutdownTimeout = 4 * time.Second
+	c.Resilience.Drain.ReadinessGrace = dur(4 * time.Second)
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "readiness_grace") {
+		t.Errorf("explicit grace not shorter than shutdown: %v", err)
+	}
+	c.Resilience.Drain.ReadinessGrace = dur(0) // an explicit 0 means no grace and is valid
+	if err := c.Validate(); err != nil {
+		t.Errorf("explicit zero grace: %v", err)
+	}
+	if got := c.Resilience.Drain.EffectiveReadinessGrace(c.Gateway.ShutdownTimeout); got != 0 {
+		t.Errorf("explicit zero must not be replaced by the derived default: %v", got)
+	}
+}
+
+func TestResilienceDerivedDefaultsFromYAMLAndEnv(t *testing.T) {
+	t.Setenv("SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE", "0s")
+	cfg, err := Load("")
+	if err != nil || cfg.Resilience.Drain.ReadinessGrace == nil || *cfg.Resilience.Drain.ReadinessGrace != 0 {
+		t.Fatalf("env zero grace: %v %+v", err, cfg.Resilience.Drain)
 	}
 }

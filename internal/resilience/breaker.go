@@ -54,6 +54,9 @@ const (
 	ReasonProbeFailed  = "probe_failed"
 	ReasonProbesPassed = "probes_passed"
 	ReasonSuppressed   = "suppressed"
+	// ReasonCapRelaxed: the ejection cap shrank (a worker became ineligible or eligible again) and this breaker,
+	// one of the most recently ejected, was closed so that open + half-open <= the cap again.
+	ReasonCapRelaxed = "ejection_cap"
 )
 
 // BreakerParams are the breaker settings. See config.ResilienceBreakerConfig for the meaning of each.
@@ -111,6 +114,10 @@ type breaker struct {
 	level      int
 	everOpened bool
 	closedAt   time.Time
+
+	// ejectedAt is when the breaker last tripped from closed (a failed probe does not change it). When the
+	// ejection cap shrinks, the most recently ejected breakers are relaxed first.
+	ejectedAt time.Time
 
 	// Open.
 	openUntil time.Time
@@ -179,7 +186,9 @@ func (b *breaker) recordClosed(now time.Time, v Verdict, p *BreakerParams) (reas
 	default:
 		return "", 0
 	}
-	if v == Fault && b.streakLen == len(b.streak) {
+	// A suppressed trip is retried on the next counted fault of either kind: the streak (which an unlisted 5xx
+	// neither extends nor breaks) is still there. An OK has just reset it.
+	if v != OK && b.streakLen == len(b.streak) {
 		oldest := b.streak[b.streakPos] // the next slot to be overwritten holds the oldest of the last N
 		if now.Sub(oldest) <= p.Window {
 			return ReasonConsecutive, b.streakLen
@@ -227,6 +236,9 @@ func (b *breaker) open(now time.Time, fromProbe bool, p *BreakerParams, rnd Rand
 		b.level = 0
 	}
 	b.everOpened = true
+	if !fromProbe {
+		b.ejectedAt = now
+	}
 	d := time.Duration(float64(p.baseCoolDown(b.level)) * (1 + jitterSpan*(2*rnd()-1)))
 	d = min(max(d, 1), p.MaxCoolDown)
 	b.state = Open

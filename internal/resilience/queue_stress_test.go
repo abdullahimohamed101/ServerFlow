@@ -330,3 +330,62 @@ func TestQueueArrivalOrderIsServiceOrder(t *testing.T) {
 		}
 	}
 }
+
+// With no periodic refresh, only occasional single wake-ups and the releases themselves move waiters. No request may
+// be stranded while a slot is free: every one is served long before its (generous) wait ends.
+func TestQueueStressSparseWakesNeverStrandWaiters(t *testing.T) {
+	const capacity = 3
+	q := NewQueue(QueueParams{MaxModelDepth: 1000, MaxWait: time.Minute}, nil)
+	s := newSimRouter(capacity, q)
+	stop := make(chan struct{})
+	var rw sync.WaitGroup
+	rw.Add(1)
+	go func() {
+		defer rw.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s.mu.Lock()
+			q.Wake("m", 1) // fewer wakes than free slots, at arbitrary moments
+			s.mu.Unlock()
+			for j := 0; j < 50+i%97; j++ {
+				runtime.Gosched()
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	const clients = 300
+	for i := 0; i < clients; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if i%9 == 4 {
+				go func() { runtime.Gosched(); cancel() }()
+			}
+			s.request(ctx, "m", "", 20*time.Second, true)
+		}(i)
+	}
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("a waiter was stranded: depth %d free %d served %d gone %d", q.Depth("m"), s.free, s.served.Load(), s.gone.Load())
+	}
+	close(stop)
+	rw.Wait()
+	if s.timedOut.Load() != 0 {
+		t.Fatalf("%d waiters waited out their time with slots free", s.timedOut.Load())
+	}
+	if s.served.Load()+s.gone.Load() != clients {
+		t.Fatalf("served %d + gone %d != %d", s.served.Load(), s.gone.Load(), clients)
+	}
+	if s.free != capacity || len(q.Models()) != 0 {
+		t.Fatalf("free %d depths %v", s.free, q.Depths())
+	}
+}

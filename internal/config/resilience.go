@@ -71,9 +71,34 @@ type ResilienceQueueConfig struct {
 }
 
 // ResilienceDrainConfig configures gateway drain: ReadinessGrace is how long the gateway keeps serving after
-// /readyz starts failing, before it shuts down.
+// /readyz starts failing, before it shuts down. Unset (nil, the default) it is min(5s, shutdown_timeout/2), so a
+// gateway whose shutdown_timeout is short still starts; an explicit value, including 0 (no grace), is validated
+// against shutdown_timeout. Read it through EffectiveReadinessGrace.
 type ResilienceDrainConfig struct {
-	ReadinessGrace time.Duration `yaml:"readiness_grace"`
+	ReadinessGrace *time.Duration `yaml:"readiness_grace"`
+}
+
+// Defaults that are clamped to the gateway's own settings when the key is not set.
+const (
+	defaultProbeHeaderTimeout = 10 * time.Second
+	defaultReadinessGrace     = 5 * time.Second
+)
+
+// EffectiveProbeHeaderTimeout returns the probe header timeout in force: the explicit value, or by default
+// min(10s, the gateway's upstream header timeout).
+func (b ResilienceBreakerConfig) EffectiveProbeHeaderTimeout(upstreamHeader time.Duration) time.Duration {
+	if b.ProbeHeaderTimeout != 0 {
+		return b.ProbeHeaderTimeout
+	}
+	return min(defaultProbeHeaderTimeout, upstreamHeader)
+}
+
+// EffectiveReadinessGrace returns the grace in force: the explicit value, or by default min(5s, shutdown/2).
+func (d ResilienceDrainConfig) EffectiveReadinessGrace(shutdownTimeout time.Duration) time.Duration {
+	if d.ReadinessGrace != nil {
+		return *d.ReadinessGrace
+	}
+	return min(defaultReadinessGrace, shutdownTimeout/2)
 }
 
 // Bounds for resilience.*.
@@ -111,7 +136,6 @@ func defaultResilience() ResilienceConfig {
 			MaxCoolDown:         2 * time.Minute,
 			ProbeConcurrency:    1,
 			ProbeSuccesses:      1,
-			ProbeHeaderTimeout:  10 * time.Second,
 			MaxOpenFraction:     0.5,
 		},
 		Retry: ResilienceRetryConfig{
@@ -125,7 +149,7 @@ func defaultResilience() ResilienceConfig {
 			MaxWait:        3 * time.Second,
 			MaxTenantShare: 0.5,
 		},
-		Drain: ResilienceDrainConfig{ReadinessGrace: 5 * time.Second},
+		Drain: ResilienceDrainConfig{},
 	}
 }
 
@@ -181,8 +205,9 @@ func (c *Config) validateResilience() error {
 	if b.ProbeSuccesses < 1 || b.ProbeSuccesses > maxProbeSetting {
 		return fmt.Errorf("resilience.breaker.probe_successes must be in 1-%d, got %d", maxProbeSetting, b.ProbeSuccesses)
 	}
-	if b.ProbeHeaderTimeout < minProbeHeader || b.ProbeHeaderTimeout > c.Gateway.UpstreamHeaderTimeout {
-		return fmt.Errorf("resilience.breaker.probe_header_timeout must be between %v and gateway.upstream_header_timeout (%v)", minProbeHeader, c.Gateway.UpstreamHeaderTimeout)
+	// 0 derives min(10s, upstream_header_timeout); only an explicit value is checked against the gateway.
+	if b.ProbeHeaderTimeout != 0 && (b.ProbeHeaderTimeout < minProbeHeader || b.ProbeHeaderTimeout > c.Gateway.UpstreamHeaderTimeout) {
+		return fmt.Errorf("resilience.breaker.probe_header_timeout must be 0 (derived) or between %v and gateway.upstream_header_timeout (%v)", minProbeHeader, c.Gateway.UpstreamHeaderTimeout)
 	}
 	if !inRange01(b.MaxOpenFraction) {
 		return fmt.Errorf("resilience.breaker.max_open_fraction must be between 0 and 1")
@@ -218,12 +243,14 @@ func (c *Config) validateResilience() error {
 	if !inRange01(q.MaxTenantShare) {
 		return fmt.Errorf("resilience.queue.max_tenant_share must be between 0 and 1")
 	}
-	d := &r.Drain
-	if d.ReadinessGrace < 0 || d.ReadinessGrace > maxReadinessGrace {
-		return fmt.Errorf("resilience.drain.readiness_grace must be between 0 and %v", maxReadinessGrace)
-	}
-	if d.ReadinessGrace >= c.Gateway.ShutdownTimeout {
-		return fmt.Errorf("resilience.drain.readiness_grace must be shorter than gateway.shutdown_timeout (%v)", c.Gateway.ShutdownTimeout)
+	// Unset derives min(5s, shutdown_timeout/2); an explicit value (0 included) is checked.
+	if g := r.Drain.ReadinessGrace; g != nil {
+		if *g < 0 || *g > maxReadinessGrace {
+			return fmt.Errorf("resilience.drain.readiness_grace must be between 0 and %v", maxReadinessGrace)
+		}
+		if *g >= c.Gateway.ShutdownTimeout {
+			return fmt.Errorf("resilience.drain.readiness_grace must be shorter than gateway.shutdown_timeout (%v)", c.Gateway.ShutdownTimeout)
+		}
 	}
 	return nil
 }
@@ -249,12 +276,16 @@ func applyResilienceEnv(cfg *Config) {
 		"RETRY_FIRST_BYTE_DEADLINE":    &r.Retry.FirstByteDeadline,
 		"RETRY_MIN_REMAINING":          &r.Retry.MinRemaining,
 		"QUEUE_MAX_WAIT":               &r.Queue.MaxWait,
-		"DRAIN_READINESS_GRACE":        &r.Drain.ReadinessGrace,
 	} {
 		if v, ok := env(key); ok {
 			if d, err := time.ParseDuration(v); err == nil {
 				*dst = d
 			}
+		}
+	}
+	if v, ok := env("DRAIN_READINESS_GRACE"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			r.Drain.ReadinessGrace = &d
 		}
 	}
 	for key, dst := range map[string]*int{

@@ -377,3 +377,78 @@ func TestShedReasonOfOtherErrors(t *testing.T) {
 		t.Fatal("only queue errors are sheds")
 	}
 }
+
+// The verifier's lost wake-up: a refresh wakes the head (Wake(1)); a slot is released while it is routing, so the
+// hand-off is declined and the slot is freed normally; the head then ends by taking a different slot (Done) or by
+// leaving (timeout, cancel). Nobody told the second waiter about the free slot. Done and Leave now cascade.
+func TestQueueMissedHandoffIsPassedOnWhenTheRoutingWaiterLeaves(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		leave func(q *Queue, w *Waiter)
+	}{
+		{"head served by its own routing (Done)", func(q *Queue, w *Waiter) { q.Done(w) }},
+		{"head timed out or cancelled (Leave)", func(q *Queue, w *Waiter) { q.Leave(w) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q, _ := newTestQueue(10, 0, 0)
+			w1, w2, w3 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
+			if q.Wake("m", 1) != 1 {
+				t.Fatal("wake")
+			}
+			recv(t, w1) // w1 is routing
+			if q.Handoff("m", "freed slot") {
+				t.Fatal("the head is routing: the slot is released normally")
+			}
+			noGrant(t, w2)
+			tc.leave(q, w1)
+			if g := recv(t, w2); g.Kind != Reroute {
+				t.Fatalf("w2 must be told to route again, got %+v", g)
+			}
+			noGrant(t, w3) // only the next waiter, one at a time
+			// w2 is now the routing head; a further miss cascades to w3 in turn.
+			if q.Handoff("m", "another") {
+				t.Fatal("w2 is routing")
+			}
+			q.Done(w2)
+			if g := recv(t, w3); g.Kind != Reroute {
+				t.Fatalf("w3: %+v", g)
+			}
+		})
+	}
+}
+
+func TestQueueNoCascadeWithoutAMissedHandoff(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w1, w2 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
+	q.Wake("m", 1)
+	recv(t, w1)
+	q.Done(w1) // no slot was released meanwhile
+	noGrant(t, w2)
+	// A cascade skips a waiter that is already routing.
+	q2, _ := newTestQueue(10, 0, 0)
+	a, b, c := mustEnqueue(t, q2, "m", ""), mustEnqueue(t, q2, "m", ""), mustEnqueue(t, q2, "m", "")
+	q2.Wake("m", 2)
+	recv(t, a)
+	recv(t, b)
+	q2.Handoff("m", "x") // missed by the head a
+	q2.Leave(a)
+	if g := recv(t, c); g.Kind != Reroute {
+		t.Fatalf("the first waiter not already routing is c: %+v", g)
+	}
+	noGrant(t, b)
+}
+
+func TestQueueFlushDoesNotCascade(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w1, w2 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
+	q.Wake("m", 1)
+	recv(t, w1)
+	q.Handoff("m", "x") // missed
+	q.Flush("m")
+	if g := recv(t, w1); g.Kind != Flushed {
+		t.Fatal(g)
+	}
+	if g := recv(t, w2); g.Kind != Flushed {
+		t.Fatalf("a flushed waiter is flushed, not woken: %+v", g)
+	}
+}

@@ -31,6 +31,7 @@ type refBreaker struct {
 	tickets    map[int]time.Time
 	successes  int
 	suppressed bool
+	ejectedAt  time.Time
 	changes    []string
 }
 
@@ -106,6 +107,9 @@ func (m *refModel) open(b *refBreaker, now time.Time, probeFailed bool, why stri
 		b.level = 0
 	}
 	b.everOpened = true
+	if !probeFailed {
+		b.ejectedAt = now
+	}
 	d := time.Duration(float64(m.coolDownFor(b.level)) * (1 + 0.2*(2*m.rn.Float64()-1)))
 	if d < 1 {
 		d = 1
@@ -191,6 +195,10 @@ func (m *refModel) record(id string, reg int64, probe bool, tid, epoch int, v Ve
 		}
 		return
 	}
+	m.countClosed(b, now, v)
+}
+
+func (m *refModel) countClosed(b *refBreaker, now time.Time, v Verdict) {
 	if b.state != Closed || v == Neutral {
 		return
 	}
@@ -218,8 +226,57 @@ func (m *refModel) record(id string, reg int64, probe bool, tid, epoch int, v Ve
 	m.open(b, now, false, why)
 }
 
+// late mirrors RecordLate: a fault known only after the verdict was taken.
+func (m *refModel) late(id string, reg int64, probe bool, epoch int, v Verdict, now time.Time) {
+	b := m.br[id]
+	if b == nil || b.reg != reg || (v != Fault && v != RatioFault) {
+		return
+	}
+	m.advance(b, now, id)
+	if probe {
+		if b.epoch != epoch {
+			return
+		}
+		if b.state == HalfOpen {
+			m.open(b, now, true, ReasonProbeFailed)
+			return
+		}
+	}
+	m.countClosed(b, now, v)
+}
+
+// enforceCap mirrors the relaxation after the registry view changed.
+func (m *refModel) enforceCap(now time.Time) {
+	limit := int(math.Floor(m.p.MaxOpenFraction*float64(m.eligibleCount()) + 1e-9))
+	for {
+		var worst *refBreaker
+		worstID := ""
+		open := 0
+		for id, b := range m.br {
+			if !b.eligible || b.state == Closed {
+				continue
+			}
+			open++
+			if worst == nil || b.ejectedAt.After(worst.ejectedAt) || (b.ejectedAt.Equal(worst.ejectedAt) && id > worstID) {
+				worst, worstID = b, id
+			}
+		}
+		if open <= limit {
+			return
+		}
+		from := worst.state
+		worst.state = Closed
+		worst.closedAt = now
+		worst.events = nil
+		worst.tickets = nil
+		worst.successes = 0
+		worst.suppressed = false
+		worst.changes = append(worst.changes, fmt.Sprintf("%v>closed", from))
+	}
+}
+
 func (m *refModel) tripReason(b *refBreaker, now time.Time, v Verdict) string {
-	if v == Fault {
+	if v != OK {
 		var times []time.Time // newest first, back to the last OK
 		for i := len(b.events) - 1; i >= 0; i-- {
 			switch b.events[i].v {
@@ -316,10 +373,10 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 							b.eligible = eligible[w]
 						}
 					}
+					ref.enforceCap(clk.Now())
 				}
 				sync()
-				var pending []pendingTicket
-				_ = pending
+				var pending, done []pendingTicket
 
 				for step := 0; step < 400; step++ {
 					now := clk.Now()
@@ -341,6 +398,7 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 							v := verdicts[ops.IntN(len(verdicts))]
 							bs.Record(tk, v)
 							ref.record(pt.id, pt.reg, pt.probe, pt.tid, pt.epoch, v, now)
+							done = append(done, pt)
 						}
 					case op < 55 && len(pending) > 0: // finish a pending attempt
 						i := ops.IntN(len(pending))
@@ -353,11 +411,13 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 							v := verdicts[ops.IntN(len(verdicts))]
 							bs.Record(pt.real, v)
 							ref.record(pt.id, pt.reg, pt.probe, pt.tid, pt.epoch, v, now)
+							done = append(done, pt)
 						}
-					case op < 63: // a stream abort after the first byte
-						v := []Verdict{Fault, Fault, OK}[ops.IntN(3)]
-						bs.RecordLate(keyOf(w), v)
-						ref.record(w, reg[w], false, 0, 0, v, now)
+					case op < 63 && len(done) > 0: // a stream abort after the first byte, for an attempt already recorded
+						pt := done[ops.IntN(len(done))]
+						v := []Verdict{Fault, Fault, RatioFault}[ops.IntN(3)]
+						bs.RecordLate(pt.real, v)
+						ref.late(pt.id, pt.reg, pt.probe, pt.epoch, v, now)
 					case op < 85: // time passes
 						clk.Advance(steps[ops.IntN(len(steps))])
 					default: // the registry view changes
@@ -422,8 +482,12 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 	}
 	// The random walk must actually reach every kind of transition, or agreement proves little.
 	for _, k := range []string{"closed>open:consecutive_failures", "closed>open:failure_ratio", "open>half_open",
-		"half_open>open:probe_failed", "half_open>closed", "suppressed"} {
-		if seen[k] < 8 {
+		"half_open>open:probe_failed", "half_open>closed", "suppressed", "open>closed"} {
+		floor := 8
+		if k == "open>closed" { // only the ejection-cap relaxation closes an open breaker
+			floor = 3
+		}
+		if seen[k] < floor {
 			t.Errorf("transition %q seen only %d times across the random runs", k, seen[k])
 		}
 	}

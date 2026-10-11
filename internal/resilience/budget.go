@@ -41,9 +41,9 @@ type Budget struct {
 
 // Reservation is a retry taken from the budget; pass it to Refund if the retry does not happen.
 type Reservation struct {
-	model string
-	at    time.Time
-	valid bool
+	model    string
+	at       time.Time
+	refunded bool // guarded by Budget.mu: a second Refund cannot grant an extra retry
 }
 
 // NewBudget creates an empty budget.
@@ -82,27 +82,32 @@ func (b *Budget) limit(firsts int) int {
 
 // Reserve takes one retry for the model if the budget allows it. The check and the increment are one atomic
 // step, so concurrent requests cannot overshoot. A denied reserve consumes nothing.
-func (b *Budget) Reserve(model string) (Reservation, bool) {
+func (b *Budget) Reserve(model string) (*Reservation, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := b.now()
 	w, key := b.window(model)
 	firsts, retries := w.sum(now)
 	if retries >= b.limit(firsts) {
-		return Reservation{}, false
+		return nil, false
 	}
 	w.add(now, now, 1, 1)
-	return Reservation{model: key, at: now, valid: true}, true
+	return &Reservation{model: key, at: now}, true
 }
 
-// Refund gives a reserved retry back (no other worker was found). It is idempotent only per reservation value:
-// call it at most once. A reservation whose bucket already left the window changes nothing.
-func (b *Budget) Refund(r Reservation) {
-	if !r.valid {
+// Refund gives a reserved retry back (no other worker was found). It is idempotent: a second call, or a nil
+// reservation (a denied Reserve), changes nothing. A reservation whose bucket already left the window also
+// changes nothing.
+func (b *Budget) Refund(r *Reservation) {
+	if r == nil {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if r.refunded {
+		return
+	}
+	r.refunded = true
 	if w, ok := b.models[r.model]; ok {
 		w.add(r.at, b.now(), 1, -1)
 	}

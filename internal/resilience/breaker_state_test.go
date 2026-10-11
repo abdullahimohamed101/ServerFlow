@@ -224,37 +224,92 @@ func TestLostTicketBackstop(t *testing.T) {
 	}
 }
 
-func TestLateFaultCountsOnlyWhileClosedAndNeedsNoTicket(t *testing.T) {
+func TestLateFaultCountsOnlyWhileClosed(t *testing.T) {
 	p := testParams()
 	p.FailureRatio = 0
 	r := newRig(t, p, "w1")
+	var tickets []Ticket
 	for i := 0; i < 5; i++ {
-		r.bs.RecordLate(key("w1"), Fault) // a stream aborted after its first byte
+		tk, ok := r.bs.Acquire(key("w1"))
+		if !ok {
+			t.Fatal("acquire")
+		}
+		r.bs.Record(tk, OK) // the first byte arrived: verdict OK
+		tickets = append(tickets, tk)
+	}
+	for _, tk := range tickets { // then each stream aborted
+		r.bs.RecordLate(tk, Fault)
 	}
 	r.want("w1", Open)
 	n := len(r.changes)
-	r.bs.RecordLate(key("w1"), Fault) // open: ignored
+	r.bs.RecordLate(tickets[0], Fault) // open: ignored
 	if len(r.changes) != n {
 		t.Fatal("a late fault must not change an open breaker")
 	}
 	r.clk.Advance(10 * time.Second)
-	r.bs.RecordLate(key("w1"), Fault)
-	r.want("w1", HalfOpen) // a ticketless fault never reopens or consumes a probe
+	r.bs.RecordLate(tickets[0], Fault) // a request from before the breaker opened: ignored when half-open
+	r.want("w1", HalfOpen)
 	if _, ok := r.bs.Acquire(key("w1")); !ok {
 		t.Fatal("probe slot must still be free")
 	}
+}
+
+// A probe stream that aborts after its first byte must not count as a success (probe_successes > 1) and must
+// reopen the breaker with a doubled cool-down.
+func TestLateFaultOfAProbeReopensTheBreaker(t *testing.T) {
+	p := testParams()
+	p.ProbeSuccesses = 2
+	r := newRig(t, p, "w1")
+	tripConsecutive(r, "w1")
+	r.clk.Advance(10 * time.Second)
+	probe, _ := r.bs.Acquire(key("w1"))
+	r.bs.Record(probe, OK) // first byte: one success of two
+	r.want("w1", HalfOpen)
+	r.bs.RecordLate(probe, Fault) // the stream aborted
+	r.want("w1", Open)
+	if got := r.openFor("w1"); got != 20*time.Second {
+		t.Fatalf("reopened for %v, want a doubled 20s", got)
+	}
+	r.bs.RecordLate(probe, Fault) // the same echo again: stale, nothing happens
+	if got := r.openFor("w1"); got != 20*time.Second {
+		t.Fatalf("a stale late fault changed the cool-down: %v", got)
+	}
+	// With the success not counted, two fresh good probes are needed to close.
+	r.clk.Advance(20 * time.Second)
+	r.send("w1", OK)
+	r.want("w1", HalfOpen)
+	r.send("w1", OK)
+	r.want("w1", Closed)
+}
+
+// When one good probe already closed the breaker, an abort after that is an ordinary fault of a closed breaker.
+func TestLateFaultOfAClosingProbeCountsAsAFault(t *testing.T) {
+	p := testParams()
+	p.FailureRatio = 0
+	r := newRig(t, p, "w1")
+	tripConsecutive(r, "w1")
+	r.clk.Advance(10 * time.Second)
+	probe, _ := r.bs.Acquire(key("w1"))
+	r.bs.Record(probe, OK)
+	r.want("w1", Closed)
+	r.bs.RecordLate(probe, Fault)
+	r.sendN("w1", Fault, 3)
+	r.want("w1", Closed) // 4 faults
+	r.send("w1", Fault)
+	r.want("w1", Open) // the late one was the first of five
 }
 
 func TestNewRegistrationStartsClosed(t *testing.T) {
 	r := newRig(t, testParams(), "w1")
 	tripConsecutive(r, "w1")
 	old := key("w1")
+	oldTicket, _ := r.bs.Acquire(old)
 	fresh := KeyOf("w1", registered.Add(time.Hour))
 	r.bs.Sync([]Member{{Key: fresh, Eligible: true}})
 	if !r.bs.Admissible(fresh) || r.bs.State(fresh) != Closed {
 		t.Fatal("a re-registered worker starts closed")
 	}
-	r.bs.RecordLate(old, Fault) // verdicts of the old registration are ignored
+	r.bs.RecordLate(oldTicket, Fault) // verdicts of the old registration are ignored
 	r.sendN2(fresh, Fault, 4)
 	if r.bs.State(fresh) != Closed {
 		t.Fatal("the old registration's history must not carry over")
@@ -273,6 +328,7 @@ func (r *rig) sendN2(k Key, v Verdict, n int) {
 
 func TestPrunedWorkersVanish(t *testing.T) {
 	r := newRig(t, testParams(), "w1", "w2")
+	tk0, _ := r.bs.Acquire(key("w1")) // a ticket taken while closed
 	tripConsecutive(r, "w1")
 	r.bs.Sync([]Member{{Key: key("w2"), Eligible: true}})
 	if !r.bs.Admissible(key("w1")) || r.bs.State(key("w1")) != Closed {
@@ -283,7 +339,7 @@ func TestPrunedWorkersVanish(t *testing.T) {
 			t.Fatal("pruned worker still listed")
 		}
 	}
-	r.bs.RecordLate(key("w1"), Fault) // must not resurrect it
+	r.bs.RecordLate(tk0, Fault) // must not resurrect it
 	if tk, ok := r.bs.Acquire(key("w1")); !ok || tk.Probe() {
 		t.Fatal("unknown workers are plain closed")
 	}
