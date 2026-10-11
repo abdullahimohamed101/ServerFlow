@@ -210,6 +210,10 @@ func RunOnce(ctx context.Context, o Options, sc Scenario, d Deps, id string, rep
 		input.Samples, input.SamplePollsFailed, input.SamplesDropped = sampler.Samples()
 	}
 	res := report.Build(input)
+	// Per-worker balance is not measured in a chaos run (workers are drained and replaced), so the
+	// "could not be listed" line Build adds for a target without workers would mislead.
+	delete(res.NotMeasured, "request_imbalance")
+	res.NotMeasured["worker_balance"] = "not measured in chaos runs: workers are faulted, drained and replaced during the run"
 
 	params := map[string]string{"workers": fmt.Sprint(o.Workers), "mock_concurrency": fmt.Sprint(o.MockConcurrent), "clients": fmt.Sprint(plan.Base),
 		"bucket": p.Bucket.String(), "scheduler": o.Scheduler}
@@ -368,6 +372,9 @@ func Run(ctx context.Context, o Options, d Deps, out io.Writer) ([]report.Result
 			if err != nil {
 				_ = os.Remove(dir)
 				return all, err
+			}
+			if o.Resilience != "" && res.Metadata.Resilience == report.ResilienceAbsent {
+				say(out, "  note: --resilience %s has no effect: this build has no resilience feature (recorded as absent)\n", o.Resilience)
 			}
 			res.Notes = append(res.Notes, "Load average (1, 5 and 15 minutes) at the start of the run: "+loadStart+"; at the end: "+loadAverage()+".")
 			if !o.SaveRequests {

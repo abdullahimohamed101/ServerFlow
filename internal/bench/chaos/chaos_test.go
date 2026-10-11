@@ -542,7 +542,9 @@ func TestGateRejectsBadRuns(t *testing.T) {
 		mutate func(*GateInput)
 		want   string
 	}{
-		"baseline errors":     {func(in *GateInput) { in.Windows[0].Succeeded, in.Windows[0].SuccessRate = 400, 0.8 }, "baseline error rate"},
+		"baseline errors": {func(in *GateInput) {
+			in.Windows[0].Succeeded, in.Windows[0].Failed, in.Windows[0].SuccessRate = 400, 100, 0.8
+		}, "baseline error rate"},
 		"empty baseline":      {func(in *GateInput) { in.Windows[0] = report.ChaosWindow{} }, "baseline error rate"},
 		"fault not evidenced": {func(in *GateInput) { in.Evidence = Evidence{} }, "fault evidenced"},
 		"too many clients":    {func(in *GateInput) { in.Plan.Base = 20 }, "clients within the surviving slots"},
@@ -937,5 +939,120 @@ func TestReadCountersSumsTheGatewaySeriesAndToleratesAbsentOnes(t *testing.T) {
 	}
 	if none, _ := readCounters(c.Metrics(), ""); none.FaultySelections != 0 {
 		t.Fatalf("no faulted worker, no selections: %+v", none)
+	}
+}
+
+func TestBaselineErrorRateBoundaryIsExact(t *testing.T) {
+	for _, tc := range []struct {
+		sent, failed int
+		ok           bool
+	}{{1000, 50, true}, {1000, 51, false}, {20, 1, true}, {20, 2, false}, {1000, 0, true}, {1, 1, false}, {3, 0, true}} {
+		in := goodGate()
+		in.Windows[0] = report.ChaosWindow{Sent: tc.sent, Failed: tc.failed, Succeeded: tc.sent - tc.failed, SuccessRate: float64(tc.sent-tc.failed) / float64(tc.sent)}
+		got := !strings.Contains(failed(in), "baseline error rate")
+		if got != tc.ok {
+			t.Errorf("%d of %d failed against a 5%% limit: accepted=%v, want %v", tc.failed, tc.sent, got, tc.ok)
+		}
+	}
+	// "More than 5%" is the rule: a limit of 0 tolerates nothing, a limit of 1 everything.
+	if !errorRateWithin(0, 10, 0) || errorRateWithin(1, 10, 0) || !errorRateWithin(10, 10, 1) {
+		t.Error("limits of 0 and 1")
+	}
+}
+
+// The numbers here are literals on purpose: changing IsolationMinBuckets must break this test.
+func TestIsolationNeedsThreeQuietBucketsLiteral(t *testing.T) {
+	p := newParams(1)
+	tl := Timeline{ApplyTick: 10, ClearTick: 30, Applied: true, Cleared: true, AppliedAt: 10 * time.Second, ClearedAt: 30 * time.Second}
+	quiet := func(n int) Timeline {
+		tl.Ticks = ticksOf(p, 50, func(i int) Counters {
+			return Counters{FaultySelections: float64(min(i, 30-n)) * 3, Attempts: float64(i * 50)}
+		})
+		return tl
+	}
+	if got, _ := timeToIsolate(p, quiet(3), true); got == nil || *got != 17 {
+		t.Fatalf("3 quiet buckets (27 to 30) isolate at 17s after the start of the fault: %v", got)
+	}
+	if got, _ := timeToIsolate(p, quiet(2), true); got != nil {
+		t.Fatalf("2 quiet buckets are not isolation: %v", got)
+	}
+	if IsolationMinBuckets != 3 {
+		t.Fatalf("IsolationMinBuckets is %d: the doc and the baseline say 3", IsolationMinBuckets)
+	}
+}
+
+func TestCountersThatGoBackwardsNeverMakeANegativeDelta(t *testing.T) {
+	big := Counters{Attempts: 1000, Requests: 900, Retries: 50, FaultySelections: 300}
+	after := Counters{Attempts: 100, Requests: 90, Retries: 5, FaultySelections: 30} // the gateway restarted
+	d := after.Sub(big)
+	if d != after {
+		t.Fatalf("a reset counter's delta is its value since the reset, got %+v", d)
+	}
+	p := newParams(1)
+	tl := Timeline{Ticks: []Snapshot{{Counters: big}, {Counters: after}, {Counters: Counters{Attempts: 150, Requests: 130}}}}
+	for from := 0; from < 3; from++ {
+		for to := from; to < 3; to++ {
+			c := delta(tl, from, to)
+			if c.Attempts < 0 || c.Requests < 0 || c.Retries < 0 || c.FaultySelections < 0 || c.Probes < 0 || c.NoCapacity < 0 || c.Ineligible < 0 {
+				t.Fatalf("delta(%d,%d) = %+v", from, to, c)
+			}
+		}
+	}
+	cw := summarizeWindow("fault", collect.Window{}, nil, delta(tl, 0, 1))
+	if cw.AttemptsPerRequest == nil || *cw.AttemptsPerRequest < 0 {
+		t.Fatalf("%v", cw.AttemptsPerRequest)
+	}
+	_ = p
+}
+
+func TestSpreadSummaryFlagsAGroupThatMixesResilience(t *testing.T) {
+	sc, _ := Lookup("worker-freeze")
+	mk := func(id, res string) report.Result {
+		r := report.Result{RunID: id, Valid: true, Chaos: &report.Chaos{}}
+		r.Metadata.Resilience = res
+		return r
+	}
+	s := SpreadSummary(sc, []report.Result{mk("run_001", "absent"), mk("run_002", "on"), mk("run_003", "absent")})
+	if !strings.Contains(s, "mix resilience settings (absent, on)") {
+		t.Fatal(s)
+	}
+	if s := SpreadSummary(sc, []report.Result{mk("run_001", "on"), mk("run_002", "on")}); strings.Contains(s, "mix") {
+		t.Fatal(s)
+	}
+}
+
+func TestRunPrintsTheNoOpNoteForResilienceAndRecordsLoadAtStart(t *testing.T) {
+	for _, v := range []string{"", "on"} {
+		o := testOptions(t, "worker-crash")
+		o.Resilience = v
+		d, c, _ := fakeDeps(t, 4, nil)
+		sc, _ := Lookup("worker-crash")
+		p := sc.Params(o.Workers, o.Scale)
+		c.faultFrom, c.faultTo = (p.Warmup + p.Baseline).Seconds(), (p.Warmup + p.Baseline + p.Fault).Seconds()
+		d.Load = &fakeLoader{}
+		var out strings.Builder
+		if _, err := Run(context.Background(), o, d, &out); err != nil {
+			t.Fatalf("%v\n%s", err, out.String())
+		}
+		if noted := strings.Contains(out.String(), "has no effect"); noted != (v != "") {
+			t.Fatalf("--resilience %q: note printed=%v\n%s", v, noted, out.String())
+		}
+		r, err := report.Load(o.OutDir + "/run_001")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, n := range r.Notes {
+			found = found || strings.Contains(n, "at the start of the run: ") && !strings.Contains(n, "start of the run: ;")
+		}
+		if !found {
+			t.Fatalf("the load average at the start is not recorded: %v", r.Notes)
+		}
+		if _, ok := r.NotMeasured["request_imbalance"]; ok {
+			t.Fatal("the misleading request_imbalance line is back")
+		}
+		if r.NotMeasured["worker_balance"] == "" {
+			t.Fatal("worker balance should be listed as not measured")
+		}
 	}
 }

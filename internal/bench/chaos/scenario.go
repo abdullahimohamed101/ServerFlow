@@ -306,7 +306,7 @@ const SafeSlotFraction = 0.6
 type ClientPlan struct {
 	// Base clients run for the whole run; Extra join for the fault window (overload only).
 	Base, Extra int
-	// Slots is every worker's request slots, Surviving the slots left serving once the fault takes the
+	// Slots is every configured worker's request slots (from the cluster plan, not read from the registry), Surviving the slots left serving once the fault takes the
 	// first worker's (for a crash, freeze or error fault the faulted worker is not counted even when it
 	// is still READY and still accepts connections; for a rolling drain one worker is out at a time).
 	// An overload has no worker out.

@@ -32,6 +32,13 @@ func SpreadSummary(sc Scenario, rs []report.Result) string {
 	if len(valid) < report.MinRepeats {
 		fmt.Fprintf(&b, "  Only %d valid run(s): fewer than %d, so the range below is mostly luck and supports no comparison.\n", len(valid), report.MinRepeats)
 	}
+	mixed := map[string]bool{}
+	for _, r := range valid {
+		mixed[r.Metadata.Resilience] = true
+	}
+	if len(mixed) > 1 {
+		fmt.Fprintf(&b, "  WARNING: these runs mix resilience settings (%s): they are not one configuration and the range below means nothing.\n", strings.Join(sortedKeys(mixed), ", "))
+	}
 	fmt.Fprintf(&b, "  resilience: %s. Min / median / max across the valid runs:\n", valid[0].Metadata.Resilience)
 	row := func(name string, primary bool, get func(report.ChaosMeasures) *float64, format string) {
 		var xs []float64
@@ -72,4 +79,13 @@ func median(sorted []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2
+}
+
+func sortedKeys(m map[string]bool) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

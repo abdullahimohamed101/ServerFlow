@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -46,7 +47,7 @@ func Gate(in GateInput) []report.ChaosCheck {
 		"applied %v (err %v), cleared %v (err %v)", tl.Applied, tl.ApplyErr, tl.Cleared, tl.ClearErr)
 
 	base := win(0)
-	add("baseline error rate", base.Sent > 0 && 1-base.SuccessRate <= in.Options.MaxErrorRate,
+	add("baseline error rate", base.Sent > 0 && errorRateWithin(base.Failed, base.Sent, in.Options.MaxErrorRate),
 		"%.2f%% of %d baseline requests failed, limit %.2f%%", 100*(1-base.SuccessRate), base.Sent, 100*in.Options.MaxErrorRate)
 
 	ok, detail := in.Scenario.evidenced(in.Evidence)
@@ -115,4 +116,12 @@ func shortCommit(c string) string {
 		return report.Unknown
 	}
 	return c
+}
+
+// errorRateWithin reports whether failed/sent is at most limit, in integers: a baseline of exactly the
+// limit (950 of 1000 with a limit of 5%) passes, which a float comparison of 1-0.95 with 0.05 gets wrong.
+// The limit is taken to a millionth.
+func errorRateWithin(failed, sent int, limit float64) bool {
+	ppm := int64(math.Round(limit * 1e6))
+	return int64(failed)*1_000_000 <= ppm*int64(sent)
 }

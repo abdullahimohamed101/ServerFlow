@@ -20,10 +20,17 @@ type Counters struct {
 	Probes           float64
 }
 
-// Sub returns c - o.
+// Sub returns c - o. A counter that went backwards (the gateway restarted) was reset to zero in between, so
+// what it counted since is its current value; a delta is never negative.
 func (c Counters) Sub(o Counters) Counters {
-	return Counters{c.Attempts - o.Attempts, c.Requests - o.Requests, c.Retries - o.Retries, c.NoCapacity - o.NoCapacity,
-		c.Ineligible - o.Ineligible, c.FaultySelections - o.FaultySelections, c.Probes - o.Probes}
+	d := func(a, b float64) float64 {
+		if a < b {
+			return a
+		}
+		return a - b
+	}
+	return Counters{d(c.Attempts, o.Attempts), d(c.Requests, o.Requests), d(c.Retries, o.Retries), d(c.NoCapacity, o.NoCapacity),
+		d(c.Ineligible, o.Ineligible), d(c.FaultySelections, o.FaultySelections), d(c.Probes, o.Probes)}
 }
 
 // Snapshot is the counters at one tick of the timeline.
