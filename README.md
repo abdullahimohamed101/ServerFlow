@@ -105,7 +105,7 @@ On Windows (no `make`), use the existing quality gate:
 | 9 | PostgreSQL | Complete |
 | 10 | Prometheus + Grafana | Complete (`docs/operations/observability.md`, ADR-017) |
 | 11 | OpenTelemetry | Complete |
-| 12 | Kafka | Not started |
+| 12 | Kafka | Complete |
 | 13 | Real vLLM worker pool | Not started |
 | 14 | Workload-aware scheduler | Not started |
 | 15 | Fault tolerance | Not started |

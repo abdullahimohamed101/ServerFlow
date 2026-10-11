@@ -289,6 +289,7 @@ func applyEnv(cfg *Config) {
 			}
 		}
 	}
+	applyEventsEnv(cfg, env)
 	applyTracingEnv(cfg)
 	applyMetricsEnv(&cfg.Metrics, env)
 	if v, ok := env("LOG_LEVEL"); ok {

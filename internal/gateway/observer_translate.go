@@ -37,7 +37,7 @@ func requestStartFrom(r *http.Request, id string, at time.Time) RequestStart {
 
 func (s *Server) admitted(ctx context.Context, info *reqInfo) {
 	s.obs.RequestAdmitted(ctx, Admission{
-		RequestID: info.id, Model: info.requested, Stream: info.stream, TenantID: info.tenantID,
+		RequestID: info.id, Model: info.requested, Stream: info.stream, TenantID: info.tenantID, APIKeyID: info.apiKeyID,
 		EstimatedCost: info.cost, RateLimitChecked: info.rateChecked, RateLimitStart: info.rateStart, RateLimitDuration: info.rateDuration,
 		RateLimitBypassed: info.rateBypassed,
 	})
@@ -81,6 +81,7 @@ func completionFrom(info *reqInfo, status int, d time.Duration) Completion {
 	return Completion{
 		RequestID: info.id, Model: info.model, Stream: info.stream, TenantID: info.tenantID, Status: status,
 		ErrorCode: info.errCode, Duration: d, Attempts: info.attempted, TTFT: info.ttft, Handled: info.inference,
+		TokensSource: info.tokSource, InputTokens: info.tokIn, OutputTokens: info.tokOut,
 	}
 }
 

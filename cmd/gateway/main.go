@@ -16,7 +16,9 @@ import (
 
 	"serverflow/internal/auth"
 	"serverflow/internal/config"
+	"serverflow/internal/events"
 	"serverflow/internal/gateway"
+	"serverflow/internal/kafka"
 	"serverflow/internal/postgres"
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/redis"
@@ -109,6 +111,19 @@ func main() {
 	}
 	opts = append(opts, topts...)
 
+	// Lifecycle events (Phase 12) are best-effort: a broker that is down never stops the gateway or a request.
+	evObs, evSink, err := openEvents(cfg, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+	if evObs != nil {
+		opts = append(opts, gateway.WithObserver(evObs))
+		for _, c := range evObs.Collectors() {
+			opts = append(opts, gateway.WithCollector(c))
+		}
+	}
+
 	if cfg.Auth.Mode == config.AuthModeOff {
 		logger.Info("api key authentication is OFF: /v1 is open to any caller that can reach this port", "component", "gateway", "auth_mode", cfg.Auth.Mode)
 	}
@@ -180,6 +195,16 @@ func main() {
 	// Serve returns after the drain; the span queue is flushed right after it (at most 5 s with a dead collector).
 	serveErr := serveAndFlush(ctx, srv, ln, tracer, logger)
 	stopMetrics()
+	// The HTTP server has drained, so every in-flight request has emitted its terminal event: flush them now,
+	// bounded by events.shutdown_flush_timeout. Whatever is not delivered in time is counted and logged.
+	if evObs != nil {
+		fctx, cancel := context.WithTimeout(context.Background(), cfg.Events.ShutdownFlushTimeout)
+		if err := evObs.Close(fctx); err != nil {
+			logger.Warn("event flush did not finish", "component", "gateway", "error", err.Error())
+		}
+		cancel()
+		_ = evSink.Close()
+	}
 	if serveErr != nil {
 		logger.Error("gateway stopped with error", "component", "gateway", "error", serveErr)
 		os.Exit(1)
@@ -253,4 +278,28 @@ func openRedis(ctx context.Context, cfg config.Config, logger *slog.Logger) (*re
 		}
 	}
 	return c, nil
+}
+
+// openEvents builds the lifecycle event observer when events.mode is on. It does not connect: a broker that is
+// down at start is logged once by the client and is not an error. Errors never contain the SASL password.
+func openEvents(cfg config.Config, logger *slog.Logger) (*events.Observer, *kafka.Producer, error) {
+	if cfg.Events.Mode != config.EventsOn {
+		return nil, nil, nil
+	}
+	kcfg := kafka.ConfigFrom(cfg.Events)
+	kcfg.Logger = logger
+	sink, err := kafka.NewProducer(kcfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("events.mode is on but the producer could not be built: %w", err)
+	}
+	source := cfg.Events.Source
+	if source == "" {
+		if source, _ = os.Hostname(); source == "" {
+			source = "gateway"
+		}
+	}
+	obs := events.NewObserver(sink, events.Config{BufferSize: cfg.Events.BufferSize, Source: source}, logger)
+	logger.Info("lifecycle events on", "component", "gateway", "brokers", cfg.Events.Brokers, "topic", cfg.Events.Topic,
+		"buffer_size", cfg.Events.BufferSize, "sasl", cfg.Events.SASLMechanism, "tls", cfg.Events.TLS)
+	return obs, sink, nil
 }
