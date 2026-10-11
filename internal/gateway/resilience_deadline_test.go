@@ -157,3 +157,40 @@ func TestAProbeUsesItsOwnHeaderTimeout(t *testing.T) {
 		t.Fatalf("%+v", last)
 	}
 }
+
+// A probe's own header timeout covers the wait for headers only: a probe whose stream is longer than that timeout
+// is not cut once the headers have arrived.
+func TestTheProbeHeaderTimeoutEndsWithTheHeaders(t *testing.T) {
+	flag := &workerFlag{}
+	flag.set(openAPI503("mock_failure"))
+	a := newScriptWorker(t, "a-flaky", flag.serve)
+	b := newScriptWorker(t, "b-good", okJSON("b-good"))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")}, func(c *config.Config) {
+		c.Gateway.UpstreamHeaderTimeout = 5 * time.Second
+		c.Resilience.Breaker.ConsecutiveFailures = 1
+		c.Resilience.Breaker.ProbeHeaderTimeout = 150 * time.Millisecond
+	})
+	for i := 0; i < 3; i++ {
+		e.do(t)
+	}
+	flag.set(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		for i := 0; i < 5; i++ {
+			_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
+			w.(http.Flusher).Flush()
+			time.Sleep(100 * time.Millisecond) // 500 ms in all, longer than the probe header timeout
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	e.advance(t, 10*time.Second)
+	for i := 0; i < 4 && e.state("a-flaky") != resilience.Closed; i++ {
+		resp, body := e.post(t, true)
+		if resp.StatusCode != 200 || !strings.Contains(body, "[DONE]") {
+			t.Fatalf("%d %q", resp.StatusCode, body)
+		}
+	}
+	if e.state("a-flaky") != resilience.Closed {
+		t.Fatalf("the probe stream should have closed the breaker: %v", e.state("a-flaky"))
+	}
+}

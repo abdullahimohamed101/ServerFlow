@@ -531,3 +531,51 @@ func TestAProbeStreamClosesTheBreakerAtItsFirstByte(t *testing.T) {
 	close(release)
 	<-done
 }
+
+// An unlisted 5xx counts in the ratio rule only: it never extends or trips the consecutive streak (D4), and the
+// ratio rule does eject an always-500 worker, whose requests are never retried.
+func TestA500CountsInTheRatioRuleOnlyAndIsNeverRetried(t *testing.T) {
+	mk := func(t *testing.T, mut func(*config.Config)) (*resEnv, *scriptWorker) {
+		bad := newScriptWorker(t, "a-500", status(500, `{"error":{"code":"mock_failure"}}`))
+		good := newScriptWorker(t, "b-good", okJSON("b-good"))
+		return newResEnv(t, []protocol.WorkerSnapshot{bad.snapshot("qwen-7b"), good.snapshot("qwen-7b")}, mut), bad
+	}
+	t.Run("consecutive rule never sees it", func(t *testing.T) {
+		e, bad := mk(t, func(c *config.Config) {
+			c.Resilience.Breaker.ConsecutiveFailures = 3
+			c.Resilience.Breaker.MinVolume = 100000
+		})
+		for i := 0; i < 30; i++ {
+			e.do(t)
+		}
+		if st := e.state("a-500"); st != resilience.Closed {
+			t.Fatalf("30 500s opened the breaker through the consecutive rule: %v", st)
+		}
+		if bad.hits.Load() < 10 {
+			t.Fatalf("only %d requests reached the 500 worker", bad.hits.Load())
+		}
+		for _, a := range e.rec.attemptEnds() {
+			if a.WillRetry {
+				t.Fatalf("a 500 is never retried: %+v", a)
+			}
+		}
+	})
+	t.Run("ratio rule ejects it", func(t *testing.T) {
+		e, bad := mk(t, func(c *config.Config) {
+			c.Resilience.Breaker.ConsecutiveFailures = 100000
+			c.Resilience.Breaker.MinVolume = 4
+		})
+		for i := 0; i < 20 && e.state("a-500") != resilience.Open; i++ {
+			e.do(t)
+		}
+		if st := e.state("a-500"); st != resilience.Open {
+			t.Fatalf("the ratio rule did not eject an always-500 worker: %v", st)
+		}
+		if n := bad.hits.Load(); n != 4 {
+			t.Fatalf("%d requests reached the worker before it opened, want min_volume 4", n)
+		}
+		if got := e.rec.states(); len(got) != 1 || got[0] != "a-500:open:failure_ratio" {
+			t.Fatalf("transitions %v", got)
+		}
+	})
+}
