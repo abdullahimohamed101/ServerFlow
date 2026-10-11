@@ -112,8 +112,9 @@ type modelQueue struct {
 	waiters *list.List
 	tenants map[string]int
 	// credit counts slots that were released while the head waiter was routing and so could not be handed over
-	// (the caller freed them normally). Invariant: credit > 0 only while every waiter is routing; otherwise the
-	// credit is spent at once by telling the first waiter that is not routing to route (settle).
+	// (the caller freed them normally). Invariant: credit > 0 only while some waiter is routing and every waiter
+	// ahead of the first idle one is routing; credit is spent on the first idle waiter in queue order the moment
+	// one exists to take it (settle), never on a waiter that arrived later while an earlier one is still routing.
 	credit int
 }
 
@@ -216,7 +217,6 @@ func (q *Queue) Enqueue(model, tenant string) (*Waiter, error) {
 	if tenant != "" {
 		mq.tenants[tenant]++
 	}
-	settle(mq, nil) // a new waiter can take credit that nobody else was free to take
 	return w, nil
 }
 
