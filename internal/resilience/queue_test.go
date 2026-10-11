@@ -378,7 +378,8 @@ func TestShedReasonOfOtherErrors(t *testing.T) {
 	}
 }
 
-// settled reports the queue invariant: credit is outstanding only while every waiter of the model is routing.
+// settled reports the queue invariant: credit is outstanding only while a waiter is routing (that waiter's Park, Done
+// or Leave will spend it), and never while the first idle waiter has nobody routing ahead of it.
 func (q *Queue) settled(model string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -387,11 +388,11 @@ func (q *Queue) settled(model string) bool {
 		return true
 	}
 	for e := mq.waiters.Front(); e != nil; e = e.Next() {
-		if !e.Value.(*Waiter).woken {
-			return false
+		if e.Value.(*Waiter).woken {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func (q *Queue) creditOf(model string) int {
@@ -478,15 +479,79 @@ func TestQueueCreditScenarioB_ThreeReleasesDuringOneRouting(t *testing.T) {
 	}
 }
 
-func TestQueueArrivalTakesCredit(t *testing.T) {
+// A late arrival must not take credit ahead of an earlier waiter that is still routing: when that waiter stops, the
+// credit goes to it (the first idle waiter in queue order), and only later to the newcomer.
+func TestQueueLateArrivalDoesNotOvertakeAnEarlierRoutingWaiter(t *testing.T) {
 	q, _ := newTestQueue(10, 0, 0)
 	w1 := mustEnqueue(t, q, "m", "")
 	q.Wake("m", 1)
-	recv(t, w1)
-	q.Handoff("m", "x") // credit: the only waiter is routing
-	w2 := mustEnqueue(t, q, "m", "")
-	if g := recv(t, w2); g.Kind != Reroute {
-		t.Fatalf("a new waiter must take the credit: %+v", g)
+	recv(t, w1) // w1 is routing
+	if q.Handoff("m", "slot") {
+		t.Fatal("the head is routing")
+	}
+	w2 := mustEnqueue(t, q, "m", "") // arrives while credit is banked
+	noGrant(t, w2)
+	if !q.settled("m") {
+		t.Fatal("invariant")
+	}
+	if !q.Park(w1) { // w1 found everything full, but a slot was released meanwhile
+		t.Fatal("the banked credit belongs to w1, who was first")
+	}
+	noGrant(t, w2)
+	if q.Park(w1) { // routed again, still full: idle now
+		t.Fatal("credit was spent")
+	}
+	// The next release goes to w1 (the head) by hand-off, w2 stays behind it.
+	if !q.Handoff("m", "next") {
+		t.Fatal("w1 is idle again and is the head")
+	}
+	if g := recv(t, w1); g.Kind != Handoff {
+		t.Fatalf("w1: %+v", g)
+	}
+	noGrant(t, w2)
+	// And when the earlier routing waiter is served instead, the credit reaches the newcomer.
+	q2, _ := newTestQueue(10, 0, 0)
+	a := mustEnqueue(t, q2, "m", "")
+	q2.Wake("m", 1)
+	recv(t, a)
+	q2.Handoff("m", "slot")
+	b := mustEnqueue(t, q2, "m", "")
+	q2.Done(a)
+	if g := recv(t, b); g.Kind != Reroute {
+		t.Fatalf("credit must reach the newcomer once nobody is ahead: %+v", g)
+	}
+}
+
+// Busy must stay true while a model has waiters whatever the credit says, or an arrival could bypass the queue.
+func TestQueueBusyWithCreditBanked(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w := mustEnqueue(t, q, "m", "")
+	q.Wake("m", 1)
+	recv(t, w)
+	q.Handoff("m", "slot") // credit 1; the only waiter is routing
+	if !q.Busy("m") {
+		t.Fatal("a queue with a routing waiter and banked credit is busy: arrivals must enqueue")
+	}
+	q.Done(w)
+	if q.Busy("m") {
+		t.Fatal("drained")
+	}
+}
+
+// Every declined release is one unit of credit, not a flag: two releases during one routing are two units.
+func TestQueueCreditCountsEveryDeclinedRelease(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w := mustEnqueue(t, q, "m", "")
+	q.Wake("m", 1)
+	recv(t, w)
+	q.Handoff("m", 1)
+	q.Handoff("m", 2)
+	q.Handoff("m", 3)
+	if got := q.creditOf("m"); got != 3 {
+		t.Fatalf("credit %d, want 3", got)
+	}
+	if !q.Park(w) || q.creditOf("m") != 2 {
+		t.Fatalf("Park spends one unit: credit %d", q.creditOf("m"))
 	}
 }
 
