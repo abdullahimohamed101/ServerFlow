@@ -27,8 +27,10 @@ type Config struct {
 	Auth         AuthConfig         `yaml:"auth"`
 	Events       EventsConfig       `yaml:"events"`
 	Tracing      TracingConfig      `yaml:"tracing"`
-	Log          LogConfig          `yaml:"log"`
-	Metrics      MetricsConfig      `yaml:"metrics"`
+	// Resilience configures fault tolerance (Phase 15); see ResilienceConfig.
+	Resilience ResilienceConfig `yaml:"resilience"`
+	Log        LogConfig        `yaml:"log"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
 
 	configFilePath string
 }
@@ -99,8 +101,9 @@ func Default() Config {
 			CacheSize:   10000,
 			StaleGrace:  5 * time.Minute,
 		},
-		Events:  defaultEvents(),
-		Tracing: defaultTracing(),
+		Events:     defaultEvents(),
+		Tracing:    defaultTracing(),
+		Resilience: defaultResilience(),
 		Log: LogConfig{
 			Level: "info",
 		},
@@ -165,6 +168,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.Metrics.validate(); err != nil {
+		return err
+	}
+	if err := c.validateResilience(); err != nil {
 		return err
 	}
 	switch c.Log.Level {

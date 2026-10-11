@@ -17,16 +17,27 @@ type badShape struct{ Resilience struct{ Mode int } }
 
 type noMode struct{ Resilience struct{ Enabled bool } }
 
+// A build without the Resilience section records "absent" (never "off"): shown on a configuration type that lacks
+// the section, since the real configuration has had it since Phase 15 PR C.
 func TestResilienceAbsentOnABuildWithoutTheFeature(t *testing.T) {
-	// The real configuration of this build: master has no Resilience section.
-	cfg := config.Default()
 	for _, want := range []string{ResilienceDefault, ResilienceOn, ResilienceOff} {
-		got, ignored, err := ApplyResilience(&cfg, want)
+		got, ignored, err := applyResilience(&struct{ Other int }{}, want)
 		if err != nil || got != "absent" {
 			t.Fatalf("want %q: got %q, %v: a build without the feature must record absent, never off", want, got, err)
 		}
 		if ignored != (want != ResilienceDefault) {
 			t.Fatalf("want %q: ignored=%v", want, ignored)
+		}
+	}
+}
+
+// The real configuration has the section (PR C); its default mode is off.
+func TestResilienceAppliedToTheRealConfiguration(t *testing.T) {
+	for _, tc := range []struct{ want, effective string }{{ResilienceDefault, "off"}, {ResilienceOn, "on"}, {ResilienceOff, "off"}} {
+		cfg := config.Default()
+		got, ignored, err := ApplyResilience(&cfg, tc.want)
+		if err != nil || ignored || got != tc.effective || cfg.Resilience.Mode != tc.effective {
+			t.Fatalf("want %q: got %q ignored=%v err=%v mode %q", tc.want, got, ignored, err, cfg.Resilience.Mode)
 		}
 	}
 }

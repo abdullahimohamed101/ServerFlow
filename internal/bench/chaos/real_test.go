@@ -35,8 +35,9 @@ func TestRealScenarios(t *testing.T) {
 			if ch == nil || len(ch.Windows) != 3 || len(recs) == 0 {
 				t.Fatalf("no chaos result: %+v", ch)
 			}
-			if res.Metadata.Resilience != report.ResilienceAbsent {
-				t.Fatalf("resilience %q: master has no feature, so absent", res.Metadata.Resilience)
+			// Since PR C the configuration section exists (default off) although the gateway does not read it yet.
+			if res.Metadata.Resilience != "off" {
+				t.Fatalf("resilience %q: the build has the configuration section, default off", res.Metadata.Resilience)
 			}
 			for _, c := range ch.Gate {
 				switch c.Name {
