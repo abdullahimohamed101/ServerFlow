@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -125,16 +126,31 @@ func TestResilienceEnvOverlayEveryKey(t *testing.T) {
 	}
 }
 
-func TestResilienceEnvOverlayTouchesOnlyItsOwnKey(t *testing.T) {
-	// Setting one variable at a time must change exactly one field of the section.
-	for _, tc := range resilienceEnvCases {
-		t.Setenv("SERVERFLOW_RESILIENCE_"+tc.key, tc.value)
-		c := Default()
-		applyEnv(&c)
-		if c.Resilience == defaultResilience() {
-			t.Errorf("%s changed nothing", tc.key)
+func countDifferingLeaves(a, b reflect.Value) int {
+	if a.Kind() != reflect.Struct {
+		if a.Interface() != b.Interface() {
+			return 1
 		}
-		os.Unsetenv("SERVERFLOW_RESILIENCE_" + tc.key)
+		return 0
+	}
+	n := 0
+	for i := 0; i < a.NumField(); i++ {
+		n += countDifferingLeaves(a.Field(i), b.Field(i))
+	}
+	return n
+}
+
+// Setting one variable changes exactly one field of the section: no key is wired to a neighbour's field.
+func TestResilienceEnvOverlayTouchesOnlyItsOwnKey(t *testing.T) {
+	for _, tc := range resilienceEnvCases {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv("SERVERFLOW_RESILIENCE_"+tc.key, tc.value)
+			c := Default()
+			applyEnv(&c)
+			if n := countDifferingLeaves(reflect.ValueOf(c.Resilience), reflect.ValueOf(defaultResilience())); n != 1 {
+				t.Errorf("%s changed %d fields, want 1", tc.key, n)
+			}
+		})
 	}
 }
 

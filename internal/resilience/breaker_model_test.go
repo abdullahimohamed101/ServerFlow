@@ -194,9 +194,6 @@ func (m *refModel) record(id string, reg int64, probe bool, tid, epoch int, v Ve
 	if b.state != Closed || v == Neutral {
 		return
 	}
-	if v == OK {
-		// an ok ends the streak but stays in the window
-	}
 	b.events = append(b.events, refEvent{now, v})
 	why := m.tripReason(b, now, v)
 	if why == "" {

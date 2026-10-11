@@ -1,7 +1,6 @@
 package resilience
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -239,5 +238,5 @@ func TestBudgetBoundsAmplification(t *testing.T) {
 	if float64(attempts) > max {
 		t.Fatalf("%d attempts for %d requests exceeds 1 + budget_ratio plus the minimum (%v)", attempts, requests, max)
 	}
-	t.Log(fmt.Sprintf("attempts per request: %.3f", float64(attempts)/requests))
+	t.Logf("attempts per request: %.3f", float64(attempts)/requests)
 }
