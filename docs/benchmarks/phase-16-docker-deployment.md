@@ -54,3 +54,5 @@ jaeger 21, gateway 9.6, control plane 7.5, mock workers 7.7 MiB.
 
 Zero hits in: `docker history --no-trunc` and `docker save` of the six images, `make dev-config` output, the argument list (`docker inspect`) and `docker top` of every container, every
 container log (smoke S12) and the repository working tree and history. A deliberately baked `ENV` secret in a test image is found by the same layer scan.
+
+Correction from the verification round: the first `docker top` scan used `-eo args`, which this engine rejects, so it searched nothing. It was redone with plain `docker top` over 18 running containers (47 process lines): 0 hits. `make dev-audit` now also reads each container's process table and refuses any root process (proved with a root probe container).

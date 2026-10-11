@@ -510,7 +510,7 @@ cmd_audit() {
     # The effective user of every process in a running container, from the engine's own process table. Root is not
     # accepted for any container (no exceptions: the third-party images run as 70, 999, 101, 65534, 472, 10001).
     if [ "$(docker inspect "$n" --format '{{.State.Running}}')" = true ]; then
-      if docker top "$n" -eo uid 2>/dev/null | tail -n +2 | tr -d ' ' | grep -qx '0'; then
+      if docker top "$n" 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -qxE 'root|0'; then
         printf 'audit: %s runs a process as root\n' "${out%%|*}" >&2; rc=1
       fi
     fi
