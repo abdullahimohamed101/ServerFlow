@@ -81,7 +81,7 @@ logs always carry a `trace_id`, and none did. Phase 11 adds distributed tracing 
 
 ## Known vulnerability exception (golang.org/x/net)
 
-`govulncheck` (v1.8.0) on this branch reports GO-2026-6617, 6612, 6611, 6610 and 6603 in `golang.org/x/net@v0.58.0`, fixed in v0.60.0. v0.59.0
+`govulncheck` (v1.8.0) on this branch reports GO-2026-6617, 6612, 6611, 6610 and 6603 in `golang.org/x/net@v0.59.0`, fixed in v0.60.0. v0.59.0
 and v0.60.0 declare `go 1.26.0`; when this was written the floor was 1.25.0, so they could not be taken, and no older release carries the
 fixes. The floor is 1.26 now, so the fix is available and is left to the follow-up pull request that also bumps OpenTelemetry.
 `google.golang.org/grpc` was bumped to v1.83.2 (GO-2026-6443). The facts, checked:

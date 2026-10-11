@@ -119,7 +119,7 @@ propose v1.47+. Do not bump OpenTelemetry piecemeal: review the whole set of `go
 
 ## Known vulnerability exception
 
-`govulncheck` reports five `golang.org/x/net@v0.58.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed in v0.60.0. They are accepted until the
+`govulncheck` reports five `golang.org/x/net@v0.59.0` advisories (GO-2026-6617, 6612, 6611, 6610, 6603) fixed in v0.60.0. They are accepted until the
 follow-up pull request above takes v0.60.0. The affected HTTP/2 code is linked
 through gRPC types the OTLP/HTTP exporter imports but does not use; govulncheck's source mode still marks them reachable through
 over-approximated call traces, so "not reachable at runtime" is the expectation from the code structure, not something the tool confirms.
