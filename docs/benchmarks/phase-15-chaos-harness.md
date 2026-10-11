@@ -56,7 +56,7 @@ in the next window.
 
 **Two primary measures per scenario are pre-registered** (the same two for every scenario, written down before any
 number was seen): the **success rate in the fault window**, and the **attempts per request in it**
-(`Δ inference_attempts_total / Δ inference_requests_total`; requests the gateway refuses without any attempt pull it
+(`Δ inference_attempts_total / Δ inference_requests_total`, read at the window boundaries, not divided by the clients' request count; requests the gateway refuses without any attempt pull it
 down). Only these support a claim, and only under the 3-repeat spread rule: with three runs per side and no real
 difference, the min-max ranges are disjoint about 10% of the time, per measure, so ten descriptive measures would
 produce a "finding" by chance. Everything else is descriptive:
@@ -81,9 +81,9 @@ the command, and left out of the spread summary: invalid runs are never compared
 | fault applied and cleared | applying or clearing the fault failed, or the fault was still on at the end of the run |
 | baseline error rate | more than `--max-error-rate` (5%) of the baseline window failed, or it is empty |
 | fault evidenced | the mock workers' own counters show no request touched / no crash / no drain (not the harness's intention); for overload, no failed request and no gateway refusal in the fault window |
-| clients within the surviving slots | closed-loop clients exceed 60% of the **surviving slots**: the registry slots of eligible workers minus the faulted worker's, **so a frozen but still READY worker is not counted**. `overload` inverts it: the fault window must offer more clients than slots |
+| clients within the surviving slots | closed-loop clients exceed 60% of the **surviving slots**: the request slots of the workers the cluster was planned with (read from the plan, not the registry) minus the faulted worker's, **so a frozen but still READY worker is not counted**. `overload` inverts it: the fault window must offer more clients than slots |
 | minimum requests per window | any window sent fewer than `--min-requests` (default 100 x scale, at least 20) |
-| cluster settled | `Start` returned before five registry refreshes passed after the control plane listed every worker |
+| cluster settled | `Start` returned before five registry refreshes passed after the control plane listed every worker. `Start` itself waits for exactly that, so this clause is nearly tautological: it guards against a future change to `Start`, not against a slow machine |
 | clean working tree | the commit is unrecorded or the tree is dirty (`--allow-dirty` waives it and says so in the result) |
 | no sleep or clock step | the wall clock moved against the monotonic clock by more than 250 ms during the run (a laptop that slept: the Phase 8 lesson) |
 
@@ -223,3 +223,13 @@ Not measured on master: breaker state, probes, queue wait, `retry.denied`; their
 8. **Queue depth** is sampled from the control plane as in Phase 7 (`result.json` `queue`), over the whole run, not per window.
 9. **No `tests/chaos` yet.** Acceptance 19 puts the chaos tests in the harness self-tests of this PR (done: fake cluster, fake clock, fake loader, and one real run
    of each scenario) and in the product behaviour of PR D (not done: there is nothing to test).
+
+## Small behaviours worth knowing
+
+- `--resilience on|off` of the chaos command on a build without the feature prints `note: --resilience ... has no effect` once per run, like `benchmark run`.
+- `compare` of a Phase 7 result (no `resilience` field) with a new one leaves the `resilience` line out of the differences instead of flagging `not recorded -> absent` as unfair; two new results that differ still warn.
+- A gateway counter that goes backwards between two ticks (the gateway restarted) is treated as reset to zero: the window's delta is the post-reset value, never negative.
+- The spread summary warns when the valid runs of a scenario mix resilience values.
+- Closing or draining a mock worker releases requests held by a blackhole, so a drain does not wait out its timeout.
+- Chaos results do not report per-worker balance (`worker_balance` under not measured): workers are drained and replaced during the run.
+- The baseline error-rate clause compares integer counts: exactly the limit passes, one failure over it does not.
