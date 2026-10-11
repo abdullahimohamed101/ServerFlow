@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"serverflow/internal/postgres/postgrestest"
 	"strconv"
 	"strings"
@@ -168,8 +170,14 @@ func TestProcessUsageConsumerEndToEnd(t *testing.T) {
 		"SERVERFLOW_EVENTS_SASL_PASSWORD=" + kcfg.SASLPassword, "SERVERFLOW_EVENTS_CONSUMER_GROUP_ID=" + kafkatest.Unique("sf-proc"),
 		"SERVERFLOW_EVENTS_CONSUMER_METRICS_ADDR=" + metrics, "SERVERFLOW_EVENTS_CONSUMER_BATCH_TIMEOUT=50ms",
 	}
-	if code, out := runBin(t, "usage-consumer", env); code == 0 || !strings.Contains(out, "migration") {
-		t.Fatalf("an unmigrated database must stop the consumer: exit %d, %s", code, out)
+	// runBin allows 10s, which is too tight for a process start and a database round trip while the whole suite runs.
+	rctx, rcancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer rcancel()
+	cmd := exec.CommandContext(rctx, binary(t, "usage-consumer"))
+	cmd.Env = append(os.Environ(), env...)
+	out0, runErr := cmd.CombinedOutput()
+	if runErr == nil || rctx.Err() != nil || !strings.Contains(string(out0), "migration") {
+		t.Fatalf("an unmigrated database must stop the consumer: %v, %s", runErr, out0)
 	}
 	out := execAdmin(t, dsn, "migrate", "up")
 	_ = out
