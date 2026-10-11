@@ -52,6 +52,12 @@ happens: re-run the job (the limit is hourly), or add a `docker login` step with
 `Start Kafka` (authenticated pulls have a higher limit). The repository owner owns that secret; none is added here. The outage test starts a second, private broker on `SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE`
 and needs Docker.
 
+Registry images other than Redpanda follow the same rule. The PostgreSQL and Redis images (`public.ecr.aws/docker/library`, an ECR Public mirror)
+are started by workflow steps, not as `services:` containers (the runner pulls those without retries), through `scripts/ci-docker-pull.sh <image> [tarball]`:
+five attempts, delay 5 s growing x3, a cache tarball restored by `actions/cache` keyed by the image reference. A rate limited anonymous pull
+(`toomanyrequests: Rate exceeded`) therefore retries instead of failing the job. `internal/ciguard` fails the build if a workflow runs `docker run` or `docker pull` of a
+registry image without that script, or adds a `services:` container. Not verified: a cold pull from a GitHub-hosted runner.
+
 A local server that trusts everyone hides a missing password until CI fails (this happened once), so the
 local server deliberately requires one.
 
