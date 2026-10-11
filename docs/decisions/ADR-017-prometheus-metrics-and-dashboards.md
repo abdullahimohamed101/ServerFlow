@@ -140,5 +140,6 @@ The control plane is scraped every 5 s and the fleet rule group is evaluated eve
   Prometheus configuration, rules and dashboards stay as they are. The root `docker-compose.yml` still carries unvalidated Prometheus and Grafana
   services whose host port 9090 collides with the control plane; they are Phase 16's to reconcile.
 - Known limitation: worker health series are as fresh as the last heartbeat; the registry snapshot age series makes a stale gateway view visible.
-- Known limitation: a failed second routing attempt during a retry is not a rejection event, so it is not counted in `scheduler_decisions_total`
-  or `scheduler_no_capacity_total`; the first attempt's response is what the client gets.
+- Known limitation (closed in Phase 15, ADR-020): a failed second routing attempt during a retry was not a rejection event, so it was not counted in
+  `scheduler_decisions_total` or `scheduler_no_capacity_total`; the first attempt's response is what the client gets. It is now counted from
+  `AttemptEnd.NextRouteResult`, with the same result and reason a first routing's refusal would have. `scheduler_decision_duration_seconds` is not observed for it.

@@ -52,8 +52,7 @@ Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_r
   For concurrency it is a 1 s hint: a slot frees when some request finishes.
 - `503 RATE_LIMIT_UNAVAILABLE`, `Retry-After`: Redis could not answer and the gateway fails closed (or this gateway holds too many leases).
 - Cost is `input_tokens + max_tokens` (the larger of `max_tokens` and `max_completion_tokens` when both are sent; `gateway.max_tokens_limit`
-  when neither is). It is charged at admission and **never refunded**: a request that then fails (503 NO_CAPACITY, an upstream 5xx, an
-  unknown model in registry mode) still consumed its request and token quota. A request larger than the whole token bucket needs a full bucket.
+  when neither is). It is charged at admission and **never refunded**: a request that then fails (503 NO_CAPACITY, an upstream 5xx) still consumed its request and token quota. A request larger than the whole token bucket needs a full bucket.
 
 ## Known limits of the estimate and of the scope
 
@@ -63,12 +62,11 @@ Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_r
   control.
 - **Dense text is under-counted.** Input is estimated at three ASCII characters per token; digits, base64, hex, minified JSON and code can take
   1.5 to 3. The 1 MiB request body cap bounds the input.
-- **Registry mode charges unknown models.** In `gateway.worker_source: registry` the registry decides which models exist, and the limiter runs
-  before the router picks a worker, so a request for a model that turns out not to exist (404) has already consumed the tenant's request and
-  token quota. Tenants with an `allowed_models` list are not affected (a forbidden model is refused before the limiter, and not charged).
-  This was left as is on purpose: moving the limiter after routing would mean checking quotas after a worker slot has been reserved and
-  then undoing the reservation on every refusal, a much bigger change to the scheduling path than this phase should make. Requests for
-  non-existent models are client errors the tenant pays for; the per-tenant quota bounds the cost.
+- **Registry mode and unknown models.** In `gateway.worker_source: registry` the registry decides which models exist. Since Phase 15 a request for a
+  model that no worker serves is answered `404` before the limiter runs and costs the tenant no request, token or concurrency quota (it used to be
+  charged). A model that is served but has no eligible worker (all workers lost, draining or full) is still charged, as is any request while the
+  gateway has no usable registry snapshot, because nothing is known about the model then. A model that disappears between the check and routing
+  can still be charged once, rarely.
 - **Unauthenticated traffic is not rate limited.** Tenant quotas need an identity (ADR-014's front-proxy or per-IP limiter advice stands).
 
 ## When Redis fails

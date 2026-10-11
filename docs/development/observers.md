@@ -18,6 +18,17 @@ ADR-016.
 | `FirstToken(ctx, FirstToken)` | the first streamed chunk was written to the client |
 | `AttemptEnded(ctx, AttemptEnd)` | an attempt finished (outcome ok, failed, retried or client_closed) |
 | `RequestCompleted(ctx, Completion)` | the final status is decided; exactly once, last |
+| `QueueWaited(ctx, QueueWait)` | a request waited in the admission queue (Phase 15; **not fired yet**) |
+| `BreakerTransition(ctx, BreakerChange)` | a worker's circuit breaker changed state, on a background context, outside any request (Phase 15; **not fired yet**) |
+
+Guarantee (ADR-016 amendment, ADR-020): every `AttemptStarted` is followed by exactly one `AttemptEnded`, even when the request panics (the attempt
+ends `failed` with class `panic` and the panic still becomes a 500), and an `AttemptEnded` never arrives for an attempt that was not started.
+
+Fields reserved for Phase 15 and zero until it fires them: `AttemptStart.Probe` (a circuit breaker's trial request), `AttemptStart.QueueWait` (time spent
+in the admission queue), `AttemptEnd.RetryDenied` (`budget`, `deadline`: a wanted retry was refused), and `Rejection` kind `overload` (reasons
+`global_limit`, `queue_full`, `queue_timeout`, `draining`; shedding is admission, not scheduling, so metrics must not count it as a scheduling decision).
+`AttemptEnd.NextRouteResult` (`no_capacity`, `worker_unavailable`, `error`) is live: it says why a wanted retry found no worker and feeds the scheduler series.
+An observer that embeds `NopObserver` needs no change for any of this; one that implements `Observer` from scratch must add the two new methods.
 
 Typical sequences: success is started, admitted, attempt started, (first token), attempt ended, completed. A refusal is started,
 rejected, completed (with admitted before the rejection for the registry-mode model and capacity refusals). A retry starts the second

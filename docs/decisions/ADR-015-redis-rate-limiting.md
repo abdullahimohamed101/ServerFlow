@@ -46,8 +46,8 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   gateway does not rewrite the body to close this; the mitigations are the worker's own maximum length setting and Phase 15
   (admission control). (2) The input estimate is typically LOW for very dense text (digits, base64, hex, minified JSON and code can take
   1.5 to 3 characters per token); the 1 MiB request body cap is the outer bound on the input. (3) Tenants are charged at admission: a
-  request that then fails (503 NO_CAPACITY, an upstream 5xx, an unknown model in registry mode) still consumed its request and token
-  quota; nothing is refunded.
+  request that then fails (503 NO_CAPACITY, an upstream 5xx) still consumed its request and token
+  quota; nothing is refunded. (An unknown model in registry mode no longer does: see "Registry mode and unknown models".)
 - **Concurrency as leases.** In-flight requests are members of a per-tenant sorted set scored by expiry. A gateway renews its own
   in-flight leases every `lease_ttl/3` (one call per tenant with leases, so a tenant's keys share a slot) and releases them when the
   handler ends; a crashed gateway's leases lapse within `lease_ttl`. Renewal never revives a released or expired lease, so a renewal
@@ -56,9 +56,12 @@ limiting. The point of the phase: several gateways share one quota, and what hap
   asynchronous and never blocks the handler (bounded queue, four workers); when the queue is full, or Redis is backing off, a release is
   dropped and the lease expires by itself. The local lease map is bounded by `rate_limit.max_local_leases`; over the bound a request is
   refused as unavailable in both failure modes (the bound protects the gateway's memory, not quotas).
-- **Registry mode and unknown models.** The limiter runs before routing, so in registry mode a request for a model the registry does not know (404) has
-  already consumed the tenant's quota; a model forbidden by `allowed_models` is refused earlier and not charged. Moving the limiter after routing would
-  mean undoing a reserved worker slot on every refusal, so this is a documented limitation rather than a change to the scheduling path.
+- **Registry mode and unknown models.** The limiter runs before routing, so when this phase shipped a request in registry mode for a model the registry
+  does not know (404) had already consumed the tenant's quota; a model forbidden by `allowed_models` is refused earlier and not charged. Moving the limiter
+  after routing would have meant undoing a reserved worker slot on every refusal. **Amended (Phase 15, ADR-020): closed.** A cheap model pre-check
+  (`snapshotCache.Serves`) now runs before the limiter in registry mode, so an unknown model is answered 404 and charges no request, token or
+  concurrency quota. A model that is served by any worker (eligible or not) is charged as before, and with no usable registry snapshot the request
+  reaches the limiter as before.
 - **Where in the request.** authenticate, read and parse the body, allowed models, **limiter**, route. The slot is released by a `defer` in
   the chat handler, so success, errors, client disconnects and panics all give it back.
 - **Rejections.** `429 RATE_LIMITED` with `Retry-After` in whole seconds (at least 1), computed from the bucket that failed (when several
