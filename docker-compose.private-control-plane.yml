@@ -1,0 +1,6 @@
+# Added by scripts/dev-up.sh when CONTROL_PLANE_PORT is set to an empty value in .env: the control plane is then
+# reachable on the backend network only (the benchmark tool and operators on the host cannot use it).
+services:
+  control-plane:
+    ports: !reset []
+    networks: [backend]

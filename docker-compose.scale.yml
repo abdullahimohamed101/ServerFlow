@@ -1,0 +1,6 @@
+# Added by scripts/dev-up.sh when GATEWAYS is greater than 1 (ADR-021): the replicas stop publishing a port and the
+# nginx load balancer `lb` (profile scale, defined in docker-compose.yml) publishes 127.0.0.1:${GATEWAY_PORT} instead.
+services:
+  gateway:
+    ports: !reset []
+    networks: [backend]
