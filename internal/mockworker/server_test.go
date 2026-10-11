@@ -611,6 +611,10 @@ func TestStartupDelayGatesReadiness(t *testing.T) {
 	}
 }
 
+// lastServer is the server the most recent serve call started, for tests that need its handle.
+// Tests using it do not run in parallel.
+var lastServer *Server
+
 func serve(t *testing.T, cfg Config) (url string, cancel context.CancelFunc, done <-chan error) {
 	t.Helper()
 	if err := cfg.Validate(); err != nil {
@@ -621,6 +625,7 @@ func serve(t *testing.T, cfg Config) (url string, cancel context.CancelFunc, don
 		t.Fatal(err)
 	}
 	srv := New(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	lastServer = srv
 	ctx, cancelFn := context.WithCancel(context.Background())
 	d := make(chan error, 1)
 	go func() { d <- srv.Serve(ctx, ln) }()

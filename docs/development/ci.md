@@ -46,11 +46,29 @@ Alternatives were checked on 2026-10-10 with anonymous manifest requests and non
 reference, so most runs pull nothing, and (b) on a cache miss pulls with five attempts and growing backoff
 (`scripts/dev-kafka.sh pull`). Updating the image tag changes the key and refills the cache.
 
+**Update (2026-10-11).** A first CI run failed with `docker: toomanyrequests: Rate exceeded` on a cold pull, which is exactly the shared-runner
+limit above. `mirror.gcr.io` (Google's pull-through cache) was then found to serve the same image anonymously, with the same index digest as
+Docker Hub (`sha256:e52ef1cf...`, amd64 and arm64), so it is now the default image (`mirror.gcr.io/redpandadata/redpanda:v25.1.1`) and
+`docker.redpanda.com` is the fallback `pull` tries once if the mirror fails (`DEV_KAFKA_IMAGE` / `DEV_KAFKA_FALLBACK_IMAGE` override both). The
+mirror has no published availability guarantee, hence the fallback, the retries and the cache.
+
 What is verified and what is not: the image pulls and runs on the development Mac, and the cache/load/retry steps were written but a **cold pull
 from a GitHub-hosted runner has not been run**, so a rate-limited first run on a busy runner can still fail the Kafka step. If that
 happens: re-run the job (the limit is hourly), or add a `docker login` step with a Docker Hub account kept in a repository secret before
 `Start Kafka` (authenticated pulls have a higher limit). The repository owner owns that secret; none is added here. The outage test starts a second, private broker on `SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE`
 and needs Docker.
+
+Registry images other than Redpanda follow the same rule. The PostgreSQL and Redis images are started by workflow steps, not as `services:` containers (the
+runner pulls those without retries and cannot fall back), through `scripts/ci-docker-pull.sh <image> [tarball]`. Anonymous pulls from shared runners are
+throttled by request rate (`toomanyrequests: Rate exceeded`) and by data volume (`Data limit exceeded`), so the script tries a list of sources in order,
+3 rounds with 5 s then 15 s between rounds, tags the winner as the canonical reference, and saves a tarball that `actions/cache` restores
+(key = reference + digest from `scripts/ci-docker-pull.sh digest <image>`, so most runs pull nothing). Sources for `public.ecr.aws/docker/library/<name>`:
+that, `mirror.gcr.io/library/<name>`, `docker.io/library/<name>`. Checked anonymously on 2026-10-11 (manifest GET, body sha256): `postgres:16` is
+`sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d` and `redis:7` is
+`sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85` on all three. Optional: if `DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN` are in the
+step's environment (from repository secrets the owner creates; none exists and none is added) the script runs `docker login` first. `internal/ciguard`
+fails the build if a workflow runs `docker run` or `docker pull` of a registry image without the script, or adds a `services:` container.
+Not verified: a cold pull from a GitHub-hosted runner.
 
 A local server that trusts everyone hides a missing password until CI fails (this happened once), so the
 local server deliberately requires one.

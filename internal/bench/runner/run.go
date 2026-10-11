@@ -421,6 +421,9 @@ func connect(ctx context.Context, o Options, wl *workload.Workload, out io.Write
 			return nil, fmt.Errorf("embedded cluster: %w", err)
 		}
 		t.cluster, t.gatewayURL, t.cp = c, c.GatewayURL, c.ControlPlane()
+		if o.Resilience != "" && c.Resilience() == report.ResilienceAbsent {
+			say(out, "  note: --resilience %s has no effect: this build has no resilience feature (recorded as absent)\n", o.Resilience)
+		}
 		return t, nil
 	}
 	t.gatewayURL = strings.TrimRight(o.TargetURL, "/")
@@ -472,6 +475,7 @@ func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, 
 	m.Environment(ctx, ".", time.Now())
 	if t.cluster != nil {
 		m.Target, m.TargetHost, m.GPUType, m.SchedulerSource = "embedded", "loopback", "none (mock workers)", "embedded"
+		m.Resilience = t.cluster.Resilience()
 		n := len(t.cluster.Workers)
 		m.WorkerCount = &n
 		c := &report.Cluster{Profile: o.Profile, HeartbeatMillis: embedded.HeartbeatInterval.Milliseconds(), RegistryRefreshMs: embedded.RegistryRefresh.Milliseconds()}

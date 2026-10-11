@@ -46,6 +46,8 @@ type Result struct {
 	SamplePollsFailed int      `json:"sample_polls_failed"`
 	SamplesDropped    int      `json:"samples_dropped"`
 	Notes             []string `json:"notes"`
+	// Chaos is set for a fault-injection run (Phase 15) and absent otherwise.
+	Chaos *Chaos `json:"chaos,omitempty"`
 }
 
 // Timings are the phases of a run, in seconds. Wall and Monotonic are the same interval

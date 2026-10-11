@@ -61,6 +61,19 @@ var headlines = []headline{
 	}},
 	{key: "request_jain", label: "worker balance (Jain)", unit: "index", get: func(r Result) *float64 { return r.Imbalance.RequestJain }},
 	{key: "error_rate", label: "error rate", unit: "%", points: true, get: func(r Result) *float64 { return f(r.Summary.ErrorRate * 100) }},
+	// The two pre-registered primary measures of a chaos run; not measured for an ordinary run.
+	{key: "chaos_success", label: "fault-window success rate (primary)", unit: "%", points: true, get: func(r Result) *float64 {
+		if r.Chaos != nil {
+			return f(r.Chaos.Measures.FaultSuccessRate * 100)
+		}
+		return nil
+	}},
+	{key: "chaos_attempts", label: "fault-window attempts per request (primary)", unit: "attempts", get: func(r Result) *float64 {
+		if r.Chaos != nil {
+			return r.Chaos.Measures.FaultAttemptsPerRequest
+		}
+		return nil
+	}},
 }
 
 // MinRepeats is how many runs each side needs before the spread of the repeats may be used
@@ -140,6 +153,7 @@ func CompareGroups(a, b Result, ga, gb []Result) Comparison {
 	c := Comparison{A: a.RunID, B: b.RunID, NA: len(ga), NB: len(gb), Differences: differences(a.Metadata, b.Metadata)}
 	c.Grouped = len(ga) >= MinRepeats && len(gb) >= MinRepeats
 	c.Warnings = append(sameRunWarnings(a, b), warnings(ga, gb)...)
+	c.Warnings = append(c.Warnings, resilienceWarnings(a, b, ga, gb)...)
 	for _, h := range headlines {
 		d := Delta{Key: h.key, Label: h.label, Unit: h.unit, Points: h.points, Spread: "insufficient repeats"}
 		if c.Grouped {
@@ -262,6 +276,11 @@ func differences(a, b Metadata) []Difference {
 	add("duration", false, fmt.Sprint(a.DurationSecs), fmt.Sprint(b.DurationSecs))
 	add("warm-up", false, fmt.Sprint(a.WarmupSecs), fmt.Sprint(b.WarmupSecs))
 	add("stream ratio", false, fmt.Sprint(a.StreamRatio), fmt.Sprint(b.StreamRatio))
+	// A result written before the field existed (Phase 7) has no value; that is not a difference worth an
+	// unfair-comparison flag against a new result, so the line is left out when either side has none.
+	if a.Resilience != "" && b.Resilience != "" {
+		add("resilience", false, resilienceLabel(a), resilienceLabel(b))
+	}
 	add("git commit", false, a.GitCommit, b.GitCommit)
 	add("git tree", false, a.GitTree, b.GitTree)
 	add("machine", false, a.Machine, b.Machine)
@@ -307,6 +326,9 @@ func (c Comparison) Write(w io.Writer) error {
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "METRIC\tA\tB\tDELTA\tCHANGE\tSPREAD")
 	for _, d := range c.Deltas {
+		if strings.HasPrefix(d.Key, "chaos_") && d.A == nil && d.B == nil {
+			continue // chaos measures exist only for chaos runs
+		}
 		change := "n/a"
 		switch {
 		case d.Pct != nil:

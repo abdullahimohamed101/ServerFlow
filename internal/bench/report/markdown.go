@@ -39,6 +39,9 @@ func Markdown(r Result) string {
 	row := func(k, v string) { fmt.Fprintf(&b, "| %s | %s |\n", k, v) }
 	row("Target", targetLine(m))
 	row("Commit", m.GitCommit+" ("+m.GitTree+")")
+	if m.Resilience != "" {
+		row("Resilience", Clean(m.Resilience))
+	}
 	row("Models", strings.Join(m.Models, ", "))
 	row("Workers", workersLine(m))
 	row("GPU", m.GPUType)
@@ -120,6 +123,9 @@ func Markdown(r Result) string {
 	fmt.Fprintf(&b, ".\nQueue balance (Jain index of mean queue depth): %s.\n", optNotMeasured(r.Imbalance.QueueJain, "%.4f", r.NotMeasured["queue_imbalance"]))
 	fmt.Fprintf(&b, "GPU utilization: %s.\n\n", optNotMeasured(r.GPUUtilization, "%.2f", r.NotMeasured["gpu_utilization"]))
 
+	if r.Chaos != nil {
+		b.WriteString(chaosMarkdown(r.Chaos))
+	}
 	if len(r.NotMeasured) > 0 {
 		b.WriteString("## Not measured\n\n")
 		keys := make([]string, 0, len(r.NotMeasured))
