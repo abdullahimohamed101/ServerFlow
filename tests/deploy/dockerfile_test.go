@@ -51,7 +51,7 @@ func TestDockerfile(t *testing.T) {
 	if strings.Contains(df, "FROM ${") || strings.Contains(df, "FROM $") {
 		t.Error("FROM lines must be literal (hadolint DL3006, Dependabot)")
 	}
-	for _, want := range []string{"CGO_ENABLED=0", "-trimpath", "-buildvcs=false", "-buildid=", "internal/version.Version", "internal/version.Commit", "USER 65532:65532"} {
+	for _, want := range []string{"CGO_ENABLED=0", "-trimpath", "-buildvcs=false", "-buildid=", "internal/version.Version", "internal/version.Commit", "USER 65532:65532", `LABEL org.serverflow.stage="build"`, "org.opencontainers.image.title"} {
 		if !strings.Contains(df, want) {
 			t.Errorf("Dockerfile lacks %q", want)
 		}

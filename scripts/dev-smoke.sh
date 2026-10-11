@@ -113,15 +113,27 @@ fi
 
 # ------------------------------------------------------------------------------------------------ S4
 if want S4; then
-  # time_starttransfer is the first byte, time_total the end: a response that is streamed through every hop (including
-  # the load balancer: proxy_buffering off) has a first byte well before its last; a buffered one has both at the end.
-  times="$(gw_curl "$KEY" -sN -o "$SCRATCH/stream.txt" -w '%{time_starttransfer} %{time_total}' -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions")"
-  n="$(grep -c '^data:' "$SCRATCH/stream.txt" || true)"
-  gap_ok="$(printf '%s\n' "$times" | awk '{print (($2 - $1) >= 0.08) ? "yes" : "no"}')"
-  if [ "$n" -ge 2 ] && [ "$(grep '^data:' "$SCRATCH/stream.txt" | tail -1)" = "data: [DONE]" ] && [ "$gap_ok" = yes ]; then
-    pass "S4 streaming completion: $n data chunks, ends with [DONE], delivered incrementally"
+  # Incremental delivery: the seconds between the first and the last data line must be well above zero. A hop that
+  # buffers the response (nginx without proxy_buffering off, for example) hands over all lines at once. perl (core
+  # Time::HiRes) timestamps the lines; without perl only the chunk count and the final [DONE] are checked.
+  if command -v perl >/dev/null 2>&1; then
+    gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions" |
+      perl -MTime::HiRes=time -ne 'BEGIN{$t0=time} if (/^data:/) {$n++; $f//=time-$t0; $l=time-$t0; $last=$_} END{printf "%d %.3f %.3f %s\n", $n, $f, $l, ($last =~ /\[DONE\]/ ? "done" : "open")}' >"$SCRATCH/stream.txt"
+    read -r n first last done_flag <"$SCRATCH/stream.txt"
+    gap_ok="$(awk -v f="$first" -v l="$last" 'BEGIN{print ((l - f) >= 0.08) ? "yes" : "no"}')"
+    if [ "${n:-0}" -ge 2 ] && [ "$done_flag" = "done" ] && [ "$gap_ok" = yes ]; then
+      pass "S4 streaming completion: $n data chunks over $(awk -v f="$first" -v l="$last" 'BEGIN{printf "%.2f", l - f}')s, ends with [DONE], delivered incrementally"
+    else
+      fail "S4 streaming completion: ${n:-0} data chunks, ends with [DONE]: $done_flag, spread between first and last chunk: $first to $last s (must be at least 0.08 s apart)"
+    fi
   else
-    fail "S4 streaming completion: $n data chunks, last line [DONE]: $(grep '^data:' "$SCRATCH/stream.txt" | tail -1 | grep -c 'DONE'), incremental delivery: $gap_ok (first byte and end: $times s)"
+    gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions" >"$SCRATCH/stream.txt"
+    n="$(grep -c '^data:' "$SCRATCH/stream.txt" || true)"
+    if [ "$n" -ge 2 ] && [ "$(grep '^data:' "$SCRATCH/stream.txt" | tail -1)" = "data: [DONE]" ]; then
+      pass "S4 streaming completion: $n data chunks, ends with [DONE] (perl is not installed: incremental delivery not measured)"
+    else
+      fail "S4 streaming completion: $n data chunks, no [DONE] at the end"
+    fi
   fi
 fi
 

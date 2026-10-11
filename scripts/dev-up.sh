@@ -407,12 +407,12 @@ cmd_up() {
   # One build at a time: five parallel Go compilations of the same build stage exhaust a 4 GB VM (observed: the
   # compiler is OOM-killed), and serial builds reuse the first one's layers.
   export COMPOSE_PARALLEL_LIMIT=1
-  if ! dc --profile tools build >"$DEV_DIR/build.log" 2>&1; then
+  if ! dc --profile tools build ${DEV_UP_NO_CACHE:+--no-cache} >"$DEV_DIR/build.log" 2>&1; then
     tail -25 "$DEV_DIR/build.log" >&2
     die "the image build failed (full log: $DEV_DIR/build.log)"
   fi
   say "starting"
-  if ! dc up -d --remove-orphans --wait --wait-timeout 240 >"$DEV_DIR/up.log" 2>&1; then
+  if ! dc up -d --remove-orphans --wait --wait-timeout "${DEV_UP_WAIT_TIMEOUT:-240}" >"$DEV_DIR/up.log" 2>&1; then
     tail -5 "$DEV_DIR/up.log" >&2
     wait_failed
     die "docker compose up failed or timed out"
@@ -481,6 +481,10 @@ cmd_reset() {
   for img in gateway control-plane worker-agent mock-worker usage-consumer admin; do
     docker image rm "serverflow/$img:${SF_TAG:-dev}" >/dev/null 2>&1 || true
   done
+  # The classic builder leaves every superseded build (the 2.4 GB build stage and the old image layers) as dangling images.
+  # Remove only the ones labelled as ours.
+  docker image prune -f --filter "label=org.serverflow.stage=build" >/dev/null 2>&1 || true
+  docker image prune -f --filter "label=org.opencontainers.image.title=ServerFlow" >/dev/null 2>&1 || true
   rm -rf "$DEV_DIR"
   say "reset: volumes, .dev/ and the serverflow/*:dev images removed ($ENV_FILE is kept)"
 }

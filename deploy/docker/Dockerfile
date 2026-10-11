@@ -8,6 +8,8 @@
 # Dependabot "docker" ecosystem. The builder comes from public.ecr.aws because Docker Hub rate-limits shared CI runners.
 
 FROM public.ecr.aws/docker/library/golang:1.26.9@sha256:d7722066f0b60ceccb6c0643cbed1f5f9e15506ac237146c95333504d7805d89 AS build
+# Labels let `make dev-reset` find the dangling build stages the classic builder leaves behind (each is 2+ GB).
+LABEL org.serverflow.stage="build"
 WORKDIR /src
 ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-mod=readonly
 COPY go.mod go.sum ./
