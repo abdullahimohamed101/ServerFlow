@@ -21,7 +21,7 @@ the home directory is shared with containers, so clone under your home directory
 ```bash
 git clone <repository> && cd ServerFlow
 make dev-up        # builds six images, generates secrets under .dev/, starts everything, creates two tenants and their keys
-make dev-smoke     # 13 checks; the last line says "13 of 13 checks passed, 0 failed, 0 skipped"
+make dev-smoke     # 13 checks; with the default single gateway the last line says "12 of 13 checks passed, 0 failed, 1 skipped" (S13 needs GATEWAYS=3)
 export SF_KEY=$(cat .dev/api_key)
 curl -s -H "Authorization: Bearer $SF_KEY" -H 'Content-Type: application/json' \
   -d '{"model":"mock-model","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' \

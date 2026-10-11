@@ -74,7 +74,7 @@ local server deliberately requires one.
 | `observability (promtool, dashboards)` | `quality.sh observability` | pinned promtool 2.53.0 release archive, SHA-256 verified; no Docker Hub |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 | `deploy (lint, config, static tests)` | `quality.sh deploy` | Phase 16: pinned `hadolint` v2.15.1 release (SHA-256 verified), `shellcheck` and the compose CLI from the runner image; about 2 minutes, no image pulls |
-| `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers and 13 end-to-end checks that must all run (`0 failed, 0 skipped`); images from `public.ecr.aws`, `quay.io`, `mirror.gcr.io` and `gcr.io` (never Docker Hub) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
+| `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers with `GATEWAYS=3` and 13 end-to-end checks that must all run (`0 failed, 0 skipped`; a single gateway skips S13); images from `public.ecr.aws`, `quay.io`, `mirror.gcr.io` and `gcr.io` (never Docker Hub) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
 
 A new push to a pull request cancels the run in progress. Every job has a timeout. Actions are pinned to
 commit SHAs with the version in a comment; Dependabot (`.github/dependabot.yml`) updates them and the Go

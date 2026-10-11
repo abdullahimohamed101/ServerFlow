@@ -287,8 +287,11 @@ jobs:
       - name: Save the Redpanda image for the cache
         if: steps.redpanda-cache.outputs.cache-hit != 'true'
         run: docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
-      - name: Start the stack
-        run: make dev-up
+      - name: Start the stack (three gateways, so check S13 runs too and nothing is skipped)
+        run: |
+          cp deploy/compose/.env.example .env
+          sed -i 's/^GATEWAYS=.*/GATEWAYS=3/' .env
+          make dev-up
       - name: Smoke checks
         run: |
           set -o pipefail

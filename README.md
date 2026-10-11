@@ -31,7 +31,7 @@ a private network with only loopback ports published, and `make dev-smoke` check
 
 ```bash
 make dev-up        # first run: copies .env, generates secrets under .dev/, builds, starts, creates two tenants and keys
-make dev-smoke     # ends with: smoke: 13 of 13 checks passed, 0 failed, 0 skipped (12 of 13 until you run GATEWAYS=3)
+make dev-smoke     # 12 of 13 checks pass and 1 is skipped; with GATEWAYS=3 in .env it ends: smoke: 13 of 13 checks passed, 0 failed, 0 skipped
 export SF_KEY=$(cat .dev/api_key)
 curl -s -H "Authorization: Bearer $SF_KEY" -H 'Content-Type: application/json' \
   -d '{"model":"mock-model","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' http://127.0.0.1:18080/v1/chat/completions
