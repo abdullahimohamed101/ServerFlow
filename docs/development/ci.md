@@ -46,6 +46,12 @@ Alternatives were checked on 2026-10-10 with anonymous manifest requests and non
 reference, so most runs pull nothing, and (b) on a cache miss pulls with five attempts and growing backoff
 (`scripts/dev-kafka.sh pull`). Updating the image tag changes the key and refills the cache.
 
+**Update (2026-10-11).** A first CI run failed with `docker: toomanyrequests: Rate exceeded` on a cold pull, which is exactly the shared-runner
+limit above. `mirror.gcr.io` (Google's pull-through cache) was then found to serve the same image anonymously, with the same index digest as
+Docker Hub (`sha256:e52ef1cf...`, amd64 and arm64), so it is now the default image (`mirror.gcr.io/redpandadata/redpanda:v25.1.1`) and
+`docker.redpanda.com` is the fallback `pull` tries once if the mirror fails (`DEV_KAFKA_IMAGE` / `DEV_KAFKA_FALLBACK_IMAGE` override both). The
+mirror has no published availability guarantee, hence the fallback, the retries and the cache.
+
 What is verified and what is not: the image pulls and runs on the development Mac, and the cache/load/retry steps were written but a **cold pull
 from a GitHub-hosted runner has not been run**, so a rate-limited first run on a busy runner can still fail the Kafka step. If that
 happens: re-run the job (the limit is hourly), or add a `docker login` step with a Docker Hub account kept in a repository secret before
