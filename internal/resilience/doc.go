@@ -12,6 +12,12 @@
 //     caller's lock first, then the package's. Callbacks (Breakers' change hook) run after the package lock is
 //     released.
 //
+// Windows (the breaker's outcome window, the budget) count whole seconds of the wall-clock reading of the injected
+// clock (UnixNano), while the streak check, cool-downs and ticket ages use time differences, which are monotonic for
+// the real clock. A system clock step therefore only moves events between window buckets: a step back keeps
+// events in the future until they are ignored, a step forward ages them out early. Both are bounded by the window
+// length and neither can wedge a breaker.
+//
 // Nothing here is wired into the gateway yet (Phase 15, PR C); resilience.mode defaults to off.
 package resilience
 

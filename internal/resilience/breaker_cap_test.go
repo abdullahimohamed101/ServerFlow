@@ -255,3 +255,28 @@ func TestFractionOneAllOpenGivesRetryAfterToTheEarliestProbe(t *testing.T) {
 		t.Errorf("a half-open breaker is a probe away: %d", got)
 	}
 }
+
+// A suppressed consecutive trip happens on the next counted fault of either kind once there is room (plan: "its next
+// outcome"). An unlisted 5xx does not break the streak; an OK resets it.
+func TestSuppressedStreakTripsOnTheNextUnlistedFault(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		next  Verdict
+		opens bool
+	}{{"unlisted 5xx", RatioFault, true}, {"fault", Fault, true}, {"ok resets the streak", OK, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := capParams()
+			p.FailureRatio = 0
+			r := newRig(t, p, ids(2)...)
+			r.sendN("w1", Fault, 5)
+			r.sendN("w2", Fault, 5) // suppressed
+			r.want("w2", Closed)
+			r.clk.Advance(10 * time.Second)
+			r.send("w1", OK) // room again
+			r.send("w2", tc.next)
+			if got := r.bs.State(key("w2")) == Open; got != tc.opens {
+				t.Fatalf("open = %v, want %v", got, tc.opens)
+			}
+		})
+	}
+}

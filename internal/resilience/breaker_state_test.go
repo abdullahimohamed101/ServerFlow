@@ -133,6 +133,10 @@ func TestFailedProbeReopensWithDoublingCoolDownUpToTheCap(t *testing.T) {
 		if got := r.openFor("w1"); got != d {
 			t.Fatalf("round %d: open for %v, want %v", i, got, d)
 		}
+		// The doubling level is capped where the cool-down reaches max_cool_down (level 4 here), however often it fails.
+		if got, want := r.levelOf("w1"), min(i+1, 4); got != want {
+			t.Fatalf("round %d: level %d, want %d", i, got, want)
+		}
 		r.clk.Advance(d)
 	}
 }
@@ -415,4 +419,15 @@ func TestSnapshotListsNonClosedOnly(t *testing.T) {
 	if len(snap) != 1 || snap[0].Key.ID != "w1" || snap[0].State != HalfOpen {
 		t.Fatalf("snapshot = %+v", snap)
 	}
+}
+
+func (r *rig) levelOf(id string) int {
+	r.t.Helper()
+	for _, i := range r.bs.Snapshot() {
+		if i.Key.ID == id {
+			return i.Level
+		}
+	}
+	r.t.Fatalf("%s is not listed", id)
+	return 0
 }
