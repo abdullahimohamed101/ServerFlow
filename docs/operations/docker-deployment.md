@@ -167,7 +167,7 @@ control-plane token could register a worker at any private address.
 Several checkouts share the image tags `serverflow/*:dev` and the project name `serverflow-dev` unless you set `COMPOSE_PROJECT_NAME`; then the tag
 follows the project name and `dev-down`/`dev-reset` touch only that project.
 
-Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose support is best effort).
+Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose support is best effort). Dependabot is configured to propose only minor and patch updates of the compose images: a major version (for example Postgres 18, whose image wants its data mount at `/var/lib/postgresql` and left the tmpfs at the old path unhealthy in Dependabot's first PR, #31; Redis 8; Redpanda v26; Prometheus 3; Grafana 13) is a deliberate change made by hand, with `make dev-smoke` and a note.
 
 ## Troubleshooting
 
