@@ -30,3 +30,23 @@ updates:
       # The wildcard covers otel, otel/trace, otel/sdk and the OTLP exporter.
       - dependency-name: "go.opentelemetry.io/otel*"
         versions: [">=1.47.0"]
+
+  # Phase 16: the container images. `docker` reads the FROM lines of the Dockerfile; `docker-compose` reads the image
+  # references of the root docker-compose.yml. Whether Dependabot can resolve references on public.ecr.aws, quay.io,
+  # gcr.io and mirror.gcr.io (not Docker Hub) is unverified; if it cannot, the digest pins in those files are
+  # refreshed by hand (docs/operations/docker-deployment.md).
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    groups:
+      docker-images:
+        patterns: ["*"]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      compose-images:
+        patterns: ["*"]

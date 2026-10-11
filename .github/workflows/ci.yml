@@ -294,19 +294,18 @@ jobs:
           set -o pipefail
           make dev-smoke 2>&1 | tee "$RUNNER_TEMP/smoke.log"
           tail -1 "$RUNNER_TEMP/smoke.log" | grep -Eq 'smoke: [0-9]+ of [0-9]+ checks passed, 0 failed, 0 skipped$'
-      - name: Stack status and logs on failure (the logs hold no secrets: check S12)
+      - name: Stack status and logs on failure (secret-free by check S12)
         if: failure()
         run: |
           make dev-ps || true
           docker compose -p serverflow-dev logs --no-color > "$RUNNER_TEMP/compose-logs.txt" 2>&1 || true
-          # Belt and braces for the artifact: drop the log if any generated secret value appears in it (nothing is printed).
-          for f in .dev/*.env .dev/api_key*; do
-            [ -f "$f" ] || continue
-            case "$f" in .dev/compose.env) continue ;; esac
-            sed -n 's/^[A-Z_]*=//p;' "$f" | grep -E '.{12,}' | while IFS= read -r v; do
-              if grep -qF -- "$v" "$RUNNER_TEMP/compose-logs.txt"; then echo "a secret appeared in the logs; the artifact is withheld"; rm -f "$RUNNER_TEMP/compose-logs.txt"; fi
-            done
-          done
+          # Belt and braces for the artifact: withhold the log if any generated secret value appears in it (nothing is printed).
+          { for f in .dev/*.env; do case "$f" in .dev/compose.env) ;; *) sed -n 's/^[A-Z_]*=//p' "$f" ;; esac; done; cat .dev/api_key* 2>/dev/null; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
+          if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/compose-logs.txt"; then
+            echo "a generated secret appeared in the logs; the artifact is withheld"
+            rm -f "$RUNNER_TEMP/compose-logs.txt"
+          fi
+          rm -f "$RUNNER_TEMP/needles"
       - name: Keep the logs on failure
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

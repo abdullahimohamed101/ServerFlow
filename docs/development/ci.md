@@ -18,7 +18,8 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh tracing` | the Phase 11 tracing tests with the race detector; named acceptance tests **must run** (no Docker or service needed) |
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed), failing on every called vulnerability except the visible, marked exception list (five `golang.org/x/net` advisories, ADR-018) |
 | `scripts/quality.sh observability` | `promtool` check of the Prometheus config and rules and the rule tests, then `internal/observability` (dashboards and rules against the metrics a running cluster exports). Needs `promtool` or Docker (`scripts/promtool.sh`; image `quay.io/prometheus/prometheus:v2.53.0`, override with `PROMTOOL_IMAGE`) |
-| `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
+| `scripts/quality.sh deploy` | Phase 16, the container deployment's static checks (no Docker daemon, no image pulls): `tests/deploy` and `cmd/healthcheck` tests whose names **must run**, the W1/W3 config tests, `hadolint` on the Dockerfile, `shellcheck` on the dev scripts, and `docker compose config` for 6 profile sets x 5 file sets. `hadolint` and `shellcheck` are required in CI and skipped loudly on a laptop without them. Also `make deploy-check` |
+| `scripts/quality.sh full` | lint, unit, race, integration (when configured), observability (when promtool or Docker is available), deploy, build. Also `make quality` |
 
 `integration` needs a PostgreSQL, a Redis and a Kafka-compatible broker that all require credentials, exactly like the CI services. Locally:
 
@@ -35,7 +36,12 @@ scripts/quality.sh full
 The Kafka tests are named in `quality.sh integration` (`must_run kafka`), so a skipped one fails the gate. The broker is
 Redpanda; it is Kafka API compatible, not Apache Kafka (ADR-019).
 
-**Where the image comes from, honestly.** `docker.redpanda.com` is not an independent registry: an anonymous request to
+**Where the image comes from, honestly.** The Phase 16 container stack uses `mirror.gcr.io/redpandadata/redpanda` instead, pinned by the same digest
+(checked 2026-10-11: the manifest answers anonymously and the index lists linux/amd64 and linux/arm64); the survey below, which did not include
+`mirror.gcr.io`, is why the integration job still uses the Docker Hub front. `mirror.gcr.io` is a cache run by Google with no published
+availability or rate guarantee, so the compose job pulls with retries and caches the tarball; a full cold pull from a GitHub runner is not verified.
+
+`docker.redpanda.com` is not an independent registry: an anonymous request to
 `https://docker.redpanda.com/v2/redpandadata/redpanda/manifests/v25.1.1` answers 401 with
 `www-authenticate: Bearer realm="https://auth.docker.io/token",service="registry.docker.io"`, i.e. it hands out Docker Hub tokens, and
 an anonymous pull is counted against Docker Hub's limit (100 pulls per hour per source address, shared by GitHub-hosted runners).
@@ -67,13 +73,17 @@ local server deliberately requires one.
 | `build` | `quality.sh build` | cross-compiles, module tidiness |
 | `observability (promtool, dashboards)` | `quality.sh observability` | pinned promtool 2.53.0 release archive, SHA-256 verified; no Docker Hub |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
+| `deploy (lint, config, static tests)` | `quality.sh deploy` | Phase 16: pinned `hadolint` v2.15.1 release (SHA-256 verified), `shellcheck` and the compose CLI from the runner image; about 2 minutes, no image pulls |
+| `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers and 13 end-to-end checks that must all run (`0 failed, 0 skipped`); images from `public.ecr.aws`, `quay.io`, `mirror.gcr.io` and `gcr.io` (never Docker Hub) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
 
 A new push to a pull request cancels the run in progress. Every job has a timeout. Actions are pinned to
 commit SHAs with the version in a comment; Dependabot (`.github/dependabot.yml`) updates them and the Go
 modules weekly, and is told not to take dependency versions that raise the module's Go floor.
 
 `.github/workflows/nightly.yml` runs at 03:23 UTC and on demand: the race detector three times under CPU
-load (where flaky tests show up first), the gateway overhead budget test, and `govulncheck`.
+load (where flaky tests show up first), the gateway overhead budget test, `govulncheck`, the container stack with `GATEWAYS=3` (so check S13,
+gateway scaling and the shared quota, runs; plus `make dev-audit`) and an advisory Trivy report (HIGH and CRITICAL findings with a fix, six
+ServerFlow images, scanner pinned by digest on `public.ecr.aws`; its vulnerability database download can be rate limited, which is why it never gates).
 
 ## Required checks (owner action)
 
@@ -85,7 +95,9 @@ Branch protection can only be set by the repository owner. In GitHub: Settings, 
 - `integration (PostgreSQL)`
 - `build (cross-compile, go.mod tidy and verify)`
 
-`govulncheck` is left out on purpose. Check names change if a job's `name:` is edited.
+`govulncheck` is left out on purpose. So are `deploy (lint, config, static tests)` and `compose smoke (advisory)` for now: add the static `deploy`
+job once it has been green for a while, and `compose smoke` after ten consecutive green runs on `master` (it depends on three anonymous
+registries and a cold Docker pull on a shared runner, neither of which has been observed on a GitHub-hosted runner from here). Check names change if a job's `name:` is edited.
 
 ## Adding a database-backed test
 

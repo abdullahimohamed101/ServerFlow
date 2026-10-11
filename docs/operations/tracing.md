@@ -107,7 +107,8 @@ make dev-tracing-stop
 
 `TRACING_OTLP_PORT`, `TRACING_UI_PORT` and `TRACING_CONTAINER` change the ports and container name (and `TRACE_DEMO_OTLP_PORT`,
 `TRACE_DEMO_UI_PORT` must match for the script). Jaeger keeps traces in memory only. The file is `observability/tracing/docker-compose.yml`;
-Phase 16 moves it into the full compose behind the collector, and the gateway then only needs a new `tracing.endpoint`. Search the UI
+`make dev-up` (Phase 16) runs Jaeger inside the container stack instead (OTLP/HTTP `http://jaeger:4318` on the private network, UI on `127.0.0.1:16686`; the OpenTelemetry
+Collector skeleton of Phase 0 was deleted, because ADR-018 sends OTLP straight to Jaeger); this standalone file stays for host-process development. Search the UI
 for service `serverflow-gateway`, tag `serverflow.request_id`.
 
 ## Dependency note: OpenTelemetry v1.46 and the follow-up bump

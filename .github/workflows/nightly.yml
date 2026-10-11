@@ -82,3 +82,59 @@ jobs:
           cache: true
       - name: govulncheck
         run: scripts/quality.sh vuln
+
+  compose-smoke-scaled:
+    # Phase 16 (ADR-021): the container stack with three gateway replicas behind the load balancer, so check S13
+    # (requests reach several replicas, the rate-limit quota is shared) runs too. Same registries and retries as
+    # the pull request job.
+    name: compose smoke with GATEWAYS=3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pull every image (retries with backoff)
+        run: scripts/dev-pull.sh
+      - name: Start the stack with three gateways
+        run: |
+          cp deploy/compose/.env.example .env
+          sed -i 's/^GATEWAYS=.*/GATEWAYS=3/' .env
+          make dev-up
+      - name: Smoke checks (all 13 must run)
+        run: |
+          set -o pipefail
+          make dev-smoke 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          tail -1 "$RUNNER_TEMP/smoke.log" | grep -Eq 'smoke: 13 of 13 checks passed, 0 failed, 0 skipped$'
+      - name: Container audit
+        run: make dev-audit
+      - name: Stop the stack
+        if: always()
+        run: make dev-down
+
+  trivy-report:
+    # Report only (never gates): HIGH and CRITICAL findings with a fix available in the six ServerFlow images.
+    # The scanner image is pinned by digest and comes from public.ecr.aws; its vulnerability database is a separate
+    # anonymous download that is known to be rate limited, so a failure to fetch it fails this advisory job only.
+    name: image vulnerability report (Trivy, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      TRIVY_IMAGE: public.ecr.aws/aquasecurity/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the six images
+        run: |
+          scripts/dev-pull.sh
+          for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
+            docker build -q -f deploy/docker/Dockerfile --target "$t" -t "serverflow/$t:scan" .
+          done
+      - name: Scan
+        run: |
+          for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
+            echo "== $t"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 "serverflow/$t:scan"
+          done

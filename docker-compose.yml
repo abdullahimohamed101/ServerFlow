@@ -307,7 +307,10 @@ services:
         echo "could not create the lifecycle topic" >&2
         exit 1
     restart: "no"
-    tmpfs: ["/tmp:uid=101,gid=101,mode=1777,size=8m"]
+    # The image declares VOLUME for its data directory; a tmpfs there keeps docker from creating an anonymous volume.
+    tmpfs:
+      - /var/lib/redpanda/data:uid=101,gid=101,mode=0700,size=1m
+      - /tmp:uid=101,gid=101,mode=1777,size=8m
     depends_on:
       redpanda: {condition: service_healthy}
     healthcheck: {disable: true}
@@ -345,9 +348,9 @@ services:
       - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-2d}
       - --web.listen-address=0.0.0.0:9090
     volumes:
-      - ./observability/prometheus/prometheus.compose.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/rules:/etc/prometheus/rules:ro
-      - ./observability/prometheus/targets/compose.yml:/etc/prometheus/targets/compose.yml:ro
+      - ./observability/prometheus/compose/targets.yml:/etc/prometheus/targets/compose.yml:ro
       - ./.dev/metrics_token:/etc/prometheus/secrets/metrics_token:ro
     tmpfs: ["/prometheus:uid=65534,gid=65534,mode=0700,size=512m"]
     ports: ["127.0.0.1:${PROMETHEUS_PORT:-19091}:9090"]

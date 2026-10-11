@@ -147,7 +147,7 @@ obs-check:
 # Phase 16: the whole system in containers on one machine (docs/operations/docker-deployment.md, ADR-021).
 # Needs Docker with Compose 2.24+. Configuration is .env (copied from deploy/compose/.env.example on the first run);
 # secrets are generated into .dev/ (gitignored). The host-process workflow above (dev-cluster, dev-postgres, ...) is unchanged.
-.PHONY: dev-up dev-down dev-reset dev-smoke dev-ps dev-logs dev-config dev-pull dev-psql dev-redis-cli dev-rpk dev-key deploy-check
+.PHONY: dev-up dev-down dev-reset dev-smoke dev-audit dev-ps dev-logs dev-config dev-pull dev-psql dev-redis-cli dev-rpk dev-key deploy-check
 dev-up:
 	scripts/dev-up.sh up
 
@@ -160,6 +160,10 @@ dev-reset:
 
 dev-smoke:
 	scripts/dev-up.sh smoke
+
+# The running containers against the promises of ADR-021: read-only, no capabilities, loopback-only ports, no anonymous volume.
+dev-audit:
+	scripts/dev-up.sh audit
 
 dev-ps:
 	scripts/dev-up.sh ps

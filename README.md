@@ -9,7 +9,7 @@ The product is everything between the client and the inference engine: the
 gateway, scheduler, worker registry, rate limiting, event pipeline,
 and observability. See `ARCHITECTURE.md` for the full picture.
 
-> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 11 are complete. The gateway serves an
+> Status: Phases 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 and 16 are complete. The gateway serves an
 > OpenAI-compatible API in front of a single configured upstream; a configurable
 > mock worker (`docs/development/mock-worker.md`) stands in for that upstream
 > without a GPU; and a control plane tracks workers through register, heartbeat,
@@ -22,6 +22,24 @@ and observability. See `ARCHITECTURE.md` for the full picture.
 > caps are enforced across gateways through Redis (`docs/operations/redis-and-rate-limits.md`, ADR-015). With `tracing.enabled: true` one request is one trace across the gateway and the worker, retries included (`docs/operations/tracing.md`, ADR-018; try it with `make dev-tracing` and `scripts/trace-demo.sh`). Phase 1 is deferred
 > until a GPU is available. See `docs/plans/completed/` for finished plans and
 > `docs/plans/active/` for the current one.
+
+## Run everything in containers
+
+Needs only Docker with Compose 2.24 or newer, `git`, `make`, `bash` and `curl` (no Go). One command builds six small images, starts the whole system
+(gateway, control plane, three mock workers with agents, PostgreSQL, Redis, Redpanda, the usage consumer, Prometheus, Grafana, Jaeger) on
+a private network with only loopback ports published, and `make dev-smoke` checks it end to end:
+
+```bash
+make dev-up        # first run: copies .env, generates secrets under .dev/, builds, starts, creates two tenants and keys
+make dev-smoke     # ends with: smoke: 13 of 13 checks passed, 0 failed, 0 skipped (12 of 13 until you run GATEWAYS=3)
+export SF_KEY=$(cat .dev/api_key)
+curl -s -H "Authorization: Bearer $SF_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"mock-model","messages":[{"role":"user","content":"hello"}],"max_tokens":16}' http://127.0.0.1:18080/v1/chat/completions
+make dev-down      # leaves nothing behind
+```
+
+Grafana is on `http://127.0.0.1:13000` (user `admin`, password in `.dev/grafana.env`), Prometheus on `:19091`, Jaeger on `:16686`. Ports, profiles,
+gateway replicas and mock-worker failure injection are set in `.env`. See `docs/operations/docker-deployment.md` and ADR-021.
 
 ## Repository Layout
 
@@ -109,7 +127,7 @@ On Windows (no `make`), use the existing quality gate:
 | 13 | Real vLLM worker pool | Not started |
 | 14 | Workload-aware scheduler | Not started |
 | 15 | Fault tolerance | Not started |
-| 16 | Dockerized multi-service deployment | Not started |
+| 16 | Dockerized multi-service deployment | Complete (`docs/operations/docker-deployment.md`, ADR-021) |
 | 17 | Kubernetes | Not started |
 | 18 | Kubernetes GPU workers | Not started |
 | 19 | Autoscaling | Not started |
