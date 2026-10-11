@@ -47,14 +47,25 @@ type routed struct {
 	release func()
 }
 
-// Route chooses a worker for req, or returns the API error to send. Workers named in exclude (the
+// routeError is why Route found no worker: the API error to send, and what the scheduler counted when it
+// refused (zero when the refusal did not come from the scheduler). The counts let callers tell "every eligible
+// worker is full" (Eligible > 0 and Eligible == AtCapacity) from "none is eligible" without parsing messages.
+// The embedded error keeps the callers that only need the answer simple.
+type routeError struct {
+	*api.Error
+	Serving    int // workers in the view that serve the model
+	Eligible   int // of those, the ones the registry offers
+	AtCapacity int // of the eligible, the ones with no free slot
+}
+
+// Route chooses a worker for req, or returns why it could not. Workers named in exclude (the
 // ones already tried for this request) are never chosen; if that leaves nothing, the answer is
 // NO_CAPACITY, never a "model not found" for a model that is served.
-func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, exclude ...string) (*routed, *api.Error) {
+func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, exclude ...string) (*routed, *routeError) {
 	workers, ok := r.cache.View(req.Model)
 	if !ok {
 		// No snapshot, or one too old to trust: fail closed.
-		return nil, api.ErrWorkerUnavailable()
+		return nil, &routeError{Error: api.ErrWorkerUnavailable()}
 	}
 	if len(exclude) > 0 {
 		before := len(workers)
@@ -65,13 +76,13 @@ func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, excl
 			}
 		}
 		if workers = kept; len(workers) == 0 && before > 0 {
-			return nil, api.ErrNoCapacity(req.Model, 0)
+			return nil, &routeError{Error: api.ErrNoCapacity(req.Model, 0), Serving: before}
 		}
 	}
 
-	chosen, apiErr := r.reserve(ctx, req, workers)
-	if apiErr != nil {
-		return nil, apiErr
+	chosen, rerr := r.reserve(ctx, req, workers)
+	if rerr != nil {
+		return nil, rerr
 	}
 
 	id := chosen.WorkerID
@@ -94,7 +105,7 @@ func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, excl
 // reserve overlays local load, selects, and takes the slot in one critical
 // section, so two requests cannot both take a worker's last slot. The deferred
 // unlock keeps a panicking scheduler from wedging every request.
-func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot) (*protocol.WorkerSnapshot, *api.Error) {
+func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot) (*protocol.WorkerSnapshot, *routeError) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range workers {
@@ -105,18 +116,21 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 	chosen, err := r.sched.SelectWorker(ctx, req, workers)
 	if err != nil {
 		var none *scheduler.NoWorkerError
+		if !errors.As(err, &none) {
+			return nil, &routeError{Error: api.ErrInternal()} // the client went away, or the scheduler failed
+		}
+		counts := routeError{Serving: none.Serving, Eligible: none.Eligible, AtCapacity: none.AtCapacity}
 		switch {
-		case errors.As(err, &none) && none.UnknownModel():
-			return nil, api.ErrModelNotFound(req.Model)
-		case errors.As(err, &none) && r.cache.Degraded():
+		case none.UnknownModel():
+			counts.Error = api.ErrModelNotFound(req.Model)
+		case r.cache.Degraded():
 			// The registry cannot be reached and the cached view is aging out: that is
 			// the cause, not a shortage of capacity, and a 1s retry hint would mislead.
-			return nil, api.ErrWorkerUnavailable()
-		case errors.As(err, &none):
-			return nil, api.ErrNoCapacity(req.Model, none.Eligible)
+			counts.Error = api.ErrWorkerUnavailable()
 		default:
-			return nil, api.ErrInternal() // the client went away, or the scheduler failed
+			counts.Error = api.ErrNoCapacity(req.Model, none.Eligible)
 		}
+		return nil, &counts
 	}
 	r.inflight[chosen.WorkerID]++
 	return chosen, nil

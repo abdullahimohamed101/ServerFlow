@@ -413,6 +413,8 @@ func (m *metrics) RequestRejected(_ context.Context, e Rejection) {
 			return // static mode has no scheduler
 		}
 		m.schedulingRefused(e)
+	case RejectOverload:
+		// Shedding is admission, not scheduling: it never feeds scheduler_decisions_total (Phase 15 adds its own series).
 	}
 }
 
@@ -490,7 +492,30 @@ func (m *metrics) AttemptEnded(_ context.Context, e AttemptEnd) {
 	if e.WillRetry {
 		mi.retries.pair(m.retries, mi.label, e.Class).Inc()
 	}
+	if e.NextRouteResult != "" {
+		m.retryRoutingRefused(mi, e.NextRouteResult)
+	}
 }
+
+// retryRoutingRefused records the scheduling decision of a retry whose second routing found no worker. A first
+// routing's refusal arrives as a Rejection (schedulingRefused); a retry has no rejection, so it arrives on the
+// attempt it would have followed. The series are the same.
+func (m *metrics) retryRoutingRefused(mi *modelInst, result string) {
+	switch result {
+	case NextRouteNoCapacity:
+		m.decision(mi, resultNoCapacity)
+		mi.noCapacity.pair(m.noCapacity, mi.label, "no_capacity").Inc()
+	case NextRouteWorkerUnavailable:
+		m.decision(mi, resultError)
+		mi.noCapacity.pair(m.noCapacity, mi.label, "worker_unavailable").Inc()
+	default:
+		m.decision(mi, resultError)
+	}
+}
+
+// QueueWaited and BreakerTransition have no series yet: the features that fire them arrive in Phase 15.
+func (m *metrics) QueueWaited(context.Context, QueueWait)           {}
+func (m *metrics) BreakerTransition(context.Context, BreakerChange) {}
 
 // RequestCompleted records a finished inference request that reached the handler.
 func (m *metrics) RequestCompleted(_ context.Context, e Completion) {

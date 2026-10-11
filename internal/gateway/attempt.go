@@ -63,9 +63,21 @@ type attemptRun struct {
 	class     string
 
 	// octx is the context the observers returned for this attempt; nextUnavailable records that a retry was
-	// wanted but no other worker could take it.
+	// wanted but no other worker could take it, and nextRoute (a NextRoute* value) why.
 	octx            context.Context
 	nextUnavailable bool
+	nextRoute       string
+}
+
+// nextRouteResult names why a retry's routing failed, for AttemptEnd.NextRouteResult.
+func nextRouteResult(e *api.Error) string {
+	switch e.Code {
+	case api.CodeNoCapacity:
+		return NextRouteNoCapacity
+	case api.CodeWorkerUnavailable:
+		return NextRouteWorkerUnavailable
+	}
+	return NextRouteError
 }
 
 // errUnexpectedStatus is what an informational (1xx) worker response becomes: a failed attempt that is
@@ -83,9 +95,9 @@ func (idleTimeoutError) Temporary() bool { return true }
 // has been written to the client it may move to a different worker (ADR-012). Once output has begun there is
 // no second try.
 func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, ireq *protocol.InferenceRequest, body []byte, info *reqInfo, start time.Time) {
-	run, apiErr := s.routeAttempt(r, ireq, info, nil)
-	if apiErr != nil {
-		s.refuseNoWorker(w, r, info, ireq, apiErr)
+	run, rerr := s.routeAttempt(r, ireq, info, nil)
+	if rerr != nil {
+		s.refuseNoWorker(w, r, info, ireq, rerr.Error)
 		return
 	}
 	info.model = ireq.Model
@@ -102,6 +114,9 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		next, nextErr := s.routeAttempt(r, ireq, info, append(tried, run.target.worker.WorkerID))
 		if nextErr != nil {
 			run.nextUnavailable = true
+			if r.Context().Err() == nil { // a client that left is not a scheduling outcome
+				run.nextRoute = nextRouteResult(nextErr.Error)
+			}
 			break
 		}
 		tried = append(tried, run.target.worker.WorkerID)
@@ -168,7 +183,7 @@ func (s *Server) refuseUnknownModel(w http.ResponseWriter, r *http.Request, info
 
 // routeAttempt picks a worker for the next attempt and starts its record. exclude lists the workers
 // already tried for this request.
-func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *api.Error) {
+func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *routeError) {
 	selecting := time.Now()
 	target, apiErr := s.router.Route(r.Context(), ireq, exclude...)
 	info.selectStart, info.selectDuration = selecting, time.Since(selecting)
@@ -278,6 +293,7 @@ func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	s.obs.AttemptEnded(run.octx, AttemptEnd{
 		RequestID: info.id, AttemptID: rec.ID, Number: run.rec + 1, WorkerID: rec.Worker, Model: info.model, Outcome: outcome,
 		Duration: rec.Duration, Class: rec.Class, WillRetry: outcome == outcomeRetried, NextWorkerUnavailable: run.nextUnavailable,
+		NextRouteResult: run.nextRoute,
 	})
 	level := slog.LevelDebug
 	if outcome != outcomeOK {
