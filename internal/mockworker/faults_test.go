@@ -2,10 +2,14 @@ package mockworker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -352,5 +356,59 @@ func TestDrainAnnounceValidationAndFlag(t *testing.T) {
 	def, _, _ := ParseFlags(nil, io.Discard)
 	if def.DrainAnnounce != 0 {
 		t.Fatalf("default announce %v: the flag must default to today's behaviour", def.DrainAnnounce)
+	}
+}
+
+// A crash must reset connections (RST), not close them politely (FIN): a client reading from a killed process
+// sees ECONNRESET, and a harness that only closed would show EOF.
+func TestCrashResetsTheConnectionRatherThanClosingIt(t *testing.T) {
+	cfg := testConfig()
+	cfg.TokensPerSecond = 20 // a 500ms stream, still running at the crash
+	url, _, _ := serve(t, cfg)
+	srv := lastServer
+	waitServing(t, srv)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	body := chatBody(true, "hi", "")
+	_, _ = fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	buf := make([]byte, 64)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Read(buf); err != nil { // the response has begun
+		t.Fatal(err)
+	}
+	if err := srv.Faults().Crash(); err != nil {
+		t.Fatal(err)
+	}
+	var rerr error
+	for rerr == nil {
+		_, rerr = conn.Read(buf)
+	}
+	if !errors.Is(rerr, syscall.ECONNRESET) {
+		t.Fatalf("the client saw %v, want a connection reset (a FIN would read as EOF)", rerr)
+	}
+}
+
+func TestDrainReleasesRequestsHeldByABlackhole(t *testing.T) {
+	cfg := testConfig()
+	cfg.DrainTimeout = 20 * time.Second
+	url, stop, done := serve(t, cfg)
+	srv := lastServer
+	waitServing(t, srv)
+	srv.Faults().SetBlackhole(true)
+	c, closeIdle := newClient()
+	defer closeIdle()
+	go func() { _, _, _ = postStatus(t, c, url, false) }()
+	eventually(t, 2*time.Second, func() bool { return srv.Faults().Stats().Blackholed == 1 }, "a request to be held")
+	stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the drain should be clean once the held request is released: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drain waited for a held request")
 	}
 }

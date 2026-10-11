@@ -180,6 +180,8 @@ wait:
 		}
 	}
 
+	// Requests held by a blackhole fault would otherwise keep the drain waiting until its timeout.
+	s.faults.SetBlackhole(false)
 	if s.cfg.DrainAnnounce > 0 {
 		s.announcing.Store(true) // before "draining", so no request is refused in between
 	}
