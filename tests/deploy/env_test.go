@@ -118,3 +118,32 @@ func TestMockWorkerCommandsParse(t *testing.T) {
 		}
 	}
 }
+
+// TestControlPlaneClientsOptIntoPlainHTTP pins W1 on the client side: the gateway and every agent reach the control
+// plane over the private network in plain http, which their guard refuses unless control_plane.allow_insecure_transport
+// is set. (Load does not validate an agent's configuration, so TestEnvVariablesAreHonoured cannot notice the flag
+// missing from an agent.) The control plane itself must not set it: its own rule (a token off loopback) is separate.
+func TestControlPlaneClientsOptIntoPlainHTTP(t *testing.T) {
+	svcs := services(t, "docker-compose.yml")
+	const flag = "SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT"
+	for _, name := range []string{"gateway", "worker-agent-1", "worker-agent-2", "worker-agent-3"} {
+		env := asMap(t, svcs[name]["environment"], name+" environment")
+		if fmt.Sprint(env[flag]) != "true" {
+			t.Errorf("%s must set %s=true to talk to the control plane over the private network", name, flag)
+		}
+		url := fmt.Sprint(env["SERVERFLOW_GATEWAY_CONTROL_PLANE_URL"])
+		if name != "gateway" {
+			url = fmt.Sprint(env["SERVERFLOW_WORKER_CONTROL_PLANE_URL"])
+		}
+		if url != "http://control-plane:9090" {
+			t.Errorf("%s reaches the control plane at %q", name, url)
+		}
+	}
+	for name, s := range svcs {
+		if env, ok := s["environment"].(map[string]any); ok && name != "gateway" && !strings.HasPrefix(name, "worker-agent") {
+			if _, set := env[flag]; set {
+				t.Errorf("%s sets %s but is not a control-plane client", name, flag)
+			}
+		}
+	}
+}
