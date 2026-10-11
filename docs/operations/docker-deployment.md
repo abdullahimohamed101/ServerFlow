@@ -156,6 +156,19 @@ development Mac (Colima), with the default heartbeat settings:
   `worker.suspect_timeout`, `unhealthy_timeout` and `lost_timeout`); `... start worker-agent-3` re-registers it immediately.
 - **Network cut.** `docker network disconnect <project>_backend <container>` isolates a container (reconnect with `connect`).
 
+## Networks and what they do not protect
+
+`backend` is `internal: true` (no route out). `edge` is an ordinary bridge joined only by the services that publish a port: gateway or load balancer,
+control plane, Prometheus, Grafana and Jaeger. Those five can reach the internet, and Grafana can reach `backend`. The control-plane token travels in
+plain http over these networks (ADR-021 explains why and how far that is acceptable). If you do not need the control-plane API from the host, set
+`CONTROL_PLANE_PORT=` (empty) in `.env`: it then lives on `backend` only. The gateway warns that `worker_networks` is empty; anyone holding the
+control-plane token could register a worker at any private address.
+
+Several checkouts share the image tags `serverflow/*:dev` and the project name `serverflow-dev` unless you set `COMPOSE_PROJECT_NAME`; then the tag
+follows the project name and `dev-down`/`dev-reset` touch only that project.
+
+Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose support is best effort).
+
 ## Troubleshooting
 
 - **A port is in use.** `make dev-up` checks the host ports first and names the variable to change in `.env`. Two copies can run side by side with

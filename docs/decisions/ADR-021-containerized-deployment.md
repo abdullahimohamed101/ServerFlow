@@ -72,11 +72,20 @@ AGENTS.md requires an explicit review of security-sensitive changes. This is the
   trust for eight services, for a throwaway stack) or a loopback sidecar per client (does not reach the control plane).
 - **Consistent with its siblings.** It has the same name, default, environment spelling and semantics as `postgres`, `redis`, `events` and
   `tracing` `.allow_insecure_transport`; the refusal message tells the operator to set it "only on a network you control".
-- **Exposure.** Only `docker-compose.yml` sets it. The token then crosses the stack's private `internal: true` network in cleartext, where
-  any other container on that network could observe it (a container with `CAP_NET_RAW` or on a shared bridge could sniff or spoof; the
-  stack's own containers have no capabilities, and a third-party image is outside our control). The token guards a throwaway control plane
-  that is also published on `127.0.0.1` only. This is acceptable for a one-machine development stack and is not a production pattern; Phase
-  17 must use TLS or a service mesh for this path (D29).
+- **Exposure, as established.** Only `docker-compose.yml` sets it. The token then crosses the stack's Docker networks in plain http. Sniffing it
+  from a neighbour needs ARP/DNS spoofing, a promiscuous interface or `CAP_NET_RAW`; none of the stack's own containers has any capability
+  (`cap_drop: [ALL]`), so the residual risk is a hostile or compromised third-party image (PostgreSQL, Redis, Redpanda, Prometheus, Grafana,
+  Jaeger, nginx) on the same network. The token guards a throwaway control plane that is also published on `127.0.0.1` only. Acceptable for a
+  one-machine development stack, not a production pattern; Phase 17 must use TLS or a service mesh for this path (D29).
+- **The control plane is on the `edge` network.** It must be, to publish `127.0.0.1:19090` (a port cannot be published from an `internal: true`
+  network, and the benchmark tool and operators need it from the host). `edge` is an ordinary bridge: the five services on it (gateway or lb,
+  control plane, Prometheus, Grafana, Jaeger) have internet egress, Grafana (a third-party image) has a route into `backend`, and the plain-http
+  token traffic between the control plane and its clients therefore may cross `edge` as well as `backend` (clients reach it by name over
+  whichever network they share first). Setting `CONTROL_PLANE_PORT=` empty removes the control plane from `edge` (`docker-compose.private-control-plane.yml`),
+  which is the recommended setting when the host does not need the API; there is no proxy-free way to publish it from `backend` alone.
+- **Empty `gateway.worker_networks`.** The gateway logs a WARN that no worker network restriction is set, so the registry may point it at any non-forbidden
+  address. A holder of the control-plane token could register a worker at any private address and have the gateway dial it. Registration is
+  token-gated and the token is a throwaway local secret; Phase 17 should set `worker_networks`.
 - **No leak path.** The refusal error contains neither the URL nor the token (tested with canary values); the gateway's start-up log prints
   only whether a token is set; the token reaches containers only through `env_file`, is absent from images, `docker history`, the compose
   file, `docker compose config --no-env-resolution`, container argument lists and every container log (searched in the smoke test and by a
@@ -98,3 +107,16 @@ AGENTS.md requires an explicit review of security-sensitive changes. This is the
 - Open items: the worker agent has no liveness endpoint (Phase 17 decides how it proves liveness); `linux/amd64`, Docker Desktop, rootful
   Linux Docker and Podman are not verified from the development machine; Dependabot's handling of non-Hub registries is unverified;
   `mirror.gcr.io` has no availability guarantee.
+
+## Operational notes recorded after verification
+
+- **Shared names.** The image tags `serverflow/<name>:dev` and the default project name `serverflow-dev` are shared by every checkout that keeps the
+  defaults: `make dev-down` or `make dev-reset` in one affects the other. Set `COMPOSE_PROJECT_NAME` (and the ports) in `.env` to run several
+  checkouts; the image tag then follows the project name.
+- **Nightly Trivy** exports each image with `docker save` and scans the tarball (`trivy image --input`), so the scanner container gets no Docker
+  socket. It is digest-pinned, report-only and not a gate.
+- **Dependabot.** The `docker` entry reads the `FROM` lines of the Dockerfile. The `docker-compose` entry is probably inert for
+  `${VAR:-registry/image@sha256:...}` references and for registries other than Docker Hub; treat it as best effort. Manual bump procedure: pick the new
+  tag, resolve its multi-arch index digest anonymously (`curl -I -H 'Accept: application/vnd.oci.image.index.v1+json' https://<registry>/v2/<path>/manifests/<tag>`),
+  edit the reference in `docker-compose.yml` (and the Dockerfile `FROM` lines), run `make deploy-check` and `make dev-up && make dev-smoke`.
+- **Audit.** `make dev-audit` also lists the user of every process in every container (root is refused without exception).
