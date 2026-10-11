@@ -369,7 +369,7 @@ func TestTimeToIsolate(t *testing.T) {
 	// tick 14, then never.
 	sel := func(i int) Counters {
 		n := float64(min(max(i-10, 0), 4) * 5)
-		return Counters{FaultySelections: 100 + n}
+		return Counters{FaultySelections: 100 + n, Attempts: float64(i * 50)}
 	}
 	tl := Timeline{Ticks: ticksOf(p, 50, sel), ApplyTick: 10, ClearTick: 30, Applied: true, Cleared: true, AppliedAt: 10 * time.Second, ClearedAt: 30 * time.Second}
 	got, note := timeToIsolate(p, tl, true)
@@ -382,9 +382,37 @@ func TestTimeToIsolate(t *testing.T) {
 		t.Fatalf("a worker selected until the end of the fault is not isolated: %v %q", got, note)
 	}
 	// Probes do not count against isolation: one selection per tick that is a probe.
-	tl.Ticks = ticksOf(p, 50, func(i int) Counters { return Counters{FaultySelections: float64(i), Probes: float64(i)} })
+	tl.Ticks = ticksOf(p, 50, func(i int) Counters {
+		return Counters{FaultySelections: float64(i), Probes: float64(i), Attempts: float64(i * 50)}
+	})
 	if got, _ := timeToIsolate(p, tl, true); got == nil || *got != 0 {
 		t.Fatalf("probes must be ignored: %v", got)
+	}
+	// A worker quiet every other bucket (a frozen worker whose slots are held by hung requests, skipped
+	// until they time out) is not isolated, though its last bucket is quiet.
+	tl.Ticks = ticksOf(p, 50, func(i int) Counters {
+		return Counters{FaultySelections: float64(i/2) * 8, Attempts: float64(i * 50)}
+	})
+	if got, note := timeToIsolate(p, tl, true); got != nil || note == "" {
+		t.Fatalf("a worker selected every other bucket is not isolated: %v %q", got, note)
+	}
+	// Quiet because the whole cluster made no attempts is not isolation either.
+	tl.Ticks = ticksOf(p, 50, func(i int) Counters { return Counters{FaultySelections: 100} })
+	if got, _ := timeToIsolate(p, tl, true); got != nil {
+		t.Fatalf("no attempts at all is a stalled run, not isolation: %v", got)
+	}
+	// Exactly IsolationMinBuckets quiet buckets at the end count; one fewer does not.
+	last := func(quiet int) Timeline {
+		tl.Ticks = ticksOf(p, 50, func(i int) Counters {
+			return Counters{FaultySelections: float64(min(i, 30-quiet)) * 3, Attempts: float64(i * 50)}
+		})
+		return tl
+	}
+	if got, _ := timeToIsolate(p, last(IsolationMinBuckets), true); got == nil || *got != float64(30-IsolationMinBuckets-10) {
+		t.Fatalf("%d quiet buckets at the end: %v", IsolationMinBuckets, got)
+	}
+	if got, _ := timeToIsolate(p, last(IsolationMinBuckets-1), true); got != nil {
+		t.Fatalf("%d quiet buckets are not enough: %v", IsolationMinBuckets-1, got)
 	}
 	if got, note := timeToIsolate(p, tl, false); got != nil || note == "" {
 		t.Fatal("no single faulted worker: not defined")

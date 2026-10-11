@@ -1,6 +1,7 @@
 package chaos
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -106,10 +107,16 @@ func series(p Params, tl Timeline, recs []collect.Record) []report.ChaosBucket {
 	return out
 }
 
-// timeToIsolate is the seconds from the fault's start to the first bucket after which the faulted worker
-// gets no non-probe selections for the rest of the fault window. Probes are told apart by the breaker's
-// probe counter (all zero on a build without a breaker, where a worker that is never ejected is never
-// isolated). The second result says why it is nil.
+// IsolationMinBuckets is how many buckets in a row the faulted worker must go without a non-probe selection,
+// to the end of the fault window, to count as isolated. One quiet bucket is not isolation: on master a frozen
+// worker whose slots are all held by hung requests is skipped by the scheduler until they time out, so it
+// is quiet every other bucket.
+const IsolationMinBuckets = 3
+
+// timeToIsolate is the seconds from the fault's start to the first bucket of the final stretch, at least
+// IsolationMinBuckets long and reaching the end of the fault window, in which the faulted worker got no
+// non-probe selections while the gateway was making attempts. Probes are told apart by the breaker's probe
+// counter (zero on a build without a breaker). The second result says why it is nil.
 func timeToIsolate(p Params, tl Timeline, singleWorker bool) (*float64, string) {
 	switch {
 	case !singleWorker:
@@ -120,13 +127,13 @@ func timeToIsolate(p Params, tl Timeline, singleWorker bool) (*float64, string) 
 	k := tl.ClearTick
 	for t := tl.ClearTick - 1; t >= tl.ApplyTick; t-- {
 		d := delta(tl, t, t+1)
-		if math.Max(d.FaultySelections-d.Probes, 0) > 0 {
+		if math.Max(d.FaultySelections-d.Probes, 0) > 0 || d.Attempts <= 0 {
 			break
 		}
 		k = t
 	}
-	if k >= tl.ClearTick {
-		return nil, "the worker still received selections in the last bucket of the fault window"
+	if tl.ClearTick-k < IsolationMinBuckets {
+		return nil, fmt.Sprintf("the worker was still selected within the last %d buckets of the fault window", IsolationMinBuckets)
 	}
 	return ptr((tl.Ticks[k].At - tl.AppliedAt).Seconds()), ""
 }

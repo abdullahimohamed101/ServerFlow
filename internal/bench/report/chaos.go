@@ -189,7 +189,7 @@ func chaosMarkdown(c *Chaos) string {
 		fmt.Fprintf(&b, " (%s)", Clean(c.Variant))
 	}
 	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "%s\n\nTime scale %g, fault applied at %.1fs and cleared at %.1fs after the start of the run, on %s.", Clean(c.Description), c.TimeScale, c.FaultAppliedSeconds, c.FaultClearedSeconds, orDash(c.FaultWorker))
+	fmt.Fprintf(&b, "%s\n\nTime scale %g, fault applied at %.1fs and cleared at %.1fs after the start of the run, on %s.", CleanN(c.Description, 800), c.TimeScale, c.FaultAppliedSeconds, c.FaultClearedSeconds, orDash(c.FaultWorker))
 	if len(c.Params) > 0 {
 		keys := make([]string, 0, len(c.Params))
 		for k := range c.Params {
@@ -221,7 +221,7 @@ func chaosMarkdown(c *Chaos) string {
 		if !ck.OK {
 			mark = "FAILED"
 		}
-		fmt.Fprintf(&b, "- %s: %s (%s)\n", Clean(ck.Name), mark, Clean(ck.Detail))
+		fmt.Fprintf(&b, "- %s: %s (%s)\n", Clean(ck.Name), mark, CleanN(ck.Detail, 600))
 	}
 	b.WriteString("\nOnly the two primary measures support a claim, and only when the ranges of repeat groups do not overlap; with ten or so descriptive measures, one range in ten is disjoint by chance.\n\n")
 	return b.String()
