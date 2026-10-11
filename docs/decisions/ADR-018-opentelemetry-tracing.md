@@ -89,13 +89,13 @@ exporter sends with `net/http`. In source mode govulncheck still lists these as 
 transport); I have not proved from the code that none of those paths runs, only that no gRPC or x/net HTTP/2 server or client is
 constructed. The same five advisories also apply to the standard library's own `net/http` HTTP/2 (fixed in the Go 1.27.2 toolchain), which the
 gateway links on master too; the gateway serves plain HTTP and Go serves HTTP/2 only over TLS. Decision (the owner chose this): the five advisories are accepted through an **enforced exception list**, not ignored.
-`scripts/quality.sh vuln` runs `govulncheck -format json` and pipes it to `scripts/vulnfilter`, which fails on every called
+`scripts/quality.sh vuln` runs `govulncheck -format json` and pipes it to the vulnfilter command (since deleted), which fails on every called
 vulnerability except those listed in the marked `VULN_EXCEPTIONS` block of `quality.sh`. An exception names the module **and** the OSV id
 (`golang.org/x/net:GO-2026-6617`, and so on), so the same id in another module, or another advisory in `x/net`, still fails; standard
 library findings are not silenced either (CI runs the stable toolchain, which carries the stdlib fixes; on this machine's Go 1.27.1 the
 stdlib findings fail the check, and with Go 1.27.2 it passes). Every run prints the exception list as a NOTICE, prints each excepted
 finding, and flags an exception that matched nothing. The block must be **deleted by the follow-up pull request that bumps
-`golang.org/x/net` to v0.60.0 or later** (the Go 1.26 floor it needs is already in place). `scripts/vulnfilter/main_test.go` proves, with canned
+`golang.org/x/net` to v0.60.0 or later** (the Go 1.26 floor it needs is already in place). The vulnfilter test (since deleted) proved, with canned
 govulncheck JSON: only excepted ids pass with the notice; an excepted id in another module fails; an unrelated new id fails; stdlib
 findings fail; empty findings pass; invalid JSON fails. The plan's criterion 14 is therefore **met with a documented, enforced
 exception**, not "clean".
@@ -105,7 +105,7 @@ exception**, not "clean".
 The follow-up pull request `chore/otel-xnet-bump` removed the exception above. OpenTelemetry Go moved v1.46.0 to v1.47.0 (all modules together) and
 `golang.org/x/net` v0.59.0 to v0.61.0, both possible since the Go floor became 1.26. `govulncheck` v1.8.0 under the Go 1.27.2 toolchain then reports no
 vulnerabilities in source mode and in binary mode for the gateway, usage-consumer, admin, control-plane and mock-worker, so criterion 14 of the Phase 11
-plan is now met without an exception. `VULN_EXCEPTIONS`, the `scripts/vulnfilter` command and its tests are deleted (nothing else used them), and
+plan is now met without an exception. `VULN_EXCEPTIONS`, the vulnfilter command (`scripts/vulnfilter`) and its tests are deleted (nothing else used them), and
 `scripts/quality.sh vuln` is plain `govulncheck ./...` again, failing on any finding. The Dependabot ignore for `go.opentelemetry.io/otel*` is
 removed with it. The tracing guarantees in this ADR are unchanged and their tests pass unmodified. Record: docs/plans/completed/chore-otel-xnet-bump.md.
 
