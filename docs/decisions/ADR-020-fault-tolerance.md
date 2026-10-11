@@ -84,15 +84,16 @@ workers), so `on` with static workers is a valid no-op. Nothing in the gateway r
   every counted outcome, so an OK that completes the volume can trip it. `failure_ratio: 0` switches the rule off (a deviation: the plan said bounds 0-1
   without a meaning for 0).
 - Lazy states and tickets as in D8. A probe verdict is accepted only for a ticket still outstanding in the current half-open period; a stale, released or
-  lost ticket is ignored. A verdict that arrives for a non-probe ticket after the breaker opened is ignored; a late mid-stream fault (`RecordLate`) counts
-  only while the breaker is closed.
+  lost ticket is ignored. A verdict that arrives for a non-probe ticket after the breaker opened is ignored; a late mid-stream fault (`RecordLate(ticket, v)`) counts
+  like any fault while the breaker is closed; for a probe ticket of the current half-open period it reopens the breaker with a doubled cool-down, so an
+  aborted probe stream is not a success when `probe_successes` > 1; otherwise it is ignored (the breaker already acted).
 - Cool-down: `cool_down x 2^level` clamped to `max_cool_down`, then jittered by a factor in [0.8, 1.2) and clamped again, so the cap is never exceeded
   (deviation: the plan did not say whether the jitter could push above the cap). `level` grows on a failed probe only. On a trip from closed it is kept
   unless the breaker has been closed for at least `max_cool_down`, in which case it resets; so a worker that passes a probe and fails again keeps its grown
   cool-down but does not grow it further.
 - Ejection cap: `floor(max_open_fraction x eligible)` (with a small epsilon so 0.29 x 100 is 29), counted over registry-eligible workers only, numerator open or
   half-open. A trip the cap forbids keeps the window and streak, is reported once per episode (`Change.Suppressed`, `Suppressed()`), and happens on a later
-  outcome once there is room. A worker that is itself not eligible is outside the cap: its own trip takes no room (it cannot be selected anyway).
+  outcome once there is room. A worker that is itself not eligible is outside the cap: its own trip takes no room (it cannot be selected anyway). Because that can leave more breakers open than the cap allows once the worker is eligible again (or once healthy workers turn unhealthy and the cap shrinks), `Sync` and `Prune` enforce the cap: the most recently ejected breakers (ties: the larger worker ID) are closed (`Change.Reason` `ejection_cap`, fresh window, cool-down level kept) until open + half-open <= `floor(fraction x eligible)`. The longest-standing evidence is kept; moving the extra breaker to half-open instead would still count against the cap and not help.
 - Alternative rejected: counting the cap over all registered workers. A lost or unhealthy worker with an open breaker would then block ejecting a real
   failure (test: 4 workers with 2 unhealthy, and a lost worker's open breaker).
 
@@ -108,7 +109,7 @@ returns a `Reservation`; `Refund` takes it back from the bucket it was taken in 
   lock around it (the router's), so the lock order is caller then queue and the queue never calls out.
 - A refresh wakes waiters with `Wake(model, n)`: they receive `Reroute`, stay in place, route through the normal path, and call `Done` (served) or `Park`
   (still full). If a slot was released while the head was routing, `Handoff` declines (the head will take it) and remembers; `Park` then reports the missed
-  hand-off so the waiter routes once more. This closes the lost-wake-up window a plain "wake and re-route" has.
+  hand-off so the waiter routes once more. When the routing waiter ends with `Done` or `Leave` after such a miss, the next waiter that is not already routing is told to route, so a freed slot is not left unused while waiters exist. Not guaranteed: the order in which concurrently woken waiters win slots.
 - `Leave` removes a waiter at once and, if a hand-off had already been delivered, returns it so the slot is never dropped; `Wait` applies the same rule when the
   timer or the request context fires. `Flush` hands every waiter `Flushed` (gateway drain); `Close` makes `Enqueue` fail with `ErrDraining`.
 - Refusals: depth (`ErrQueueFull`), tenant share (`ErrTenantShare`), no queue for the model (`ErrNoQueue`: depth 0, or more distinct queued models than
@@ -118,7 +119,7 @@ returns a `Reservation`; `Refund` takes it back from the bucket it was taken in 
 - `Admission` is an atomic counter with idempotent `Slot.Release`; `admission.max_global_requests` is its cap (0 would mean unlimited in the library, config
   validation keeps the key above 0).
 
-**Configuration** (`internal/config/resilience.go`). Defaults, bounds and cross-checks are those of D1. The environment overlay covers every key
+**Configuration** (`internal/config/resilience.go`). Defaults, bounds and cross-checks are those of D1, except that two defaults follow the gateway's own settings so a configuration that is valid today stays valid when the default flips to `on`: an unset `probe_header_timeout` is min(10s, `upstream_header_timeout`) and an unset `readiness_grace` is min(5s, `shutdown_timeout`/2); only explicit values are cross-validated (`EffectiveProbeHeaderTimeout`, `EffectiveReadinessGrace`). A suppressed consecutive trip happens on the next counted fault of either kind. `Reservation` is a pointer and `Refund` idempotent. The environment overlay covers every key
 (`SERVERFLOW_RESILIENCE_*`), ignores values that do not parse or are not finite, and keeps a mode other than `on`/`off` so that it fails validation
 (deviation: a silently ignored typo in the kill switch would leave the default, which becomes `on`, in force).
 
