@@ -51,7 +51,7 @@ func main() {
 		"addr", ln.Addr().String(), "model", cfg.Model, "ttft", cfg.TTFT.String(), "tokens_per_second", cfg.TokensPerSecond,
 		"output_tokens", cfg.OutputTokens, "max_concurrency", cfg.MaxConcurrency, "queue_size", cfg.QueueSize,
 		"failure_rate", cfg.FailureRate, "failure_mode", string(cfg.FailureMode), "seed", cfg.Seed,
-		"startup_delay", cfg.StartupDelay.String())
+		"startup_delay", cfg.StartupDelay.String(), "drain_announce", cfg.DrainAnnounce.String())
 
 	var opts []mockworker.Option
 	var tracer *tracing.Provider

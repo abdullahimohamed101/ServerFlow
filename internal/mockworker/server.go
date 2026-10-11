@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -71,6 +72,30 @@ type Server struct {
 	handler http.Handler
 	tracing *tracing.Provider // nil: tracing off
 	metrics *workerMetrics
+
+	faults *Faults
+	// announcing is true while a draining worker still serves (--drain-announce); announced counts
+	// the chat requests admitted in that period.
+	announcing atomic.Bool
+	announced  atomic.Int64
+
+	// smu guards cur and addr: the HTTP server currently serving (Crash replaces it, Restart installs
+	// a new one on the same address), and conns tracks open connections so a crash can reset them.
+	smu       sync.Mutex
+	cur       *generation
+	addr      string
+	restartCh chan struct{}
+	connMu    sync.Mutex
+	conns     map[net.Conn]struct{}
+}
+
+// generation is one HTTP server instance: the first Serve starts one, each Restart another.
+type generation struct {
+	srv     *http.Server
+	errc    chan error
+	crashed atomic.Bool
+	// consumed is set once Serve has read errc (the crash case), so the final drain does not wait for it again.
+	consumed bool
 }
 
 // Option customises a Server.
@@ -88,7 +113,11 @@ func New(cfg Config, log *slog.Logger, opts ...Option) *Server {
 		engine: NewEngine(cfg.MaxConcurrency, cfg.QueueSize),
 		inj:    NewInjector(cfg.Seed, cfg.FailureRate, cfg.FailureMode),
 		sleep:  sleepUntil,
+
+		restartCh: make(chan struct{}, 1),
+		conns:     map[net.Conn]struct{}{},
 	}
+	s.faults = newFaults(s, cfg.Seed)
 	if cfg.StartupDelay > 0 {
 		s.state.Store(int32(stateStarting))
 		s.ready = time.AfterFunc(cfg.StartupDelay, func() {
@@ -118,25 +147,54 @@ func (s *Server) Handler() http.Handler { return s.handler }
 func (s *Server) currentState() state { return state(s.state.Load()) }
 
 // Serve serves on ln until ctx is cancelled, then drains: it reports draining
-// (readiness 503, new requests 503) while requests already running or queued
-// finish, then shuts down. It returns nil on a clean drain, or an error if
-// the drain timeout expires first (in-flight requests are then cut off).
+// (readiness 503) while requests already running or queued finish, then shuts
+// down. New requests are refused with 503 "draining" at once, or, with a drain
+// announce period, only after that period. It returns nil on a clean drain, or an
+// error if the drain timeout expires first (in-flight requests are then cut off).
+//
+// A fault-injected Crash closes the listener and resets every connection without
+// ending Serve; Restart listens again on the same address.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	s.smu.Lock()
+	s.addr = ln.Addr().String()
+	s.cur = s.newGeneration(ln)
+	s.smu.Unlock()
 
-	select {
-	case err := <-errc:
-		return err
-	case <-ctx.Done():
+wait:
+	for {
+		g := s.current()
+		select {
+		case err := <-g.errc:
+			if !g.crashed.Load() {
+				return err
+			}
+			// Down on purpose: wait for a restart, or for the end.
+			g.consumed = true
+			select {
+			case <-ctx.Done():
+				break wait
+			case <-s.restartCh:
+			}
+		case <-ctx.Done():
+			break wait
+		}
 	}
 
+	if s.cfg.DrainAnnounce > 0 {
+		s.announcing.Store(true) // before "draining", so no request is refused in between
+	}
 	s.state.Store(int32(stateDraining))
 	if s.ready != nil {
 		s.ready.Stop()
 	}
-	s.log.Info("draining", "component", "mock-worker", "worker_id", s.cfg.EffectiveWorkerID(), "timeout", s.cfg.DrainTimeout.String())
+	s.log.Info("draining", "component", "mock-worker", "worker_id", s.cfg.EffectiveWorkerID(), "timeout", s.cfg.DrainTimeout.String(),
+		"announce", s.cfg.DrainAnnounce.String())
+	if s.cfg.DrainAnnounce > 0 {
+		time.Sleep(s.cfg.DrainAnnounce)
+		s.announcing.Store(false)
+	}
+	last := s.current()
+	srv, errc := last.srv, last.errc
 	deadline := time.Now().Add(s.cfg.DrainTimeout)
 	for s.inflight.Load() > 0 {
 		if time.Now().After(deadline) {
@@ -156,11 +214,97 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	_ = srv.Close()
+	if last.consumed {
+		return nil
+	}
 	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
 }
+
+func (s *Server) current() *generation {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	return s.cur
+}
+
+// newGeneration starts an HTTP server on ln. The caller holds smu or has exclusive access.
+func (s *Server) newGeneration(ln net.Listener) *generation {
+	g := &generation{errc: make(chan error, 1)}
+	g.srv = &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second, ConnState: s.trackConn}
+	go func() { g.errc <- g.srv.Serve(ln) }()
+	return g
+}
+
+func (s *Server) trackConn(c net.Conn, st http.ConnState) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	switch st {
+	case http.StateNew:
+		s.conns[c] = struct{}{}
+	case http.StateClosed, http.StateHijacked:
+		delete(s.conns, c)
+	}
+}
+
+var errNotServing = errors.New("mockworker: the server is not running through Serve")
+
+// crash closes the listener and resets every open connection, like a killed process.
+func (s *Server) crash() error {
+	s.smu.Lock()
+	g := s.cur
+	if g == nil {
+		s.smu.Unlock()
+		return errNotServing
+	}
+	if !g.crashed.CompareAndSwap(false, true) {
+		s.smu.Unlock()
+		return errors.New("mockworker: already crashed")
+	}
+	s.smu.Unlock()
+	s.connMu.Lock()
+	for c := range s.conns {
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0) // close sends RST, not FIN
+		}
+	}
+	s.connMu.Unlock()
+	return g.srv.Close()
+}
+
+// restart listens again on the address the worker served before the crash.
+func (s *Server) restart() error {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	if s.cur == nil || !s.cur.crashed.Load() {
+		return errors.New("mockworker: not crashed")
+	}
+	var ln net.Listener
+	var err error
+	for range 40 { // the port may take a moment to be free again
+		if ln, err = net.Listen("tcp", s.addr); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		return fmt.Errorf("mockworker: could not listen again on %s: %w", s.addr, err)
+	}
+	s.cur = s.newGeneration(ln)
+	select {
+	case s.restartCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// Faults returns the handle that injects faults into this worker at run time.
+func (s *Server) Faults() *Faults { return s.faults }
+
+// ServedWhileAnnouncing is how many chat requests were admitted after the worker began to
+// report "draining" but before it started refusing (the --drain-announce period).
+func (s *Server) ServedWhileAnnouncing() int64 { return s.announced.Load() }
 
 // --- simple endpoints ---------------------------------------------------------
 
@@ -270,8 +414,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer func() { ts.finish(rl); s.logChat(rl, start) }()
 
 	if st := s.currentState(); st != stateReady {
-		writeAPIError(w, notReadyError(st))
-		return
+		if st != stateDraining || !s.announcing.Load() {
+			writeAPIError(w, notReadyError(st))
+			return
+		}
+		s.announced.Add(1) // announced as draining, still serving
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
@@ -306,7 +453,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	rl.outputTokens = n
 
+	// Run-time faults (Phase 15): a blackholed request has been read and is never answered.
+	if !s.faults.blackhole(r.Context()) {
+		rl.outcome = "cancelled" // the caller gave up on the silent worker
+		return
+	}
 	mode, fail := s.inj.Roll()
+	if fm, hit := s.faults.rollError(); hit {
+		mode, fail = fm, true
+	}
 	if fail {
 		rl.injected = string(mode)
 		switch mode {
@@ -346,6 +501,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer release()
+	if !s.faults.delay(r.Context()) {
+		rl.outcome = "cancelled"
+		return
+	}
 	s.metrics.inputTokens.Add(int64(rl.promptTokens))
 
 	id := "chatcmpl-" + strings.TrimPrefix(protocol.NewRequestID(), "req_")

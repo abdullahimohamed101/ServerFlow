@@ -43,6 +43,10 @@ type Config struct {
 	Seed            int64
 	StartupDelay    time.Duration
 	DrainTimeout    time.Duration
+	// DrainAnnounce is how long a draining worker keeps serving after it starts reporting "draining" (Phase 15):
+	// the gateway learns of the drain from a heartbeat and a registry refresh, so a worker that refuses at once
+	// fails the requests routed in that window. 0 (the default) refuses at once. The drain timeout starts after it.
+	DrainAnnounce time.Duration
 	// OTLPEndpoint, when set, exports inference and queue_wait spans for requests the gateway sampled
 	// (Phase 11). TraceInsecureOK permits plaintext http:// to a non-loopback endpoint.
 	OTLPEndpoint    string
@@ -56,6 +60,7 @@ const (
 	maxOutputTokens    = 100000
 	maxConcurrencyCap  = 1024
 	maxQueueSizeCap    = 100000
+	maxDrainAnnounce   = 10 * time.Minute
 )
 
 // DefaultConfig returns the defaults used when a flag is not set.
@@ -109,6 +114,9 @@ func (c Config) Validate() error {
 	}
 	if c.DrainTimeout <= 0 {
 		return fmt.Errorf("drain-timeout must be > 0, got %v", c.DrainTimeout)
+	}
+	if c.DrainAnnounce < 0 || c.DrainAnnounce > maxDrainAnnounce {
+		return fmt.Errorf("drain-announce must be in 0-%v, got %v", maxDrainAnnounce, c.DrainAnnounce)
 	}
 	if c.OTLPEndpoint != "" {
 		if err := config.CheckTraceEndpoint(c.OTLPEndpoint, c.TraceInsecureOK); err != nil {
