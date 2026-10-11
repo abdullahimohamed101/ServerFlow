@@ -63,6 +63,13 @@ func (u *httpUpstream) Do(ctx context.Context, path string, body []byte, request
 	if id := attemptIDFrom(ctx); id != "" {
 		req.Header.Set(protocol.HeaderAttemptID, id)
 	}
+	// The trace context an observer chose for this attempt; the client's own headers never cross.
+	if tr := TraceRefFrom(ctx); tr.Traceparent != "" && len(tr.Traceparent) <= maxTraceparentBytes {
+		req.Header.Set("Traceparent", tr.Traceparent)
+		if tr.Tracestate != "" && len(tr.Tracestate) <= maxTracestateBytes {
+			req.Header.Set("Tracestate", tr.Tracestate)
+		}
+	}
 	return u.client.Do(req)
 }
 

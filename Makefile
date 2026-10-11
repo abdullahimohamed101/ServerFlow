@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis dev-kafka test-kafka bench bench-compare quality quality-fast
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis dev-kafka test-kafka dev-tracing dev-tracing-stop bench bench-compare quality quality-fast
 
 fmt:
 	gofmt -w .
@@ -93,6 +93,18 @@ dev-kafka:
 test-kafka:
 	scripts/dev-kafka.sh start >/dev/null
 	SERVERFLOW_TEST_KAFKA_BROKERS="$$(scripts/dev-kafka.sh brokers)" SERVERFLOW_TEST_KAFKA_USER="$$(scripts/dev-kafka.sh user)" SERVERFLOW_TEST_KAFKA_PASSWORD="$$(scripts/dev-kafka.sh password)" go test -race -count=1 ./internal/kafka/... ./internal/events/... ./internal/usage/... ./tests/integration/...
+
+# A standalone Jaeger (v2) for ServerFlow traces: OTLP/HTTP on 127.0.0.1:14318, UI on http://127.0.0.1:16686
+# (TRACING_OTLP_PORT / TRACING_UI_PORT to change them). Then run scripts/trace-demo.sh. Docker is required.
+dev-tracing:
+	docker compose -f observability/tracing/docker-compose.yml up -d
+	@echo "Jaeger UI: http://127.0.0.1:$${TRACING_UI_PORT:-16686}"
+	@echo "Gateway:   SERVERFLOW_TRACING_ENABLED=true SERVERFLOW_TRACING_ENDPOINT=http://127.0.0.1:$${TRACING_OTLP_PORT:-14318}"
+	@echo "Worker:    mock-worker --otlp-endpoint=http://127.0.0.1:$${TRACING_OTLP_PORT:-14318}"
+	@echo "Demo:      scripts/trace-demo.sh"
+
+dev-tracing-stop:
+	docker compose -f observability/tracing/docker-compose.yml down
 
 # Benchmark harness (docs/benchmarks/phase-7-harness.md). Results go to benchmark/runs/run_NNN (gitignored).
 #   make bench BENCH_ARGS="--scheduler least-active --workers 4 --concurrency 12 --duration 60s --workload mixed --seed 1 --repeat 3"

@@ -40,7 +40,11 @@ type reqInfo struct {
 	rateBypassed bool
 	// rateChecked and rateDuration say whether a limiter decided the request and how long it took.
 	rateChecked  bool
+	rateStart    time.Time
 	rateDuration time.Duration
+	// selectStart and selectDuration time the last worker selection (registry mode), whether or not it found a worker.
+	selectStart    time.Time
+	selectDuration time.Duration
 	// clientClosed is set when the client disconnected before the response
 	// finished; the request is then logged and counted as 499.
 	clientClosed bool
@@ -56,8 +60,6 @@ type reqInfo struct {
 	scan          *tokenScanner
 	tokSource     string
 	tokIn, tokOut int64
-	// selectDuration is how long the last worker selection took, whether or not it found a worker.
-	selectDuration time.Duration
 }
 
 type ctxKey struct{}
@@ -158,6 +160,7 @@ func (s *Server) logRequest(r *http.Request, info *reqInfo, status int, d time.D
 		"status", status,
 		"duration_ms", d.Milliseconds(),
 	}
+	attrs = append(attrs, traceAttrs(r.Context())...)
 	if info.inference {
 		attrs = append(attrs, "attempt_id", info.attemptID, "model", info.model, "stream", info.stream)
 		if info.ttft > 0 {

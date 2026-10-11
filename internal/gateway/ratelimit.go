@@ -74,7 +74,7 @@ func (s *Server) admit(w http.ResponseWriter, r *http.Request, info *reqInfo, co
 	}
 	t0 := time.Now()
 	d, err := s.limiter.Allow(r.Context(), ratelimit.Request{TenantID: info.tenantID, Model: model, Cost: cost, Limits: lim})
-	info.rateChecked, info.rateDuration = true, time.Since(t0)
+	info.rateChecked, info.rateStart, info.rateDuration = true, t0, time.Since(t0)
 	switch {
 	case err != nil:
 		retry := 1

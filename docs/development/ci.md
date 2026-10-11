@@ -15,7 +15,8 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh race` | `go test -race ./...` |
 | `scripts/quality.sh integration` | the database-backed tests, which **must run**: a skip, or a missing named test, is a failure |
 | `scripts/quality.sh build` | `go build`, cross-compiles (linux amd64/arm64, darwin arm64, windows amd64), `go mod verify`, `go mod tidy -diff` |
-| `scripts/quality.sh vuln` | `govulncheck` (installs it if needed) |
+| `scripts/quality.sh tracing` | the Phase 11 tracing tests with the race detector; named acceptance tests **must run** (no Docker or service needed) |
+| `scripts/quality.sh vuln` | `govulncheck` (installs it if needed), failing on every called vulnerability except the visible, marked exception list (five `golang.org/x/net` advisories, ADR-018) |
 | `scripts/quality.sh observability` | `promtool` check of the Prometheus config and rules and the rule tests, then `internal/observability` (dashboards and rules against the metrics a running cluster exports). Needs `promtool` or Docker (`scripts/promtool.sh`; image `quay.io/prometheus/prometheus:v2.53.0`, override with `PROMTOOL_IMAGE`) |
 | `scripts/quality.sh full` | lint, unit, race, integration (when configured), build. Also `make quality` |
 

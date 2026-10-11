@@ -26,6 +26,7 @@ type Config struct {
 	Postgres     PostgresConfig     `yaml:"postgres"`
 	Auth         AuthConfig         `yaml:"auth"`
 	Events       EventsConfig       `yaml:"events"`
+	Tracing      TracingConfig      `yaml:"tracing"`
 	Log          LogConfig          `yaml:"log"`
 	Metrics      MetricsConfig      `yaml:"metrics"`
 
@@ -98,7 +99,8 @@ func Default() Config {
 			CacheSize:   10000,
 			StaleGrace:  5 * time.Minute,
 		},
-		Events: defaultEvents(),
+		Events:  defaultEvents(),
+		Tracing: defaultTracing(),
 		Log: LogConfig{
 			Level: "info",
 		},
@@ -157,6 +159,9 @@ func (c *Config) Validate() error {
 	}
 	// Event publishing settings only matter while events.mode is on (the Redis rule).
 	if err := c.Events.validate(c.Gateway.ShutdownTimeout); err != nil {
+		return err
+	}
+	if err := c.Tracing.validate(); err != nil {
 		return err
 	}
 	if err := c.Metrics.validate(); err != nil {

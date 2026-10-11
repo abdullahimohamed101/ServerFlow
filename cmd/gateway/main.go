@@ -104,6 +104,13 @@ func main() {
 		opts = append(opts, gateway.WithRequestRecorder(redis.NewRecorder(rc, cfg.Redis.RequestMetadataTTL)))
 	}
 
+	tracer, topts, err := setupTracing(cfg, logger)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gateway: %v\n", err)
+		os.Exit(1)
+	}
+	opts = append(opts, topts...)
+
 	// Lifecycle events (Phase 12) are best-effort: a broker that is down never stops the gateway or a request.
 	evObs, evSink, err := openEvents(cfg, logger)
 	if err != nil {
@@ -185,7 +192,8 @@ func main() {
 	}
 	announce()
 
-	serveErr := srv.Serve(ctx, ln) // returns after the drain
+	// Serve returns after the drain; the span queue is flushed right after it (at most 5 s with a dead collector).
+	serveErr := serveAndFlush(ctx, srv, ln, tracer, logger)
 	stopMetrics()
 	// The HTTP server has drained, so every in-flight request has emitted its terminal event: flush them now,
 	// bounded by events.shutdown_flush_timeout. Whatever is not delivered in time is counted and logged.

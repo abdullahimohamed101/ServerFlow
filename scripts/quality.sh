@@ -8,8 +8,9 @@
 #   scripts/quality.sh integration  the database-backed tests, which MUST run (a skip is a failure)
 #   scripts/quality.sh build        go build, cross-compiles, go mod tidy/verify
 #   scripts/quality.sh vuln         govulncheck
+#   scripts/quality.sh tracing      the Phase 11 tracing tests, which MUST run (no Docker needed)
 #   scripts/quality.sh observability  promtool on the Prometheus config, rules and rule tests, and the dashboard checks
-#   scripts/quality.sh full         lint, unit, race, integration (if configured), build
+#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), build
 #
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
@@ -53,6 +54,16 @@ race() {
   go test -race ./...
 }
 
+# show_failures prints what went wrong in a verbose go test log before its tail: the names of failed tests,
+# failed packages, panics and data races. CI keeps only the last lines of a long log, and by then the failing
+# test's name has usually scrolled away.
+show_failures() {
+  local log="$1"
+  printf '\n--- failed tests, packages, panics and races in the full log ---\n' >&2
+  grep -E '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' "$log" >&2 || printf '(none matched; see the tail below)\n' >&2
+  printf -- '--- last 80 lines ---\n' >&2
+}
+
 # must_run <label> <env var> <skip message> <test packages> <test name>...
 # Runs the packages verbosely with the race detector, then fails if any test skipped for want of the
 # server, or if a named test did not run and pass. In CI a silent skip would look like a green build.
@@ -65,6 +76,7 @@ must_run() {
   step "$label tests must run, not skip"
   # shellcheck disable=SC2086 # $pkgs is a deliberate word list
   if ! go test -race -count=1 -v $pkgs >"$log" 2>&1; then
+    show_failures "$log"
     tail -80 "$log"
     printf 'quality: full log kept at %s\n' "$log" >&2
     exit 1
@@ -108,6 +120,26 @@ observability_integration() {
     "./internal/observability/..." TestRedisAndPostgresFamiliesAreExported
 }
 
+# tracing runs the tracing tests with the race detector and fails if a named acceptance test did not run and pass.
+# They need no Docker and no service: spans go to in-memory exporters and a fake OTLP receiver.
+tracing_tests() {
+  local log t
+  log="$(mktemp "${TMPDIR:-/tmp}/serverflow-tracing.XXXXXX")"
+  step "tracing tests must run, not skip"
+  if ! go test -race -count=1 -v ./internal/tracing/... ./internal/gateway/... ./internal/mockworker/... ./internal/config/... ./tests/integration/... >"$log" 2>&1; then
+    show_failures "$log"
+    tail -80 "$log"
+    printf 'quality: full log kept at %s\n' "$log" >&2
+    exit 1
+  fi
+  for t in TestOneTraceAcrossGatewayAndWorker TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace TestNoSecretsInSpansAndOnlyAllowListedKeys \
+    TestADeadCollectorNeverTouchesRequests TestGatewayDoesNotDependOnOpenTelemetry TestExportReachesTheReceiver TestStreamingRequestSpanTree; do
+    grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
+  done
+  rm -f "$log"
+  printf 'tracing: the named tests ran and passed\n'
+}
+
 build() {
   step "go build"
   go build ./...
@@ -122,6 +154,21 @@ build() {
   go mod tidy -diff || fail "go.mod/go.sum are not tidy (run go mod tidy)"
 }
 
+# ---------------------------------------------------------------------------------------------------------
+# EXCEPTION LIST for `vuln`. Each entry is module:OSV-id and covers exactly that advisory in exactly that
+# module (an excepted id in another module, or another id in the same module, still fails). They are
+# printed on every run; they are NOT fixed. Why: ADR-018 "Known vulnerability exception". The fix for
+# these five golang.org/x/net advisories is x/net v0.60.0. It needed Go 1.26, which master now has; the
+# follow-up pull request that bumps golang.org/x/net (and OpenTelemetry) to versions that need it
+# DELETES THIS BLOCK. Until then these five are accepted, visibly.
+VULN_EXCEPTIONS=(
+  golang.org/x/net:GO-2026-6617
+  golang.org/x/net:GO-2026-6612
+  golang.org/x/net:GO-2026-6611
+  golang.org/x/net:GO-2026-6610
+  golang.org/x/net:GO-2026-6603
+)
+# ---------------------------------------------------------------------------------------------------------
 # Phase 10: the Prometheus configuration, recording and alert rules and their promtool tests, then the dashboard
 # and rule checks against the metrics a running cluster exports (internal/observability). promtool comes from
 # scripts/promtool.sh (a binary on PATH, else a container); without either this fails here, and `full` reports
@@ -141,13 +188,20 @@ observability() {
 have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
 
 # v1.1.4 panics ("unexpected expr: *ast.KeyValueExpr") on Go 1.27, which CI's "stable" resolves to.
+# govulncheck exits 0 in JSON mode, so scripts/vulnfilter decides: it fails on any called vulnerability that
+# is not in VULN_EXCEPTIONS (stdlib findings included; they are fixed by the toolchain CI uses).
 vuln() {
   step "govulncheck"
   if ! command -v govulncheck >/dev/null 2>&1; then
     go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
     PATH="$(go env GOPATH)/bin:$PATH"
   fi
-  govulncheck ./...
+  local json args=() e
+  json="$(mktemp "${TMPDIR:-/tmp}/serverflow-vuln.XXXXXX")"
+  govulncheck -format json ./... >"$json" || { rm -f "$json"; fail "govulncheck itself failed"; }
+  for e in "${VULN_EXCEPTIONS[@]}"; do args+=(-allow "$e"); done
+  go run ./scripts/vulnfilter "${args[@]}" <"$json" || { rm -f "$json"; fail "govulncheck: vulnerabilities outside the exception list"; }
+  rm -f "$json"
 }
 
 full() {
@@ -176,7 +230,8 @@ case "${1:-}" in
   integration) integration ;;
   build) build ;;
   vuln) vuln ;;
+  tracing) tracing_tests ;;
   observability) observability ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|observability|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|full\n' "$0" >&2; exit 2 ;;
 esac

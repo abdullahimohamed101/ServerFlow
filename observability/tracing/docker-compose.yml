@@ -1,0 +1,21 @@
+# A standalone Jaeger for looking at ServerFlow traces on one machine (Phase 11, ADR-018).
+#
+#   make dev-tracing          start it and print the gateway settings
+#   scripts/trace-demo.sh     run a small cluster with one flaky worker and print the trace tree
+#   make dev-tracing-stop     stop it
+#
+# Jaeger v2 takes OTLP natively. It keeps traces in memory only: stopping it forgets them. Both ports are
+# bound to 127.0.0.1, so nothing outside this machine can send spans or read traces. OTLP/HTTP is on 14318,
+# not the usual 4318, because the root docker-compose.yml's collector claims 4318 (Phase 16 will merge
+# the two; the only gateway-side change is tracing.endpoint). Override the ports and names with:
+#   TRACING_OTLP_PORT (14318)  TRACING_UI_PORT (16686)  TRACING_CONTAINER (sf-tracing-jaeger)  TRACING_JAEGER_IMAGE
+name: sf-tracing
+
+services:
+  jaeger:
+    image: ${TRACING_JAEGER_IMAGE:-jaegertracing/jaeger:2.22.0}
+    container_name: ${TRACING_CONTAINER:-sf-tracing-jaeger}
+    ports:
+      - "127.0.0.1:${TRACING_OTLP_PORT:-14318}:4318"
+      - "127.0.0.1:${TRACING_UI_PORT:-16686}:16686"
+    restart: "no"

@@ -45,6 +45,8 @@ make mock-workers
 | `--seed` | random | Failure-injection seed; the chosen seed is logged at startup |
 | `--startup-delay` | `0` | Stay not-ready for this long after starting |
 | `--drain-timeout` | `30s` | How long SIGTERM waits for in-flight requests |
+| `--otlp-endpoint` | empty (tracing off) | OTLP/HTTP base URL, e.g. `http://127.0.0.1:4318`. Records `inference` and `queue_wait` spans for requests whose `traceparent` the gateway sampled (`docs/operations/tracing.md`) |
+| `--trace-insecure-ok` | `false` | Allow plaintext `http://` to a non-loopback `--otlp-endpoint` |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
 Invalid values exit 1 with a message and start nothing.

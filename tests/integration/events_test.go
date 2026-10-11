@@ -63,7 +63,7 @@ func staticGatewayWithEvents(t *testing.T, upstream string, mutate func(*config.
 }
 
 // settle waits until n events have been produced, then a moment longer to catch any that should not exist.
-func settle(t *testing.T, sink *eventstest.RecordingSink, n int) []protocol.Event {
+func settleEvents(t *testing.T, sink *eventstest.RecordingSink, n int) []protocol.Event {
 	t.Helper()
 	eventually(t, 5*time.Second, func() bool { return len(sink.Records()) >= n }, fmt.Sprintf("%d events", n))
 	time.Sleep(50 * time.Millisecond)
@@ -98,7 +98,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 		mock, _ := startMock(t)
 		gw, _, sink := staticGatewayWithEvents(t, mock.URL, nil, log)
 		_ = mustPost(t, gw, chat(false, "hi")).Body.Close()
-		evs := settle(t, sink, 3)
+		evs := settleEvents(t, sink, 3)
 		if typesOf(evs) != "received,routed,completed" || terminalCount(evs) != 1 {
 			t.Fatalf("sequence %s", typesOf(evs))
 		}
@@ -116,7 +116,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 		resp := mustPost(t, gw, chat(true, "hi"))
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		evs := settle(t, sink, 4)
+		evs := settleEvents(t, sink, 4)
 		if typesOf(evs) != "received,routed,first_token,completed" {
 			t.Fatalf("sequence %s", typesOf(evs))
 		}
@@ -133,7 +133,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 			gw, _, sink := staticGatewayWithEvents(t, mock.URL, nil, log)
 			resp := mustPost(t, gw, chat(false, "hi"))
 			_ = resp.Body.Close()
-			evs := settle(t, sink, 3)
+			evs := settleEvents(t, sink, 3)
 			if typesOf(evs) != "received,routed,failed" || terminalCount(evs) != 1 {
 				t.Fatalf("sequence %s", typesOf(evs))
 			}
@@ -147,7 +147,7 @@ func TestEventSequencesThroughAStaticGateway(t *testing.T) {
 		gw, _, sink := staticGatewayWithEvents(t, mock.URL, func(c *config.GatewayConfig) { c.UpstreamHeaderTimeout = 150 * time.Millisecond }, log)
 		resp := mustPost(t, gw, chat(false, "hi"))
 		_ = resp.Body.Close()
-		evs := settle(t, sink, 3)
+		evs := settleEvents(t, sink, 3)
 		if typesOf(evs) != "received,routed,failed" || evs[2].Terminal.FailureClass != protocol.FailureTimeout {
 			t.Fatalf("sequence %s %+v", typesOf(evs), evs[len(evs)-1].Terminal)
 		}
@@ -302,7 +302,7 @@ func TestNoPromptResponseOrKeyReachesAnEvent(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}
-	evs := settle(t, sink, 7)
+	evs := settleEvents(t, sink, 7)
 	var all bytes.Buffer
 	for _, r := range sink.Records() {
 		all.Write(r.Key)
