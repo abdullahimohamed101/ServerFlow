@@ -223,3 +223,99 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: promtool, dashboards and exported metrics
         run: scripts/quality.sh observability
+
+  deploy:
+    # Phase 16 (ADR-021): the container deployment's static checks. No images are pulled and no daemon is needed:
+    # the tests/deploy tests (which must run), hadolint on the Dockerfile, shellcheck on the scripts and
+    # `docker compose config` of every file and profile combination. hadolint is the pinned official release,
+    # verified against its published SHA-256 (the ghcr.io image is not used).
+    name: deploy (lint, config, static tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HADOLINT_VERSION: v2.15.1
+      HADOLINT_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507 # hadolint-linux-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install hadolint
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/hadolint" "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          echo "${HADOLINT_SHA256}  $RUNNER_TEMP/hadolint" | sha256sum --check -
+          chmod +x "$RUNNER_TEMP/hadolint"
+          mkdir -p "$HOME/.local/bin" && mv "$RUNNER_TEMP/hadolint" "$HOME/.local/bin/hadolint"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Tool versions (shellcheck and docker compose come with the runner image)
+        run: |
+          hadolint --version
+          shellcheck --version | sed -n 2p
+          docker compose version
+      - name: Deployment static checks
+        run: scripts/quality.sh deploy
+
+  compose-smoke:
+    # Phase 16 (ADR-021): the whole system in containers, then 13 end-to-end checks that must all run (0 skipped).
+    # Advisory at first: it is not in the owner's required-check list (docs/development/ci.md). Images come from
+    # public.ecr.aws, quay.io, mirror.gcr.io and gcr.io, never Docker Hub; pulls retry with backoff
+    # (scripts/dev-pull.sh) and the Redpanda image is cached as a tarball like the integration job's.
+    name: compose smoke (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Redpanda image reference
+        id: redpanda
+        run: echo "image=$(docker compose --profile events config --no-env-resolution --images | grep redpanda | head -1)" >> "$GITHUB_OUTPUT"
+      - name: Cache the Redpanda image
+        id: redpanda-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/redpanda-image.tar
+          key: redpanda-image-${{ steps.redpanda.outputs.image }}
+      - name: Load the cached Redpanda image
+        if: steps.redpanda-cache.outputs.cache-hit == 'true'
+        run: docker load -i "$RUNNER_TEMP/redpanda-image.tar"
+      - name: Pull every image (retries with backoff)
+        run: scripts/dev-pull.sh --skip-present
+      - name: Save the Redpanda image for the cache
+        if: steps.redpanda-cache.outputs.cache-hit != 'true'
+        run: docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
+      - name: Start the stack
+        run: make dev-up
+      - name: Smoke checks
+        run: |
+          set -o pipefail
+          make dev-smoke 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          tail -1 "$RUNNER_TEMP/smoke.log" | grep -Eq 'smoke: [0-9]+ of [0-9]+ checks passed, 0 failed, 0 skipped$'
+      - name: Stack status and logs on failure (the logs hold no secrets: check S12)
+        if: failure()
+        run: |
+          make dev-ps || true
+          docker compose -p serverflow-dev logs --no-color > "$RUNNER_TEMP/compose-logs.txt" 2>&1 || true
+          # Belt and braces for the artifact: drop the log if any generated secret value appears in it (nothing is printed).
+          for f in .dev/*.env .dev/api_key*; do
+            [ -f "$f" ] || continue
+            case "$f" in .dev/compose.env) continue ;; esac
+            sed -n 's/^[A-Z_]*=//p;' "$f" | grep -E '.{12,}' | while IFS= read -r v; do
+              if grep -qF -- "$v" "$RUNNER_TEMP/compose-logs.txt"; then echo "a secret appeared in the logs; the artifact is withheld"; rm -f "$RUNNER_TEMP/compose-logs.txt"; fi
+            done
+          done
+      - name: Keep the logs on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compose-smoke-logs
+          path: |
+            ${{ runner.temp }}/compose-logs.txt
+            ${{ runner.temp }}/smoke.log
+          if-no-files-found: ignore
+      - name: Stop the stack and check nothing is left behind
+        if: always()
+        run: make dev-down
