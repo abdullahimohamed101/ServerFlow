@@ -77,21 +77,6 @@ jobs:
     name: integration (PostgreSQL)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # A real PostgreSQL with password authentication. The tests create and drop their own databases.
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:16  # ECR mirror: Docker Hub rate-limits shared runners
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
       SERVERFLOW_TEST_REDIS_ADDR: 127.0.0.1:6379
@@ -104,11 +89,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # PostgreSQL 16 with password authentication (the tests create and drop their own databases), started here instead of as a `services:` container because the
+      # runner pulls a service image without retries and an anonymous pull from a shared runner is rate limited
+      # ("toomanyrequests: Rate exceeded"). The image is cached as a tarball and pulled with retries on a miss.
+      - name: Digest of the PostgreSQL image (cache key)
+        id: pgimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/postgres:16)" >> "$GITHUB_OUTPUT"
+      - name: Cache the PostgreSQL image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/images/postgres.tar
+          key: image-public.ecr.aws/docker/library/postgres:16-${{ steps.pgimg.outputs.digest }}
+      - name: Start PostgreSQL
+        run: |
+          scripts/ci-docker-pull.sh public.ecr.aws/docker/library/postgres:16 "$RUNNER_TEMP/images/postgres.tar"
+          docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres public.ecr.aws/docker/library/postgres:16
+          for i in $(seq 1 60); do
+            docker exec postgres pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "PostgreSQL did not start"; docker logs --tail 50 postgres; exit 1
       # A real Redis 7 with a password like scripts/dev-redis.sh (a service container cannot take command
       # arguments, so it is started here). This job's name stays "integration (PostgreSQL)" so a required-check
       # setting keeps matching.
+      - name: Digest of the Redis image (cache key)
+        id: redisimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/redis:7)" >> "$GITHUB_OUTPUT"
+      - name: Cache the Redis image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/images/redis.tar
+          key: image-public.ecr.aws/docker/library/redis:7-${{ steps.redisimg.outputs.digest }}
       - name: Start Redis
         run: |
+          scripts/ci-docker-pull.sh public.ecr.aws/docker/library/redis:7 "$RUNNER_TEMP/images/redis.tar"
           docker run -d --name redis -p 127.0.0.1:6379:6379 public.ecr.aws/docker/library/redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no
           for i in $(seq 1 30); do
             docker exec redis redis-cli -a "$SERVERFLOW_TEST_REDIS_PASSWORD" --no-auth-warning ping 2>/dev/null | grep -q PONG && exit 0

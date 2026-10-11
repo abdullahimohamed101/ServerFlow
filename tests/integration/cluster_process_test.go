@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -94,8 +95,35 @@ type proc struct {
 	dead   atomic.Bool
 }
 
-// startProc launches a binary and waits for its startup log line (startMsg).
+// startProc launches a binary and waits for its startup log line (startMsg). A launch that fails for a reason
+// that has nothing to do with the code under test is retried a few times with a short backoff, and the failure
+// is always reported with the child's stderr:
+//   - "text file busy" (ETXTBSY) from fork/exec: another goroutine of this process forked while a file
+//     descriptor open for writing was inherited. The window is a few milliseconds and well known in Go.
+//   - "address already in use": the child lost the race for a port chosen by freePort (the port is free when
+//     chosen and the kernel may hand it to another process, for example an outgoing connection of a test
+//     running in parallel, before the child binds it).
+//
+// Anything else, including a startup timeout, fails at once.
 func startProc(t *testing.T, name, startMsg string, env []string, args ...string) *proc {
+	t.Helper()
+	const attempts = 4
+	for attempt := 1; ; attempt++ {
+		p, failure, retryable := launchProc(t, name, startMsg, env, args)
+		if p != nil {
+			return p
+		}
+		if !retryable || attempt == attempts {
+			t.Fatalf("%s (start attempt %d of %d)", failure, attempt, attempts)
+		}
+		t.Logf("%s; retrying (attempt %d of %d)", failure, attempt, attempts)
+		time.Sleep(time.Duration(attempt) * 50 * time.Millisecond)
+	}
+}
+
+// launchProc makes one attempt. On failure it returns a nil proc, the failure text and whether it is the kind
+// startProc retries.
+func launchProc(t *testing.T, name, startMsg string, env []string, args []string) (*proc, string, bool) {
 	t.Helper()
 	cmd := exec.Command(binary(t, name), args...)
 	cmd.Env = append(append(os.Environ(), testMetricsEnv...), env...)
@@ -104,7 +132,7 @@ func startProc(t *testing.T, name, startMsg string, env []string, args ...string
 		t.Fatal(err)
 	}
 	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+		return nil, fmt.Sprintf("starting %s: %v", name, err), errors.Is(err, syscall.ETXTBSY)
 	}
 	p := &proc{name: name, cmd: cmd, stderr: &lockedBuf{}, exited: make(chan error, 1)}
 	started := make(chan string, 1)
@@ -132,12 +160,13 @@ func startProc(t *testing.T, name, startMsg string, env []string, args ...string
 	})
 	select {
 	case p.addr = <-started:
+		return p, "", false
 	case err := <-p.exited:
-		t.Fatalf("%s exited before starting: %v: %s", name, err, p.stderr.String())
+		out := strings.TrimSpace(p.stderr.String())
+		return nil, fmt.Sprintf("%s exited before starting: %v: %s", name, err, out), strings.Contains(out, "address already in use")
 	case <-time.After(15 * time.Second):
-		t.Fatalf("%s did not start: %s", name, p.stderr.String())
+		return nil, fmt.Sprintf("%s did not start: %s", name, p.stderr.String()), false
 	}
-	return p
 }
 
 func (p *proc) kill9() { _ = p.cmd.Process.Signal(syscall.SIGKILL); <-p.exited; p.exited <- nil }
@@ -662,4 +691,25 @@ func TestProcessTheConfiguredHeartbeatIntervalReachesTheAgent(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("the agent never registered: %s", agent.stderr.String())
+}
+
+// A port that another process holds for a moment when the child binds it (freePort cannot prevent that) must
+// not fail the test: startProc retries, and the retry succeeds once the port is released.
+func TestStartProcRetriesWhenItsPortIsBrieflyTaken(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpAddr := ln.Addr().String()
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(120 * time.Millisecond)
+		_ = ln.Close()
+	}()
+	t.Cleanup(func() { <-released })
+	cp := startControlPlaneProc(t, cpAddr, clusterToken)
+	if cp.addr == "" {
+		t.Fatal("the control plane started without reporting an address")
+	}
 }
