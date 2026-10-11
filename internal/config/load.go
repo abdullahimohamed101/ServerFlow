@@ -289,6 +289,7 @@ func applyEnv(cfg *Config) {
 			}
 		}
 	}
+	applyTracingEnv(cfg)
 	applyMetricsEnv(&cfg.Metrics, env)
 	if v, ok := env("LOG_LEVEL"); ok {
 		cfg.Log.Level = strings.ToLower(v)

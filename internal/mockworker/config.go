@@ -10,6 +10,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"serverflow/internal/config"
 )
 
 // FailureMode selects how an injected failure manifests.
@@ -41,6 +43,10 @@ type Config struct {
 	Seed            int64
 	StartupDelay    time.Duration
 	DrainTimeout    time.Duration
+	// OTLPEndpoint, when set, exports inference and queue_wait spans for requests the gateway sampled
+	// (Phase 11). TraceInsecureOK permits plaintext http:// to a non-loopback endpoint.
+	OTLPEndpoint    string
+	TraceInsecureOK bool
 }
 
 // Limits on flag values, to keep a typo from exhausting memory or CPU.
@@ -103,6 +109,11 @@ func (c Config) Validate() error {
 	}
 	if c.DrainTimeout <= 0 {
 		return fmt.Errorf("drain-timeout must be > 0, got %v", c.DrainTimeout)
+	}
+	if c.OTLPEndpoint != "" {
+		if err := config.CheckTraceEndpoint(c.OTLPEndpoint, c.TraceInsecureOK); err != nil {
+			return fmt.Errorf("otlp-endpoint: %s", strings.TrimPrefix(err.Error(), "tracing.endpoint "))
+		}
 	}
 	return nil
 }
