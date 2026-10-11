@@ -1,0 +1,21 @@
+# Only the Go sources, go.mod/go.sum and migrations reach the build (the classic builder reads this one file).
+.git
+.github
+.agents
+.claude
+.zed
+.worktrees
+.data
+.dev
+.env
+.env.*
+!.env.example
+docs
+observability
+benchmark
+bin
+scripts
+tests
+deploy
+**/*_test.go
+*.md
