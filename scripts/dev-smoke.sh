@@ -13,7 +13,7 @@
 set -u # no pipefail: grep -q closes pipes early and would turn a match into a failure
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 DEV_DIR=".dev"
 COMPOSE_ENV="$DEV_DIR/compose.env"
 UP="$ROOT/scripts/dev-up.sh"
@@ -113,20 +113,23 @@ fi
 
 # ------------------------------------------------------------------------------------------------ S4
 if want S4; then
-  gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions" >"$SCRATCH/stream.txt"
+  # time_starttransfer is the first byte, time_total the end: a response that is streamed through every hop (including
+  # the load balancer: proxy_buffering off) has a first byte well before its last; a buffered one has both at the end.
+  times="$(gw_curl "$KEY" -sN -o "$SCRATCH/stream.txt" -w '%{time_starttransfer} %{time_total}' -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions")"
   n="$(grep -c '^data:' "$SCRATCH/stream.txt" || true)"
-  if [ "$n" -ge 2 ] && [ "$(grep '^data:' "$SCRATCH/stream.txt" | tail -1)" = "data: [DONE]" ]; then
-    pass "S4 streaming completion: $n data chunks, ends with [DONE]"
+  gap_ok="$(printf '%s\n' "$times" | awk '{print (($2 - $1) >= 0.08) ? "yes" : "no"}')"
+  if [ "$n" -ge 2 ] && [ "$(grep '^data:' "$SCRATCH/stream.txt" | tail -1)" = "data: [DONE]" ] && [ "$gap_ok" = yes ]; then
+    pass "S4 streaming completion: $n data chunks, ends with [DONE], delivered incrementally"
   else
-    fail "S4 streaming completion: $n data chunks, no [DONE] at the end"
+    fail "S4 streaming completion: $n data chunks, last line [DONE]: $(grep '^data:' "$SCRATCH/stream.txt" | tail -1 | grep -c 'DONE'), incremental delivery: $gap_ok (first byte and end: $times s)"
   fi
 fi
 
 # ------------------------------------------------------------------------------------------------ S5
 if want S5; then
   if has_profile observability; then
-    for batch in 1 2 3 4; do
-      for i in 1 2 3 4 5 6; do
+    for _ in 1 2 3 4; do
+      for _ in 1 2 3 4 5 6; do
         gw_curl "$KEY" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions" &
       done
       wait
@@ -149,13 +152,13 @@ if want S6; then
     if make_tenant "$name" 3; then
       codes=""
       retry_after=""
-      for i in 1 2 3 4 5; do
+      for _ in 1 2 3 4 5; do
         gw_curl "$SCRATCH/$name.key" -s -D "$SCRATCH/h.txt" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions" >"$SCRATCH/code.txt"
         c="$(cat "$SCRATCH/code.txt")"
         codes="$codes $c"
         if [ "$c" = 429 ] && [ -z "$retry_after" ]; then retry_after="$(grep -i '^retry-after:' "$SCRATCH/h.txt" | tr -d '\r' | cut -d: -f2 | tr -d ' ')"; fi
       done
-      first4="$(echo $codes | cut -d' ' -f1-4)"
+      first4="$(printf '%s\n' "$codes" | awk '{print $1, $2, $3, $4}')"
       if [ "$first4" = "200 200 200 429" ] && [ -n "$retry_after" ]; then
         pass "S6 limited tenant: 200 200 200 then 429 with Retry-After"
       else
@@ -211,7 +214,7 @@ if want S9; then
     # checks, or from before a broker outage, must not satisfy this check).
     uname="smoke-usage-$$"
     if make_tenant "$uname" 600; then
-      for i in 1 2 3; do gw_curl "$SCRATCH/$uname.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions"; done
+      for _ in 1 2 3; do gw_curl "$SCRATCH/$uname.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions"; done
       usage_seen() {
         local out
         out="$(dc run --rm -T --no-deps admin usage summary --since 1h --tenant "$uname" 2>/dev/null)"
@@ -259,12 +262,12 @@ if want S11; then
     else
       dc kill mock-worker-3 >/dev/null 2>&1
       bad=0
-      for i in 1 2 3 4 5 6; do
+      for _ in 1 2 3 4 5 6; do
         c="$(gw_curl "$KEY" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions")"
         [ "$c" = 200 ] || bad=$((bad + 1))
       done
       if poll 40 gone3; then removed=1; else removed=0; fi
-      for i in 1 2 3 4 5 6; do
+      for _ in 1 2 3 4 5 6; do
         c="$(gw_curl "$KEY" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions")"
         [ "$c" = 200 ] || bad=$((bad + 1))
       done
@@ -306,11 +309,11 @@ if want S13; then
     name="smoke-scale-$$"
     if make_tenant "$name" 3; then
       admitted=0
-      for i in $(seq 1 12); do
+      for _ in $(seq 1 12); do
         c="$(gw_curl "$SCRATCH/$name.key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions")"
         [ "$c" = 200 ] && admitted=$((admitted + 1))
       done
-      for i in $(seq 1 30); do gw_curl "$KEY" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions" & done
+      for _ in $(seq 1 30); do gw_curl "$KEY" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions" & done
       wait
       spread_gw() {
         local n
@@ -333,5 +336,6 @@ if want S13; then
 fi
 
 END=$(date +%s)
+printf 'duration: %ds\n' "$((END - START))"
 printf 'smoke: %d of %d checks passed, %d failed, %d skipped\n' "$PASSED" "$TOTAL" "$FAILED" "$SKIPPED"
 [ "$FAILED" = 0 ]

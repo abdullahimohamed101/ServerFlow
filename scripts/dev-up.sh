@@ -77,7 +77,9 @@ check_value() {
     PERSIST) case "$v" in 0 | 1) ;; *) bad "$f" "$k" ;; esac ;;
     PROMETHEUS_RETENTION) printf '%s' "$v" | grep -Eq '^[0-9]{1,3}[mhd]$' || bad "$f" "$k" ;;
     COMPOSE_PROJECT_NAME) printf '%s' "$v" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,39}$' || bad "$f" "$k" ;;
-    MOCK_?_TPS) printf '%s' "$v" | grep -Eq '^[0-9]{1,6}(\.[0-9]{1,3})?$' && [ "${v%%.*}" -ge 1 ] || bad "$f" "$k" ;;
+    MOCK_?_TPS)
+      if printf '%s' "$v" | grep -Eq '^[0-9]{1,6}(\.[0-9]{1,3})?$' && [ "${v%%.*}" -ge 1 ]; then :; else bad "$f" "$k"; fi
+      ;;
     MOCK_?_TTFT | MOCK_?_STARTUP_DELAY) printf '%s' "$v" | grep -Eq '^[0-9]{1,5}(\.[0-9]{1,3})?(ms|s|m)$' || bad "$f" "$k" ;;
     MOCK_?_FAILURE_RATE) printf '%s' "$v" | grep -Eq '^(0|1|0\.[0-9]{1,4}|1\.0{1,4})$' || bad "$f" "$k" ;;
     MOCK_?_FAILURE_MODE) case "$v" in error | unavailable | drop | midstream) ;; *) bad "$f" "$k" ;; esac ;;
@@ -104,6 +106,7 @@ parse_env() {
   local f="$1" line lineno=0 k v rc=0 first=1
   [ -f "$f" ] || { printf 'dev-up: %s does not exist\n' "$f" >&2; return 1; }
   V_KEYS="" V_VALS=""
+  # shellcheck disable=SC2094 # check_value only prints the file's name
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
     if [ "$first" = 1 ]; then first=0; line="${line#$'\xef\xbb\xbf'}"; fi # a UTF-8 byte order mark
@@ -253,8 +256,6 @@ write_compose_env() {
   commit="$(printf '%s' "$commit" | tr -c 'A-Za-z0-9' '-')"
   {
     printf '%s\n' "$V_VALS" | grep -v '^$' || true
-    printf 'COMPOSE_PROJECT_NAME=%s\n' "$PROJECT"
-    printf 'GATEWAYS=%s\n' "$GATEWAYS"
     printf 'SF_VERSION=%s\nSF_COMMIT=%s\n' "$version" "$commit"
     # Resolved settings for scripts/dev-smoke.sh and the make targets (not read by compose).
     printf 'SF_PROFILES=%s\nSF_GATEWAYS=%s\nSF_GATEWAY_PORT=%s\nSF_CONTROL_PLANE_PORT=%s\nSF_PROMETHEUS_PORT=%s\nSF_GRAFANA_PORT=%s\nSF_JAEGER_UI_PORT=%s\nSF_PERSIST=%s\n' \
@@ -373,13 +374,19 @@ bootstrap_tenants() {
   fi
 }
 
-# The load balancer belongs to the scale profile, which is inactive for GATEWAYS=1, so --remove-orphans leaves a
-# running lb from an earlier GATEWAYS=N run holding the gateway port. Remove it explicitly.
-remove_stale_lb() {
-  [ "$GATEWAYS" -le 1 ] || return 0
-  local ids
-  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=lb")"
-  [ -z "$ids" ] || { docker rm -fv $ids >/dev/null; say "removed the load balancer of an earlier GATEWAYS>1 run"; }
+# Services of profiles that are no longer active (an earlier run used more profiles, or GATEWAYS>1 and its load balancer)
+# are not orphans to compose, so --remove-orphans leaves them running (the load balancer would even hold the gateway
+# port). Remove the containers of this project whose service is not in the active set.
+remove_inactive_services() {
+  local active n svc
+  active="$(dc --profile tools config --services 2>/dev/null)"
+  [ -n "$active" ] || return 0
+  for n in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.oneoff=False" --format '{{.Names}}'); do
+    svc="$(docker inspect "$n" --format '{{index .Config.Labels "com.docker.compose.service"}}')"
+    printf '%s\n' "$active" | grep -qx "$svc" && continue
+    docker rm -fv "$n" >/dev/null
+    say "removed $svc (its profile is not active)"
+  done
 }
 
 cmd_up() {
@@ -390,7 +397,7 @@ cmd_up() {
   compose_files
   ensure_secrets
   write_compose_env
-  remove_stale_lb
+  remove_inactive_services
   preflight_ports
   preflight_disk
   say "profiles: $PROFILES, gateways: $GATEWAYS, project: $PROJECT"
@@ -431,8 +438,10 @@ print_urls() {
 remove_by_label() {
   local ids
   ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT")"
+  # shellcheck disable=SC2086 # $ids is a list of container ids
   [ -z "$ids" ] || docker rm -fv $ids >/dev/null
   ids="$(docker network ls -q --filter "label=com.docker.compose.project=$PROJECT")"
+  # shellcheck disable=SC2086 # $ids is a list of network ids
   [ -z "$ids" ] || docker network rm $ids >/dev/null 2>&1 || true
 }
 
@@ -450,10 +459,12 @@ cmd_down() {
   # Anonymous volumes (64 hex characters) are never wanted, not even in PERSIST mode; named volumes stay unless -v.
   local anon
   anon="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" | grep -E '^[0-9a-f]{64}$' || true)"
+  # shellcheck disable=SC2086 # $anon is a list of volume names
   [ -z "$anon" ] || docker volume rm $anon >/dev/null 2>&1 || true
   if [ "${1:-}" = "-v" ]; then
     local vols
     vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")"
+    # shellcheck disable=SC2086 # $vols is a list of volume names
     [ -z "$vols" ] || docker volume rm $vols >/dev/null
   fi
   local left
@@ -513,6 +524,7 @@ need_stack() {
   [ -f "$COMPOSE_ENV" ] || die "the stack has not been started here yet: run make dev-up"
 }
 
+# shellcheck disable=SC2016 # redis-cli and rpk run single-quoted scripts that are expanded inside the container, where the secret is
 case "$CMD" in
   up) cmd_up ;;
   down) cmd_down ;;

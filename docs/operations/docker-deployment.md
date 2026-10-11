@@ -167,6 +167,9 @@ development Mac (Colima), with the default heartbeat settings:
   this project's images and volumes only.
 - **The stack does not become healthy.** `make dev-up` prints `docker compose ps` and the last 20 log lines of each unhealthy service (logs hold no
   secrets). `make dev-logs SERVICE=...` for more.
+- **Restarting a data service loses its data.** Data directories are tmpfs, which does not survive a container stop. After `docker compose stop` and
+  `start` of `redpanda` the lifecycle topic is gone and events are dropped (requests still succeed, S9 fails honestly) until `make dev-up` runs the
+  `redpanda-init` job again; the same holds for PostgreSQL (tenants and keys) and Redis. Use `PERSIST=1` when that matters.
 - **Out of memory.** Use fewer profiles (`PROFILES=core,data`) or give the VM more memory.
 - **`make dev-up` says Compose is too old.** Compose 2.24 added `required: false`, `!reset` and `--env-file` handling this stack relies on.
 
