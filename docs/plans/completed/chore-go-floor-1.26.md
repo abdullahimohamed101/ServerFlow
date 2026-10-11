@@ -30,7 +30,7 @@ See the PR description for the exact commands: build, vet, four cross-compiles a
 `GOTOOLCHAIN=go1.26.0` and the local 1.27.1; golangci-lint 2.14.0 (built with go1.27.1, 0 issues);
 the full gate with Postgres and Redis.
 
-## Not done (deliberately), for the Phase 11 follow-up
+## Not done (deliberately), for the Phase 11 follow-up (done: docs/plans/completed/chore-otel-xnet-bump.md)
 
 - Bump OpenTelemetry to a 1.47+ release that fits and `golang.org/x/net` to v0.60.0 or newer.
 - Delete the temporary govulncheck exception block.
