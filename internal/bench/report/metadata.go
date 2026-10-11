@@ -64,6 +64,10 @@ type Metadata struct {
 	Prompt []PromptClass `json:"prompt_distribution"`
 
 	Repeat Repeat `json:"repeat"`
+	// Resilience is the Phase 15 resilience setting the gateway under test ran with: "on", "off", or
+	// "absent" when the build has no resilience feature (never "off" then). Empty in results written
+	// before the field existed.
+	Resilience string `json:"resilience,omitempty"`
 	// Cluster describes the embedded cluster; nil for a remote target.
 	Cluster *Cluster `json:"cluster"`
 }

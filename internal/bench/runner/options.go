@@ -59,6 +59,9 @@ type Options struct {
 	MockConcurrent int
 	MockQueue      int
 	GPUType        string
+	// Resilience is "on", "off" or "" (the build's default) for the embedded gateway (Phase 15). On a
+	// build without the feature it is a no-op and results record "absent".
+	Resilience string
 
 	Workload    string
 	Seed        int64
@@ -107,7 +110,7 @@ func (o Options) Mode() driver.Mode {
 // EmbeddedConfig is the embedded cluster the options describe, serving models.
 func (o Options) EmbeddedConfig(models []string) embedded.Config {
 	return embedded.Config{Scheduler: o.Scheduler, Workers: o.Workers, Profile: o.Profile, Models: models,
-		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue}
+		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue, Resilience: o.Resilience}
 }
 
 // Models returns the workload's model pair.
@@ -156,6 +159,9 @@ func (o Options) Validate() error {
 	}
 	if !(o.MaxErrorRate >= 0 && o.MaxErrorRate <= 1) {
 		return fmt.Errorf("--max-error-rate must be between 0 and 1, got %v", o.MaxErrorRate)
+	}
+	if err := embedded.ValidResilience(o.Resilience); err != nil {
+		return fmt.Errorf("--resilience: %w", err)
 	}
 	if o.Repeat < 1 || o.Repeat > MaxRepeat {
 		return fmt.Errorf("--repeat must be between 1 and %d, got %d", MaxRepeat, o.Repeat)

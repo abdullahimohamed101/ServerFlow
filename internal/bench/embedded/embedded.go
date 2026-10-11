@@ -90,6 +90,9 @@ type Config struct {
 	// before the gateway starts (the chaos harness lowers the header timeout through it). It must not
 	// change what the harness depends on: the worker source, control plane URL and token.
 	GatewayMutate func(*config.Config)
+	// Resilience is "on", "off" or "" for the build's default; see ApplyResilience. On a build without
+	// the feature it changes nothing and Cluster.Resilience reports "absent".
+	Resilience string
 	// MockDrainAnnounce is how long a drained mock worker keeps serving after it reports "draining"
 	// (mockworker --drain-announce); 0 refuses at once. MockDrainTimeout bounds the drain itself
 	// (default one second).
@@ -218,6 +221,8 @@ type Cluster struct {
 	cfg     Config
 	log     *slog.Logger
 
+	resilience string
+
 	mu   sync.Mutex // guards live and the URL of Workers
 	live map[string]*liveWorker
 }
@@ -298,6 +303,9 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token
 	gcfg.Scheduler.Strategy = cfg.Scheduler
+	if c.resilience, _, err = ApplyResilience(&gcfg, cfg.Resilience); err != nil {
+		return fail(err)
+	}
 	if cfg.GatewayMutate != nil {
 		cfg.GatewayMutate(&gcfg)
 	}
@@ -417,6 +425,10 @@ func (c *Cluster) ready(ctx context.Context, models []string) bool {
 	}
 	return true
 }
+
+// Resilience is the resilience setting the gateway runs with: "on", "off", or "absent" on a build
+// without the feature.
+func (c *Cluster) Resilience() string { return c.resilience }
 
 // Specs returns the workers as they are now: a replaced worker has a new URL.
 func (c *Cluster) Specs() []WorkerSpec {
