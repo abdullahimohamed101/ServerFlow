@@ -17,6 +17,7 @@ import (
 	"serverflow/internal/gateway"
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/tracing"
+	"serverflow/internal/tracing/gwtrace"
 	"serverflow/internal/tracing/tracingtest"
 )
 
@@ -501,4 +502,54 @@ func TestAuthRefusalGetsARootSpan(t *testing.T) {
 		t.Error("the API key (or its prefix) leaked into a span")
 	}
 	e.noLeak()
+}
+
+// Phase 15 PR D: a probe attempt carries serverflow.breaker.probe and a denied retry adds a retry.denied span event
+// with a bounded reason; every key is on the allow-list and an unknown reason is folded to "other".
+func TestBreakerProbeAndRetryDeniedAreAllowListed(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	o := gwtrace.New(e.prov, gwtrace.Options{})
+	ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: "req_1", Method: "POST", Path: "/v1/chat/completions", Time: time.Now()})
+	o.RequestAdmitted(ctx, gateway.Admission{RequestID: "req_1", Model: model})
+	actx := o.AttemptStarted(ctx, gateway.AttemptStart{RequestID: "req_1", AttemptID: "att_1", Number: 1, WorkerID: "w-1", Model: model, Strategy: "round-robin", Probe: true})
+	o.AttemptEnded(actx, gateway.AttemptEnd{RequestID: "req_1", AttemptID: "att_1", Number: 1, WorkerID: "w-1", Model: model, Outcome: gateway.AttemptFailed,
+		Class: "status_503", RetryDenied: gateway.RetryDeniedBudget, Probe: true, Verdict: gateway.VerdictFault})
+	actx = o.AttemptStarted(ctx, gateway.AttemptStart{RequestID: "req_1", AttemptID: "att_2", Number: 2, WorkerID: "w-2", Model: model, Strategy: "round-robin"})
+	o.AttemptEnded(actx, gateway.AttemptEnd{RequestID: "req_1", AttemptID: "att_2", Number: 2, WorkerID: "w-2", Model: model, Outcome: gateway.AttemptFailed,
+		Class: "deadline", RetryDenied: "a free-text reason that is not one of ours"})
+	o.RequestCompleted(ctx, gateway.Completion{RequestID: "req_1", Model: model, Status: 503, ErrorCode: "NO_CAPACITY", Handled: true})
+
+	spans := e.spans()
+	tracingtest.RequireAllowListed(t, spans)
+	var fwds []tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name == tracing.SpanForward {
+			fwds = append(fwds, s)
+		}
+	}
+	if len(fwds) != 2 {
+		t.Fatalf("%d worker.forward spans", len(fwds))
+	}
+	probe, _ := attrOf(fwds[0], tracing.KeyBreakerProbe)
+	if !probe.AsBool() {
+		t.Error("the probe attempt must carry serverflow.breaker.probe")
+	}
+	if _, ok := attrOf(fwds[1], tracing.KeyBreakerProbe); ok {
+		t.Error("only probe attempts carry the probe attribute")
+	}
+	reasons := []string{}
+	for _, f := range fwds {
+		for _, ev := range f.Events {
+			if ev.Name == tracing.EventRetryDenied {
+				for _, kv := range ev.Attributes {
+					if kv.Key == tracing.KeyRetryDenied {
+						reasons = append(reasons, kv.Value.AsString())
+					}
+				}
+			}
+		}
+	}
+	if strings.Join(reasons, ",") != "budget,other" {
+		t.Errorf("retry.denied reasons %v", reasons)
+	}
 }
