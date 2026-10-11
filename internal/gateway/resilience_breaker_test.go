@@ -579,3 +579,48 @@ func TestA500CountsInTheRatioRuleOnlyAndIsNeverRetried(t *testing.T) {
 		}
 	})
 }
+
+// The success of a stream is counted when it completes and it resets the consecutive streak: fault, fault, a
+// complete stream, fault, fault is not three in a row.
+func TestACompletedStreamResetsTheConsecutiveStreak(t *testing.T) {
+	var n atomic.Int64
+	var script atomic.Value
+	script.Store([]string{"abort", "abort", "ok", "abort", "abort"})
+	a := newScriptWorker(t, "a-1", func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		if sc := script.Load().([]string); i < len(sc) && sc[i] == "abort" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(200)
+			_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		}
+		sseEvents("a-1", 2)(w, r)
+	})
+	b := newScriptWorker(t, "b-2", sseEvents("b-2", 2))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")},
+		func(c *config.Config) {
+			c.Resilience.Breaker.ConsecutiveFailures = 3
+			c.Resilience.Breaker.MinVolume = 100000
+		})
+	for i := 0; i < 40 && n.Load() < 5; i++ {
+		e.postLoose(true)
+		e.settle(t, "a-1", "b-2")
+	}
+	if n.Load() < 5 {
+		t.Fatalf("a-1 saw %d requests", n.Load())
+	}
+	if st := e.state("a-1"); st != resilience.Closed {
+		t.Fatalf("%v: a completed stream between the faults must reset the streak", st)
+	}
+	// One more abort is the third in a row only if the success is not counted; script ended, so make it abort.
+	n.Store(0)
+	script.Store([]string{"abort", "abort", "abort"})
+	for i := 0; i < 40 && e.state("a-1") != resilience.Open; i++ {
+		e.postLoose(true)
+		e.settle(t, "a-1", "b-2")
+	}
+	if st := e.state("a-1"); st != resilience.Open {
+		t.Fatalf("three aborts in a row must open the breaker: %v", st)
+	}
+}
