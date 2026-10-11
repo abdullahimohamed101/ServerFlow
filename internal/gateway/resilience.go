@@ -74,6 +74,8 @@ type resilienceState struct {
 
 	deliver func(BreakerChange) // set by the server: observers and log
 
+	peeks atomic.Int64 // 503 bodies peeked so far (tests and diagnostics)
+
 	qmu      sync.Mutex
 	queue    []resilience.Change
 	dropped  atomic.Uint64

@@ -232,6 +232,7 @@ func (s *Server) peekIsNeutral(run *attemptRun, info *reqInfo) bool {
 	if wait <= 0 {
 		return false
 	}
+	rs.peeks.Add(1)
 	p := &peekRead{done: make(chan struct{}), buf: make([]byte, peekLimit)}
 	body := run.resp.Body
 	run.peek = p
