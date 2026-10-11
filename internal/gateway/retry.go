@@ -28,6 +28,7 @@ const (
 	classConnect     = "connect"
 	classReset       = "reset"
 	classEmptyStream = "empty_stream"
+	classPanic       = "panic" // the request panicked while this attempt was open
 )
 
 func statusClass(code int) string { return "status_" + strconv.Itoa(code) }

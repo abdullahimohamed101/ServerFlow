@@ -49,11 +49,18 @@ func attemptIDFrom(ctx context.Context) string {
 
 // attemptRun is one attempt in flight: its worker slot, its own cancel and idle clock, and what came back.
 type attemptRun struct {
-	rec    int // index into info.attempts
-	target *routed
-	ctx    context.Context
-	cancel context.CancelFunc
-	idle   *time.Timer
+	rec       int // index into info.attempts; valid once started
+	target    *routed
+	selecting time.Time // when choosing the worker began
+	ctx       context.Context
+	cancel    context.CancelFunc
+	idle      *time.Timer
+
+	// started is set when the attempt has a record and the observers were told (AttemptStarted); ended when
+	// its slot has been released and, if it started, AttemptEnded delivered. Both only ever turn true. A run
+	// that holds a slot but has not started is released without an AttemptEnded: every AttemptStarted is
+	// followed by exactly one AttemptEnded, and an attempt that never started has none.
+	started, ended bool
 
 	resp *http.Response // nil when err is set
 	src  io.Reader      // the body to relay: resp.Body, with an already-read first chunk in front for streams
@@ -95,12 +102,27 @@ func (idleTimeoutError) Temporary() bool { return true }
 // has been written to the client it may move to a different worker (ADR-012). Once output has begun there is
 // no second try.
 func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, ireq *protocol.InferenceRequest, body []byte, info *reqInfo, start time.Time) {
-	run, rerr := s.routeAttempt(r, ireq, info, nil)
+	run, rerr := s.reserveAttempt(r, ireq, info, nil)
 	if rerr != nil {
 		s.refuseNoWorker(w, r, info, ireq, rerr.Error)
 		return
 	}
 	info.model = ireq.Model
+
+	// From here until the function returns, every run that holds a slot is released and every started attempt
+	// is ended, whatever happens: a normal finish, a client that left, a panic in the recorder, the upstream
+	// call or an observer, or a panic in the middle of swapping one attempt for the next (the guard keeps both
+	// runs reachable). The panic itself is not swallowed; withRequest turns it into a 500.
+	var g attemptGuard
+	defer func() {
+		p := recover()
+		s.closeAttempts(&g, info, p)
+		if p != nil {
+			panic(p)
+		}
+	}()
+	g.track(run)
+	s.startAttempt(r, ireq, info, run)
 	s.recordWorker(info, run.target.worker.WorkerID, len(info.attempts))
 
 	var tried []string
@@ -111,7 +133,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		}
 		// Find the next worker before letting go of this response: if there is none, this response is
 		// what the client gets (ADR-012 D7).
-		next, nextErr := s.routeAttempt(r, ireq, info, append(tried, run.target.worker.WorkerID))
+		next, nextErr := s.reserveAttempt(r, ireq, info, append(tried, run.target.worker.WorkerID))
 		if nextErr != nil {
 			run.nextUnavailable = true
 			if r.Context().Err() == nil { // a client that left is not a scheduling outcome
@@ -119,14 +141,14 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 			}
 			break
 		}
+		g.track(next)
+		s.startAttempt(r, ireq, info, next)
 		tried = append(tried, run.target.worker.WorkerID)
-		s.abandonAttempt(run, info, outcomeRetried)
-		run = next
+		prev := run
+		run, g.cur = next, next // the guard owns both until the old one is closed
+		s.abandonAttempt(prev, info, outcomeRetried)
 		s.recordWorker(info, run.target.worker.WorkerID, len(info.attempts))
 	}
-	defer s.finishAttempt(run, info)
-	defer run.idle.Stop()
-	defer run.cancel()
 
 	switch {
 	case r.Context().Err() != nil:
@@ -138,6 +160,40 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		s.fail(w, info, mapUpstreamError(run.err))
 	default:
 		s.relay(w, r, rc, run.resp, run.src, run.idle, info, start)
+	}
+}
+
+// attemptGuard remembers the attempts of one request that may still hold a slot: at most the current one and,
+// while a retry is being swapped in, the one it replaces.
+type attemptGuard struct {
+	runs []*attemptRun
+	cur  *attemptRun
+}
+
+// track registers a run that holds a slot, and makes it the current one if it is the first.
+func (g *attemptGuard) track(run *attemptRun) {
+	g.runs = append(g.runs, run)
+	if g.cur == nil {
+		g.cur = run
+	}
+}
+
+// closeAttempts is the single cleanup of forwardRegistry. p is the value recovered from a panic, or nil. A
+// panic ends every attempt still open as failed with class "panic"; http.ErrAbortHandler is not a panic here
+// but the deliberate abort after a response body failed, and ends the attempt as it always did.
+func (s *Server) closeAttempts(g *attemptGuard, info *reqInfo, p any) {
+	panicked := p != nil && p != http.ErrAbortHandler
+	for _, run := range g.runs {
+		switch {
+		case run.ended:
+		case panicked:
+			run.class = classPanic
+			s.abandonAttempt(run, info, outcomeFailed)
+		case run == g.cur:
+			s.finishAttempt(run, info)
+		default:
+			s.abandonAttempt(run, info, outcomeFailed)
+		}
 	}
 }
 
@@ -181,29 +237,37 @@ func (s *Server) refuseUnknownModel(w http.ResponseWriter, r *http.Request, info
 	return true
 }
 
-// routeAttempt picks a worker for the next attempt and starts its record. exclude lists the workers
-// already tried for this request.
-func (s *Server) routeAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *routeError) {
+// reserveAttempt picks a worker for the next attempt and takes its slot. It tells no observer and writes no
+// record: the caller must track the run (so a panic releases the slot) and then call startAttempt. exclude
+// lists the workers already tried for this request.
+func (s *Server) reserveAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, exclude []string) (*attemptRun, *routeError) {
 	selecting := time.Now()
-	target, apiErr := s.router.Route(r.Context(), ireq, exclude...)
+	target, rerr := s.router.Route(r.Context(), ireq, exclude...)
 	info.selectStart, info.selectDuration = selecting, time.Since(selecting)
-	if apiErr != nil {
-		return nil, apiErr
+	if rerr != nil {
+		return nil, rerr
 	}
+	return &attemptRun{target: target, selecting: selecting}, nil
+}
+
+// startAttempt records the attempt and tells the observers. From here the run owes an AttemptEnded.
+func (s *Server) startAttempt(r *http.Request, ireq *protocol.InferenceRequest, info *reqInfo, run *attemptRun) {
 	id := protocol.NewAttemptID()
 	info.attemptID = id
+	target := run.target
 	info.attempts = append(info.attempts, attemptRecord{ID: id, Worker: target.worker.WorkerID, Started: time.Now()})
 	idx := len(info.attempts) - 1
+	run.rec, run.started = idx, true
+	run.octx = r.Context() // until the observers return theirs; AttemptEnded needs a context even if they did not
 	info.attempted = len(info.attempts)
 	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
-		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(selecting)))
-	info.attemptCtx = octx
-	ctx, cancel := context.WithCancel(withAttemptID(octx, id))
-	idle := time.AfterFunc(s.cfg.UpstreamIdleTimeout, cancel)
-	idle.Stop()
+		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(run.selecting)))
+	info.attemptCtx, run.octx = octx, octx
+	run.ctx, run.cancel = context.WithCancel(withAttemptID(octx, id))
+	run.idle = time.AfterFunc(s.cfg.UpstreamIdleTimeout, run.cancel)
+	run.idle.Stop()
 	s.log.Debug("worker selected", append([]any{"request_id", info.id, "attempt_id", id, "attempt", idx + 1, "strategy", s.router.strategy,
 		"worker_id", target.worker.WorkerID, "model", ireq.Model}, tenantAttrs(info)...)...)
-	return &attemptRun{rec: idx, target: target, ctx: ctx, cancel: cancel, idle: idle, octx: octx}, nil
 }
 
 // sendAttempt sends the request to the attempt's worker and decides whether what came back may be retried.
@@ -263,20 +327,36 @@ func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info
 	run.resp = nil
 }
 
-// abandonAttempt gives up on an attempt whose response will not be used.
+// abandonAttempt closes an attempt: it stops the idle clock, cancels the upstream call, closes the response,
+// releases the worker slot and, if the attempt started, ends it with outcome. It is idempotent. The steps are
+// deferred so that each one runs even if an earlier one panics: the slot is always released and the attempt
+// always ended.
 func (s *Server) abandonAttempt(run *attemptRun, info *reqInfo, outcome string) {
-	run.idle.Stop()
-	run.cancel()
-	if run.resp != nil {
-		_ = run.resp.Body.Close()
+	if run.ended {
+		return
 	}
-	run.target.release()
-	s.endAttempt(run, info, outcome)
+	run.ended = true
+	defer func() {
+		if run.started {
+			s.endAttempt(run, info, outcome)
+		}
+	}()
+	defer run.target.release()
+	defer func() {
+		if run.resp != nil {
+			_ = run.resp.Body.Close()
+		}
+	}()
+	if run.idle != nil {
+		run.idle.Stop()
+	}
+	if run.cancel != nil {
+		run.cancel()
+	}
 }
 
 // finishAttempt closes out the attempt whose response was relayed (or whose failure was reported).
 func (s *Server) finishAttempt(run *attemptRun, info *reqInfo) {
-	run.target.release()
 	outcome := outcomeOK
 	switch {
 	case info.clientClosed:
@@ -284,7 +364,7 @@ func (s *Server) finishAttempt(run *attemptRun, info *reqInfo) {
 	case info.errCode != "" || run.err != nil || (run.resp != nil && run.resp.StatusCode >= 500):
 		outcome = outcomeFailed
 	}
-	s.endAttempt(run, info, outcome)
+	s.abandonAttempt(run, info, outcome)
 }
 
 func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
