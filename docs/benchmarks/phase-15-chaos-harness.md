@@ -61,8 +61,8 @@ down). Only these support a claim, and only under the 3-repeat spread rule: with
 difference, the min-max ranges are disjoint about 10% of the time, per measure, so ten descriptive measures would
 produce a "finding" by chance. Everything else is descriptive:
 
-- **time to isolate**: seconds from the fault's start to the first bucket after which the faulted worker gets no
-  non-probe selections for the rest of the fault window (`scheduler_selections_total` deltas for the worker, minus
+- **time to isolate**: seconds from the fault's start to the first bucket of a final stretch of at least 3 buckets, reaching the end of the fault window, in which the faulted worker gets no
+  non-probe selections while the gateway was making attempts (`scheduler_selections_total` deltas for the worker, minus
   `circuit_breaker_probes_total`, which does not exist on master and reads 0). *Not reached* when it kept being selected;
 - **time to recover**: seconds from the end of the fault until five consecutive buckets with at least five requests each
   have a success ratio at least the baseline window's;
@@ -134,7 +134,50 @@ scenario for real (`TestRealScenarios`, scale 0.15, about two minutes) is skippe
 
 ## Master baseline (resilience absent)
 
-BASELINE_PLACEHOLDER
+Taken with the binary built from commit `92c5488` (clean tree), `darwin/arm64, 15 CPUs, Apple M5 Pro, go1.27.1`, scale 1,
+4 workers x 8 slots, 14 closed-loop clients, round-robin, `uniform-short`, seed 1, **resilience `absent`**, 3 repeats per scenario
+(33 runs, run_001 to run_033, all valid). The raw results are in `docs/benchmarks/phase-15-baseline/` (`result.json` and `report.md` per run, no
+`requests.jsonl`; `run-log.txt` is the command output with the load average before each scenario). Each cell is min / median / max over the 3 runs.
+
+| Scenario | Runs (valid) | Success in fault window, % (primary) | Attempts per request (primary) | Time to isolate, s | Time to recover, s | Success p95 / p99 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| worker-crash | 001,002,003 (3) | 100.00 / 100.00 / 100.00 | 1.009 / 1.009 / 1.009 | 1.0 / 1.0 / 1.0 | 1.0 / 1.0 / 1.0 | 164 / 165 / 165 ; 168 / 168 / 169 |
+| worker-freeze | 004,005,006 (3) | 93.45 / 93.45 / 93.45 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| slow-worker/header-timeout-below-delay | 007,008,009 (3) | 96.15 / 96.15 / 96.15 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 164 / 164 / 165 ; 168 / 168 / 168 |
+| slow-worker/header-timeout-above-delay | 010,011,012 (3) | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 167 / 167 / 167 ; 5140 / 5140 / 5140 |
+| error-burst/unavailable-100 | 013,014,015 (3) | 100.00 / 100.00 / 100.00 | 1.333 / 1.333 / 1.333 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| error-burst/unavailable-50 | 016,017,018 (3) | 100.00 / 100.00 / 100.00 | 1.143 / 1.143 / 1.143 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| error-burst/error-100 | 019,020,021 (3) | 74.99 / 74.99 / 74.99 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| midstream | 022,023,024 (3) | 87.57 / 87.58 / 87.60 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| conn-reset | 025,026,027 (3) | 100.00 / 100.00 / 100.00 | 1.332 / 1.333 / 1.334 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 169 / 169 / 169 |
+| drain-roll | 028,029,030 (3) | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 ; 168 / 168 / 168 |
+| overload | 031,032,033 (3) | 67.30 / 67.98 / 68.34 | 0.672 / 0.679 / 0.683 | not reached | 1.0 / 1.0 / 1.0 | 163 / 164 / 164 ; 168 / 168 / 169 |
+
+**Conditions, honestly.** The Mac was running on and off AC power (charging, 22% at the start) with `caffeinate`, and was shared with other
+agent sessions: the one-minute load average at the start of the runs was between 2.7 and 6.2 (15 CPUs), recorded in every run's notes. No full test suite
+held `/tmp/sf-fullsuite.lock` before any scenario (the script waited on it; it never had to). Load shows in tail latency, not in the validity gate;
+the p95/p99 columns are nevertheless within 1 ms across repeats, so it did not move these groups visibly. The harness was restarted twice before
+this group (once to stop writing `requests.jsonl`, once because the first definition of "time to isolate" called a frozen worker isolated
+for being quiet in one bucket); the baseline is entirely from the final harness.
+
+**The spread is tiny because the embedded cluster is deterministic**, not because the measurement is precise: same seed, round-robin, identical workers and
+fault counts that repeat (80 held requests in each freeze run). Where all three runs agree to the displayed digit, `compare` reports `n/a` for the SPREAD (equal medians); a
+later group has to move by more than this to be distinguishable, but a tiny range also means a real small difference could show as "ranges do not overlap". Read the sizes of the differences, not only the verdict.
+
+What the baseline says about master (descriptive; no feature is being claimed):
+
+- **worker-crash**: the clients lose nothing (100%), 0.8% of the fault window's requests are retried (attempts 1.009). The control plane saw `FAILED` at the end of the fault. The
+  registry drops the worker in about one heartbeat (isolate 1.0 s). This is the registry-plus-retry baseline the plan wanted.
+- **worker-freeze**: 93.45% success, 72 of 1,100 requests fail with a 504 after the 2 s header timeout, and **no retry happens on a timeout** (attempts 1.000). The failures
+  come in pulses of 8 every 2 s: master's gateway stops selecting the frozen worker while 8 requests are hung on it (its reported concurrency), then picks it again when they time out. That is
+  capacity accounting, not detection, and the harness correctly reports the worker as *not isolated* (it was selected in the last buckets).
+- **slow-worker**: with the timeout below the 5 s delay, 96.15% success (the slow worker's requests time out at 2 s, again without a retry); with it above, 100% success and a p99 of 5.1 s: nothing to open a breaker on, which is the false-positive check the feature must keep passing.
+- **error-burst**: 503 `mock_failure` is retried on another worker (100% success; attempts 1.333 at 100% and 1.143 at 50%, 33% and 14% of requests retried), 500 is not (74.99%, attempts 1.000). The worker is never isolated: master keeps sending it a share of traffic.
+- **midstream**: 87.6% success; nothing can retry after output began. **conn-reset**: retried (100%, attempts 1.333).
+- **drain-roll**: 100% success and 1.000 attempts while 4 workers are replaced one at a time with a 1.5 s announce. With announce 0 the same roll would show `draining` retries (acceptance 18, PR F).
+- **overload**: 48 clients on 32 slots: 67-68% success, attempts 0.68 (a third of the requests are refused before any attempt: no queue on master).
+
+Not measured on master: breaker state, probes, queue wait, `retry.denied`; their series do not exist and read as 0.
 
 ## Honest limits
 
