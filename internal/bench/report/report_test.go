@@ -386,7 +386,7 @@ func TestCompareWarnsWhenGroupsDifferInResilience(t *testing.T) {
 		if found != tc.warn {
 			t.Errorf("%q vs %q: warned=%v want %v (%v)", tc.a, tc.b, found, tc.warn, c.Warnings)
 		}
-		if tc.warn && !c.Unfair() {
+		if tc.warn && tc.a != "" && !c.Unfair() {
 			t.Errorf("%q vs %q: the resilience difference must make the comparison unfair", tc.a, tc.b)
 		}
 	}

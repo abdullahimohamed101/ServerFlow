@@ -276,7 +276,11 @@ func differences(a, b Metadata) []Difference {
 	add("duration", false, fmt.Sprint(a.DurationSecs), fmt.Sprint(b.DurationSecs))
 	add("warm-up", false, fmt.Sprint(a.WarmupSecs), fmt.Sprint(b.WarmupSecs))
 	add("stream ratio", false, fmt.Sprint(a.StreamRatio), fmt.Sprint(b.StreamRatio))
-	add("resilience", false, resilienceLabel(a), resilienceLabel(b))
+	// A result written before the field existed (Phase 7) has no value; that is not a difference worth an
+	// unfair-comparison flag against a new result, so the line is left out when either side has none.
+	if a.Resilience != "" && b.Resilience != "" {
+		add("resilience", false, resilienceLabel(a), resilienceLabel(b))
+	}
 	add("git commit", false, a.GitCommit, b.GitCommit)
 	add("git tree", false, a.GitTree, b.GitTree)
 	add("machine", false, a.Machine, b.Machine)

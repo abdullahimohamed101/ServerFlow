@@ -64,7 +64,8 @@ type ChaosWindow struct {
 	RetriesDelta    float64 `json:"gateway_retries"`
 	NoCapacityDelta float64 `json:"gateway_no_capacity"`
 	IneligibleDelta float64 `json:"gateway_ineligible_selections"`
-	// AttemptsPerRequest is AttemptsDelta divided by Sent; nil when nothing was sent. Requests the
+	// AttemptsPerRequest is the change in inference_attempts_total divided by the change in
+	// inference_requests_total over the window (not by Sent); nil when the gateway handled none. Requests the
 	// gateway refused without any attempt (no capacity) pull it down.
 	AttemptsPerRequest *float64 `json:"attempts_per_request"`
 	// Latency of successful requests and of failed ones, milliseconds, from the intended send.

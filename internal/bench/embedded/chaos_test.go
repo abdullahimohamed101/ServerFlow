@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -242,5 +243,41 @@ func TestReplaceWorkerBringsADrainedWorkerBack(t *testing.T) {
 			t.Fatalf("after the replacement: %v %v", r, err)
 		}
 		_ = r.Body.Close()
+	}
+}
+
+// Starting, loading, draining, replacing and closing a cluster must not leave goroutines behind.
+func TestCloseAfterDrainAndReplaceLeaksNoGoroutines(t *testing.T) {
+	http.DefaultClient.CloseIdleConnections()
+	before := runtime.NumGoroutine()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	c, err := Start(ctx, Config{Scheduler: "round-robin", Workers: 2, Models: []string{"m"}, TTFT: time.Millisecond, TokensPerSecond: 5000, MockDrainTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		r, err := chat(t, c.GatewayURL, 3, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+	}
+	if err := c.DrainWorker(ctx, "worker-01"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ReplaceWorker(ctx, "worker-01"); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	http.DefaultClient.CloseIdleConnections()
+	deadline := time.Now().Add(10 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if after := runtime.NumGoroutine(); after > before+2 {
+		buf := make([]byte, 1<<16)
+		t.Fatalf("goroutines: %d before, %d after Close\n%s", before, after, buf[:runtime.Stack(buf, true)])
 	}
 }
