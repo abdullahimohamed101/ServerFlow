@@ -343,6 +343,23 @@ preflight_disk() {
 # ---------------------------------------------------------------------------------------------------------
 # up / down / reset
 # ---------------------------------------------------------------------------------------------------------
+# wait_stack SECONDS: succeeds when every container of the project is up and healthy (no healthcheck counts as up) or,
+# for the one-shot jobs, exited with 0. Fails at once on an unhealthy container or a failed job, and at the deadline.
+wait_stack() {
+  local deadline=$(($(date +%s) + $1)) rows pending="" bad
+  while :; do
+    rows="$(dc ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' 2>/dev/null || true)"
+    if [ -n "$rows" ]; then
+      bad="$(printf '%s\n' "$rows" | awk -F'|' '($2=="exited" && $4!="0") || $3=="unhealthy" || $2=="dead" {print $1}')"
+      if [ -n "$bad" ]; then printf 'dev-up: not healthy: %s\n' "$(printf '%s' "$bad" | tr '\n' ' ')" >&2; return 1; fi
+      pending="$(printf '%s\n' "$rows" | awk -F'|' '!(($2=="running" && ($3=="" || $3=="healthy")) || ($2=="exited" && $4=="0")) {print $1}')"
+      [ -n "$pending" ] || return 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then printf 'dev-up: timed out waiting for: %s\n' "$(printf '%s' "$pending" | tr '\n' ' ')" >&2; return 1; fi
+    sleep 2
+  done
+}
+
 wait_failed() {
   printf 'dev-up: the stack did not become healthy; status and the last log lines of the unhealthy services follow\n' >&2
   dc ps -a >&2 || true
@@ -416,7 +433,9 @@ cmd_up() {
     die "the image build failed (full log: $DEV_DIR/build.log)"
   fi
   say "starting"
-  if ! dc up -d --remove-orphans --wait --wait-timeout "${DEV_UP_WAIT_TIMEOUT:-240}" >"$DEV_DIR/up.log" 2>&1; then
+  # No `--wait`: Compose 2.38 (GitHub's runners) refuses it for services that have no healthcheck (the worker agents have
+  # no HTTP endpoint), Compose 5.6 tolerates that. wait_stack below does the waiting for every version.
+  if ! dc up -d --remove-orphans >"$DEV_DIR/up.log" 2>&1 || ! wait_stack "${DEV_UP_WAIT_TIMEOUT:-240}"; then
     tail -5 "$DEV_DIR/up.log" >&2
     wait_failed
     die "docker compose up failed or timed out"
