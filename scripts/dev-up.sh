@@ -248,6 +248,10 @@ ensure_secrets() {
 }
 
 # Writes the environment compose reads: the validated .env plus what the active profiles imply. Nothing secret.
+# Image tag: "dev" for the default project, else the project name, so two checkouts with different COMPOSE_PROJECT_NAME
+# do not share (and dev-reset does not delete) each other's serverflow/*:TAG images.
+image_tag() { if [ "$PROJECT" = serverflow-dev ]; then printf dev; else printf '%s' "$PROJECT"; fi; }
+
 write_compose_env() {
   local f="$COMPOSE_ENV.tmp" version commit
   version="$(git describe --always --dirty 2>/dev/null || echo dev)"
@@ -256,7 +260,7 @@ write_compose_env() {
   commit="$(printf '%s' "$commit" | tr -c 'A-Za-z0-9' '-')"
   {
     printf '%s\n' "$V_VALS" | grep -v '^$' || true
-    printf 'SF_VERSION=%s\nSF_COMMIT=%s\n' "$version" "$commit"
+    printf 'SF_VERSION=%s\nSF_COMMIT=%s\nSF_TAG=%s\n' "$version" "$commit" "$(image_tag)"
     # Resolved settings for scripts/dev-smoke.sh and the make targets (not read by compose).
     printf 'SF_PROFILES=%s\nSF_GATEWAYS=%s\nSF_GATEWAY_PORT=%s\nSF_CONTROL_PLANE_PORT=%s\nSF_PROMETHEUS_PORT=%s\nSF_GRAFANA_PORT=%s\nSF_JAEGER_UI_PORT=%s\nSF_PERSIST=%s\n' \
       "$PROFILES" "$GATEWAYS" "$GATEWAY_PORT" "$CONTROL_PLANE_PORT" "$PROMETHEUS_PORT" "$GRAFANA_PORT" "$JAEGER_UI_PORT" "$PERSIST"
@@ -479,7 +483,7 @@ cmd_reset() {
   cmd_down -v
   local img
   for img in gateway control-plane worker-agent mock-worker usage-consumer admin; do
-    docker image rm "serverflow/$img:${SF_TAG:-dev}" >/dev/null 2>&1 || true
+    docker image rm "serverflow/$img:$(image_tag)" >/dev/null 2>&1 || true
   done
   # The classic builder leaves every superseded build (the 2.4 GB build stage and the old image layers) as dangling images.
   # Remove only the ones labelled as ours.
@@ -490,7 +494,7 @@ cmd_reset() {
 }
 
 # audit: checks the RUNNING containers of this project against what ADR-021 promises (AC 2, 3, 5): read-only root,
-# all capabilities dropped, no-new-privileges, not privileged, a non-root user, memory limit, every published port
+# all capabilities dropped, no-new-privileges, not privileged, no process running as root, memory limit, every published port
 # on 127.0.0.1, only the expected services publishing, no anonymous volume. Prints one line per violation.
 cmd_audit() {
   load_settings
@@ -503,6 +507,13 @@ cmd_audit() {
       *"|true|[ALL]|[]|[no-new-privileges:true]|false|"*) ;;
       *) printf 'audit: %s: not read-only / cap_drop ALL / no-new-privileges / unprivileged (%s)\n' "${out%%|*}" "${out%%|*}" >&2; rc=1 ;;
     esac
+    # The effective user of every process in a running container, from the engine's own process table. Root is not
+    # accepted for any container (no exceptions: the third-party images run as 70, 999, 101, 65534, 472, 10001).
+    if [ "$(docker inspect "$n" --format '{{.State.Running}}')" = true ]; then
+      if docker top "$n" -eo uid 2>/dev/null | tail -n +2 | tr -d ' ' | grep -qx '0'; then
+        printf 'audit: %s runs a process as root\n' "${out%%|*}" >&2; rc=1
+      fi
+    fi
     case "$out" in *"ANON"*) printf 'audit: %s mounts an anonymous volume\n' "${out%%|*}" >&2; rc=1 ;; esac
     case "$out" in *"|0|"*) printf 'audit: %s has no memory limit\n' "${out%%|*}" >&2; rc=1 ;; esac
     case "$out" in *"|host|"*) printf 'audit: %s uses the host network\n' "${out%%|*}" >&2; rc=1 ;; esac
@@ -518,7 +529,7 @@ cmd_audit() {
   done
   [ "$total" -gt 0 ] || die "audit: no containers of project $PROJECT are running"
   [ "$rc" = 0 ] || die "audit failed"
-  say "audit: $total containers: read-only, cap_drop ALL, no-new-privileges, unprivileged, memory-limited, no anonymous volumes, published ports on 127.0.0.1 only"
+  say "audit: $total containers: read-only, cap_drop ALL, no-new-privileges, unprivileged, non-root, memory-limited, no anonymous volumes, published ports on 127.0.0.1 only"
 }
 
 need_stack() {

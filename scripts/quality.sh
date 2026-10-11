@@ -193,7 +193,9 @@ deploy() {
   fi
   for t in TestDockerfile TestDockerignore TestGitignoreCoversGeneratedFiles TestComposeStructure TestOverrideFilesOnlyNarrow \
     TestStartupOrdering TestPrometheusComposeMatchesLocal TestTargetsMatchComposeServices TestEnvVariablesAreHonoured \
-    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDevUpCheckEnv TestNoSecretsCommitted TestComposeLeavesNoDefaultSecrets \
+    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
+    TestNoServiceRunsAsRoot TestRestartPolicies TestGrafanaIsNotAnonymous TestStopGraceCoversShutdown TestRedisPasswordNotOnTheCommandLine \
+    TestHealthchecksAreBoundedAndAimedAtTheService TestHealthcheckBinaryIsInEveryImageThatUsesIt TestTraceInsecureFlagOnlyBesideATracingEndpoint TestStalledOrBrokenBodyFails TestDevUpCheckEnv TestNoSecretsCommitted TestComposeLeavesNoDefaultSecrets \
     TestHealthy2xx TestNon2xxFails TestRedirectIsNotFollowed TestTimeout TestNonHTTPPortAndClosedPort TestOnlyLoopbackAndWellFormedArguments; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
@@ -245,11 +247,7 @@ deploy() {
     printf 'quality: SKIPPING docker compose config (no compose plugin). CI runs it.\n'
   fi
 
-  step "YAML syntax of the deployment files"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 scripts/check-yaml.py docker-compose.yml docker-compose.persist.yml docker-compose.scale.yml docker-compose.private-control-plane.yml \
-      observability/prometheus/compose/prometheus.yml observability/prometheus/compose/targets.yml 2>&1 | tail -3 || true
-  fi
+  # YAML syntax of every deployment file is covered by the named tests above (they parse each file with the repository's Go YAML library).
 }
 
 have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }

@@ -132,9 +132,11 @@ jobs:
           for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
             docker build -q -f deploy/docker/Dockerfile --target "$t" -t "serverflow/$t:scan" .
           done
-      - name: Scan
+      - name: Scan from docker save tarballs (the scanner gets no Docker socket)
         run: |
+          mkdir -p "$RUNNER_TEMP/scan"
           for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
             echo "== $t"
-            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 "serverflow/$t:scan"
+            docker save "serverflow/$t:scan" -o "$RUNNER_TEMP/scan/$t.tar"
+            docker run --rm -v "$RUNNER_TEMP/scan:/scan:ro" "$TRIVY_IMAGE" image --input "/scan/$t.tar" --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
           done

@@ -39,3 +39,19 @@ func readYAML(t testing.TB, rel string) map[string]any {
 	}
 	return out
 }
+
+// TestDeploymentYAMLParses: every YAML file of the deployment parses with the repository's YAML library, so a syntax
+// error fails `quality.sh deploy` whether or not PyYAML is installed.
+func TestDeploymentYAMLParses(t *testing.T) {
+	files := []string{
+		"docker-compose.yml", "docker-compose.persist.yml", "docker-compose.scale.yml", "docker-compose.private-control-plane.yml",
+		"observability/prometheus/compose/prometheus.yml", "observability/prometheus/compose/targets.yml",
+		".github/workflows/ci.yml", ".github/workflows/nightly.yml", ".github/dependabot.yml",
+	}
+	for _, f := range files {
+		var out any
+		if err := yaml.Unmarshal([]byte(read(t, f)), &out); err != nil || out == nil {
+			t.Errorf("%s: %v", f, err)
+		}
+	}
+}
