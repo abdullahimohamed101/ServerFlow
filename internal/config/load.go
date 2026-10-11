@@ -200,9 +200,10 @@ func applyEnv(cfg *Config) {
 		}
 	}
 	for key, dst := range map[string]*bool{
-		"REDIS_TLS":                      &cfg.Redis.TLS,
-		"REDIS_REQUEST_METADATA":         &cfg.Redis.RequestMetadata,
-		"REDIS_ALLOW_INSECURE_TRANSPORT": &cfg.Redis.AllowInsecureTransport,
+		"REDIS_TLS":                              &cfg.Redis.TLS,
+		"REDIS_REQUEST_METADATA":                 &cfg.Redis.RequestMetadata,
+		"REDIS_ALLOW_INSECURE_TRANSPORT":         &cfg.Redis.AllowInsecureTransport,
+		"CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT": &cfg.ControlPlane.AllowInsecureTransport,
 	} {
 		if v, ok := env(key); ok {
 			if b, err := strconv.ParseBool(v); err == nil {

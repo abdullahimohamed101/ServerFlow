@@ -57,8 +57,8 @@ func (c *Config) ValidateAgent() error {
 		return err
 	}
 	if c.ControlPlane.Token != "" {
-		if u, err := url.Parse(c.Worker.ControlPlaneURL); err == nil && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
-			return fmt.Errorf("worker.control_plane_url must use https (or a loopback address) when control_plane.token is set, or the token would cross the network in cleartext")
+		if u, err := url.Parse(c.Worker.ControlPlaneURL); err == nil && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) && !c.ControlPlane.AllowInsecureTransport {
+			return cleartextTokenError("worker.control_plane_url")
 		}
 	}
 	return nil

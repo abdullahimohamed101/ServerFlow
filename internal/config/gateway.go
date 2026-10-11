@@ -132,8 +132,8 @@ func (c *Config) validateWorkerSource() error {
 	if err := protocol.ValidateAddress(g.ControlPlaneURL); err != nil {
 		return fmt.Errorf("gateway.control_plane_url: %v", err)
 	}
-	if u, err := url.Parse(g.ControlPlaneURL); err == nil && c.ControlPlane.Token != "" && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
-		return fmt.Errorf("gateway.control_plane_url must use https (or a loopback address) when control_plane.token is set, or the token would cross the network in cleartext")
+	if u, err := url.Parse(g.ControlPlaneURL); err == nil && c.ControlPlane.Token != "" && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) && !c.ControlPlane.AllowInsecureTransport {
+		return cleartextTokenError("gateway.control_plane_url")
 	}
 	if g.RegistryRefresh < minRegistryRefresh {
 		return fmt.Errorf("gateway.registry_refresh must be at least %v, or the gateway would hammer the control plane", minRegistryRefresh)
