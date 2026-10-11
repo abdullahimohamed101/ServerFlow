@@ -1,7 +1,7 @@
 # ADR-020: Fault Tolerance (Circuit Breakers, Retry Budget, Bounded Admission, Drain)
 
 Status: Accepted in part. Phase 15 is delivered as seven pull requests (plan: `docs/plans/active/phase-15-fault-tolerance.md`, decisions D1 to D27). This record
-is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (written; PR C is library and configuration only, nothing is wired) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
+is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
 the pull request that implements it).
 Date: 2026-10-11
 
@@ -136,9 +136,81 @@ steps; the run must reach every kind of transition), the 1/2/3/4-worker cap tabl
 stress (400 concurrent requests: capacity never exceeded, no waiter lost, no double hand-off, hand-offs in enqueue order, goroutines back to baseline;
 10,000 cancellations leave nothing behind).
 
-### [later PR] Circuit breaker wiring, retry deadline and failure taxonomy (PR D)
+### [PR D] Circuit breakers, retry budget, first-byte deadline and failure taxonomy, wired (D4-D10, D13, D14)
 
-Decisions D4 to D10 as wired into the gateway; the library above implements D7 to D9. Text lands with PR D.
+With `resilience.mode: on` in registry mode the gateway now uses the library of PR C. With `mode: off` (the code default until PR G) or with static workers
+`Server.res` is nil, every call site returns before touching it, the series are not registered, and requests, headers, bodies, logs and `/metrics` are byte-identical
+to the previous gateway (master-versus-branch differential on 40 request shapes, below). Files: `internal/gateway/resilience.go` (state, breaker-change dispatch),
+`resilience_attempt.go` (taxonomy, peek, budget and deadline checks, tickets), `metrics_resilience.go`, and small edits to `attempt.go`, `router.go`, `snapshot.go`.
+
+**Failure taxonomy and the verdict point (D4, D7).** At the retry-decision point (`sendAttempt` has returned: headers plus, for a 200, the first byte) each attempt gets one
+verdict. Connect error, reset or EOF before headers, an empty first chunk, 502, any 503 whose peeked code is not `queue_full`/`draining`/`not_ready`, a header timeout, a stalled
+first byte, 504 and any unexpected transport error are faults; a 503 with one of the three codes, a 4xx, a client that left, a first-byte deadline expiry and a panic are neutral;
+a 2xx is ok; an unlisted 5xx (500, 501, 505..) and a 3xx feed the ratio rule only (`RatioFault`: never extend or break a streak). Retry eligibility is unchanged from ADR-012.
+A 503 whose body is not peeked (no retry possible: attempts used up, deadline or budget denied) counts as a fault, the default row of the table.
+**Deviation (D7): the success of a closed breaker's attempt is counted when its response completes, not at the first byte.** A stream that aborts after its first byte
+would otherwise add an ok at the first byte (resetting the consecutive streak and diluting the ratio to exactly one half) and then a fault, so a worker that aborts every stream
+could not trip the consecutive rule and could trip the ratio rule only once its healthy history left the window. A closed breaker's ticket holds nothing, so there is nothing to
+return at the first byte; the probe's verdict is still taken at the first byte (its ticket must not be held for the length of a stream), a stream that aborts after the first byte
+is `RecordLate` with the attempt's own ticket (a fault, or a reopening for a probe), and a client that leaves proves nothing either way. `AttemptEnd.Verdict` reports `ok` for
+such an attempt until it fails late, then `fault`.
+
+**The 503 peek (D4).** When a retry is possible (attempts left, `retry.min_remaining` and the budget allowing), the first 1 KiB of a held retryable 503's body is read for at most
+`min(250 ms, time left for the first byte)` on a separate goroutine, and `error.code` is extracted with a streaming JSON scan that tolerates a cut-off body. A read that times out,
+ends short, holds no code or holds any other code is a fault (the retry still goes ahead). The peeked bytes are put back in front of the body; if the wait ran out, a response that is
+relayed after all (no other worker) is joined with the still-running read first, which the idle timeout bounds, and a response that is abandoned ends the read by closing the body. The
+body is never logged, never a label and never an event field. A worker can lie to dodge the breaker (trust boundary, unchanged from the plan's risk list). The peek runs before the
+retry is routed, so a retry for which no other worker exists also pays it (bounded) although its verdict could not matter; the plan's list of skip cases is attempts exhausted, budget
+denied and deadline denied.
+
+**Retry budget and deadline order (D5, D6).** `NoteFirst(model)` is called for every routed attempt number 1. When a retry is wanted the deadline (`retry.min_remaining`) is checked first
+(a denial reserves nothing), then the budget is reserved atomically, both **before** the retry's routing; a missing worker refunds the reservation; a denial relays the held response
+and sets `AttemptEnd.RetryDenied` (`budget`, `deadline`) on the first attempt, with no `AttemptStarted` for the retry and no attempts header. The budget key is the registry-confirmed
+model with the metrics model cap (`other` beyond it); it is pruned with each snapshot.
+The first-byte deadline is a timer per attempt that cancels the attempt's context and is disarmed when the retryable phase ends (the first byte arrived, or a final response was
+received): a context deadline cannot be lifted, and the attempt's context also governs the body stream that follows, so "no effect after the first byte" needs a timer (deviation from
+"a context deadline"). Expiry before any byte is a 504 `UPSTREAM_TIMEOUT` with attempt class `deadline` (a new class value, neutral for the breaker). The derived default is
+`upstream_header_timeout + upstream_idle_timeout + 5 s` (the dial timeout): the transport's header timeout starts after the connection is made, so without the dial allowance the
+derived deadline could cut an attempt the previous gateway served (deviation from "header + idle"; an explicit value is used as given). A probe attempt has its own header timeout
+(`breaker.probe_header_timeout`, applied only when below the gateway's) as a second timer that is disarmed when the headers arrive.
+
+**Breakers in routing (D7-D10).** `snapshotCache` reports the view to the breakers after every successful refresh and, between refreshes, whenever aging has turned an eligible worker
+suspect (`nextAge`, one comparison per `View`; the aged eligible set is what the ejection cap divides by). `Route` marks workers whose breaker is not admissible ineligible in its private copy
+before the scheduler (so `eligible_workers` stays truthful), then the chosen worker calls `Acquire` inside the routing critical section; a lost ticket race drops that candidate from the
+copy and the scheduler chooses again inside `Route`, before any observer fires and without a slot taken. The `Admissible` pass is skipped while no breaker is believed open (an atomic
+count maintained from the change hook and corrected at every sync), and `Acquire` stays authoritative, so a stale zero costs one re-select. `/readyz` does not consult breakers. When
+every eligible worker is ejected the refusal is the usual `503 NO_CAPACITY` with `Retry-After` the time to the earliest half-open breaker (1-30 s; the library's value covers all models).
+The ticket is settled exactly once: by the verdict at the decision point, or by the attempt's cleanup (`returnTicket`: panic, client gone, deadline, abandoned) -- the D2 cleanup of PR A.
+
+**Transitions (D13).** The breakers' change hook runs after the library's lock but can run while the router's lock is held (`Acquire` is called inside the routing section), so it only
+appends to a bounded queue (4096; the newest beyond that is dropped and counted). `flush` delivers the queued changes to the observers in order, from the request goroutine that finds
+them, after a routing, after a verdict, after a registry refresh and after a sync; one goroutine delivers at a time and picks up what others queued. No goroutine of its own, nothing
+delivered under a gateway lock (a test calls back into the router from `BreakerTransition`). A trip held back by the ejection cap arrives as `To: "closed"`, `Reason: "suppressed"`.
+
+**Seam (D13; amends ADR-016).** Fired now: `BreakerTransition`, `AttemptStart.Probe`, `AttemptEnd.RetryDenied`. `AttemptEnd` also gains `Probe` and `Verdict` (`ok`, `fault`, `neutral`, or
+empty without resilience) -- a deviation from "fields exactly as stated": the probe counter needs the verdict and the observer is the one path events take. `QueueWaited`,
+`AttemptStart.QueueWait` and the `overload` rejection stay unfired (PR E).
+
+**Series, spans, logs (D14).** Registered only when effective: `circuit_breaker_transitions_total{model,state}`, `circuit_breaker_probes_total{model,result}`,
+`retries_denied_total{model,reason}`, `breaker_trips_suppressed_total{model}`, `inference_deadline_exceeded_total{model}` (new; the plan named a deadline counter only implicitly), and the
+scrape-time `circuit_breaker_state{worker_id,model}` (1 half-open, 2 open; non-closed breakers only; worker labels capped like the others, later workers folded into `other` with the
+highest state) and `circuit_breakers_open{model}` (open or half-open breakers per served model, 0 when none). No new label names. The granted retries are the existing
+`inference_retries_total`. With 1,000 workers and 1,000 models the new families hold 1,009 series (test: ceiling 1,500; the gateway's own ceiling is unchanged). Spans: `serverflow.breaker.probe` on the
+attempt span and a `retry.denied` span event with `serverflow.retry.denied` (budget, deadline, else `other`); both keys are on the allow-list. Logs: one `circuit breaker changed state` line per
+transition (WARN on open, INFO otherwise), a line for a suppressed trip, DEBUG lines for denied retries, and `verdict`, `probe` and `retry_denied` fields on the attempt line when set.
+Kafka events are unchanged (schema v1): the attempt-level `failure_class` can now be `deadline`; a deadline expiry is a `timeout` terminal; nothing else changes (tests).
+
+**Limits found while implementing (kept, reported).**
+- The ratio rule works over the sliding window, which still holds the worker's healthy history: a worker that fails every request needs as many faults as it had successes in the window
+  (up to `window`) before the ratio trips. A fault rate equal to `failure_ratio` (50% of the default) sits on the threshold and trips by chance. The consecutive rule is what ejects a hard failure quickly.
+- A probe whose stream breaks after its first byte has already passed (the verdict is taken at the first byte): the breaker closes, lets the next requests through and opens again after
+  `consecutive_failures` further aborts, so each cool-down cycle can cost that many failed streams for a worker that always breaks mid-stream. Taking the probe's verdict at the end of the stream
+  would hold its ticket for the length of the stream, which the plan rules out.
+- `breakers.RetryAfter()` is computed over every model's breakers, so `Retry-After` can be shorter than the model's own earliest half-open.
+
+**Alternatives rejected.** Recording the mid-stream abort as a fault after an ok at the first byte (diluted the ratio, reset the streak); delivering transitions under the router lock (a callback
+that touches the router would deadlock); a goroutine for transition delivery (more lifecycle for events that are a handful per minute); peeking after routing (it would make the verdict of a
+retry whose routing fails depend on a guess).
 
 ### [later PR] Admission queue, hand-off, shedding and the global cap (PR E)
 
@@ -151,6 +223,18 @@ Decisions D15 and D16. Text lands with PR F.
 ### [later PR] Defaults, the default-on consequences and the D25 list (PR G)
 
 Text lands with PR G, with `docs/operations/resilience.md`.
+
+## Consequences (PR D)
+
+- With `resilience.mode: on` (registry mode) a worker with sustained faults is ejected by its breaker (`consecutive_failures` 5 in a row, or the ratio rule) up to the 50% cap and receives only probes
+  (one live request at a time) until a probe passes; retries are subject to the budget (`max(10, 20% of first attempts)` per model per 10 s): some retries that used to happen are denied and the failed
+  worker's response is relayed (the client sees the worker's 502/503 instead of a retried success); a retried 503 first waits at most 250 ms for its body; a request that sees no output within the
+  first-byte deadline gets 504 `UPSTREAM_TIMEOUT` (never shorter than one attempt today). A probe of a frozen worker can cost one client a 504 after the probe header timeout.
+  New series appear (list above). Logs gain one WARN per breaker open and `verdict`/`probe`/`retry_denied` fields on attempt lines.
+- With `mode: off` (the code default until PR G) and with static workers nothing changes: byte-identical requests, headers, bodies, logs and `/metrics`; the golden series files are unchanged.
+- Risk: misclassifying overload as a fault removes capacity when it is scarce. The cap (50%), the neutral codes, the peek and the 10 s cool-down limit it; a real vLLM sidecar's 503 vocabulary is unknown
+  (the code list is `neutral503Codes`). A terminal 503 that is not peeked counts as a fault.
+- Risk: a lying worker can answer `queue_full` to stay in rotation (trust boundary: registration).
 
 ## Consequences (PR C)
 
