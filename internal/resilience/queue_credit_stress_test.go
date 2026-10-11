@@ -228,6 +228,7 @@ func hammerRounds() (rounds, waiters, releasers int) {
 // times out and all 40 are served.
 func TestQueueNoSlotStrandedWhileWaitersQueued(t *testing.T) {
 	rounds, waiters, releasers := hammerRounds()
+	t.Logf("%d rounds x %d waiters x %d releasers", rounds, waiters, releasers)
 	for r := 0; r < rounds; r++ {
 		res := creditRound{waiters: waiters, releasers: releasers, wakes: true, wait: 25 * time.Second}.run(t)
 		if res.violations != 0 || res.served != int64(waiters) || res.timedOut != 0 || res.free != 0 || res.remaining != 0 {
