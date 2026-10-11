@@ -92,11 +92,14 @@ jobs:
       # PostgreSQL 16 with password authentication (the tests create and drop their own databases), started here instead of as a `services:` container because the
       # runner pulls a service image without retries and an anonymous pull from a shared runner is rate limited
       # ("toomanyrequests: Rate exceeded"). The image is cached as a tarball and pulled with retries on a miss.
+      - name: Digest of the PostgreSQL image (cache key)
+        id: pgimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/postgres:16)" >> "$GITHUB_OUTPUT"
       - name: Cache the PostgreSQL image
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/images/postgres.tar
-          key: image-public.ecr.aws/docker/library/postgres:16
+          key: image-public.ecr.aws/docker/library/postgres:16-${{ steps.pgimg.outputs.digest }}
       - name: Start PostgreSQL
         run: |
           scripts/ci-docker-pull.sh public.ecr.aws/docker/library/postgres:16 "$RUNNER_TEMP/images/postgres.tar"
@@ -109,11 +112,14 @@ jobs:
       # A real Redis 7 with a password like scripts/dev-redis.sh (a service container cannot take command
       # arguments, so it is started here). This job's name stays "integration (PostgreSQL)" so a required-check
       # setting keeps matching.
+      - name: Digest of the Redis image (cache key)
+        id: redisimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/redis:7)" >> "$GITHUB_OUTPUT"
       - name: Cache the Redis image
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/images/redis.tar
-          key: image-public.ecr.aws/docker/library/redis:7
+          key: image-public.ecr.aws/docker/library/redis:7-${{ steps.redisimg.outputs.digest }}
       - name: Start Redis
         run: |
           scripts/ci-docker-pull.sh public.ecr.aws/docker/library/redis:7 "$RUNNER_TEMP/images/redis.tar"

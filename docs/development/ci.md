@@ -58,11 +58,17 @@ happens: re-run the job (the limit is hourly), or add a `docker login` step with
 `Start Kafka` (authenticated pulls have a higher limit). The repository owner owns that secret; none is added here. The outage test starts a second, private broker on `SERVERFLOW_TEST_KAFKA_PRIVATE_PORT_BASE`
 and needs Docker.
 
-Registry images other than Redpanda follow the same rule. The PostgreSQL and Redis images (`public.ecr.aws/docker/library`, an ECR Public mirror)
-are started by workflow steps, not as `services:` containers (the runner pulls those without retries), through `scripts/ci-docker-pull.sh <image> [tarball]`:
-five attempts, delay 5 s growing x3, a cache tarball restored by `actions/cache` keyed by the image reference. A rate limited anonymous pull
-(`toomanyrequests: Rate exceeded`) therefore retries instead of failing the job. `internal/ciguard` fails the build if a workflow runs `docker run` or `docker pull` of a
-registry image without that script, or adds a `services:` container. Not verified: a cold pull from a GitHub-hosted runner.
+Registry images other than Redpanda follow the same rule. The PostgreSQL and Redis images are started by workflow steps, not as `services:` containers (the
+runner pulls those without retries and cannot fall back), through `scripts/ci-docker-pull.sh <image> [tarball]`. Anonymous pulls from shared runners are
+throttled by request rate (`toomanyrequests: Rate exceeded`) and by data volume (`Data limit exceeded`), so the script tries a list of sources in order,
+3 rounds with 5 s then 15 s between rounds, tags the winner as the canonical reference, and saves a tarball that `actions/cache` restores
+(key = reference + digest from `scripts/ci-docker-pull.sh digest <image>`, so most runs pull nothing). Sources for `public.ecr.aws/docker/library/<name>`:
+that, `mirror.gcr.io/library/<name>`, `docker.io/library/<name>`. Checked anonymously on 2026-10-11 (manifest GET, body sha256): `postgres:16` is
+`sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d` and `redis:7` is
+`sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85` on all three. Optional: if `DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN` are in the
+step's environment (from repository secrets the owner creates; none exists and none is added) the script runs `docker login` first. `internal/ciguard`
+fails the build if a workflow runs `docker run` or `docker pull` of a registry image without the script, or adds a `services:` container.
+Not verified: a cold pull from a GitHub-hosted runner.
 
 A local server that trusts everyone hides a missing password until CI fails (this happened once), so the
 local server deliberately requires one.

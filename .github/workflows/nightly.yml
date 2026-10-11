@@ -30,11 +30,14 @@ jobs:
       # PostgreSQL 16 with password authentication, started here instead of as a `services:` container because the
       # runner pulls a service image without retries and an anonymous pull from a shared runner is rate limited
       # ("toomanyrequests: Rate exceeded"). The image is cached as a tarball and pulled with retries on a miss.
+      - name: Digest of the PostgreSQL image (cache key)
+        id: pgimg
+        run: echo "digest=$(scripts/ci-docker-pull.sh digest public.ecr.aws/docker/library/postgres:16)" >> "$GITHUB_OUTPUT"
       - name: Cache the PostgreSQL image
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/images/postgres.tar
-          key: image-public.ecr.aws/docker/library/postgres:16
+          key: image-public.ecr.aws/docker/library/postgres:16-${{ steps.pgimg.outputs.digest }}
       - name: Start PostgreSQL
         run: |
           scripts/ci-docker-pull.sh public.ecr.aws/docker/library/postgres:16 "$RUNNER_TEMP/images/postgres.tar"
