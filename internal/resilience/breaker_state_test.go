@@ -431,3 +431,31 @@ func (r *rig) levelOf(id string) int {
 	r.t.Fatalf("%s is not listed", id)
 	return 0
 }
+
+// A long stream starts while the breaker is closed, the breaker opens and a probe closes it again, and then the old
+// stream aborts: that fault belongs to the previous period and must not count in the new window (a 2-fault streak
+// rule would otherwise be tripped by one fresh fault).
+func TestStaleClosedTicketCannotTripARecoveredBreaker(t *testing.T) {
+	p := testParams()
+	p.ConsecutiveFailures = 2
+	p.FailureRatio = 0
+	r := newRig(t, p, "w1")
+	stream, ok := r.bs.Acquire(key("w1")) // the long stream
+	if !ok {
+		t.Fatal("acquire")
+	}
+	r.sendN("w1", Fault, 2)
+	r.want("w1", Open)
+	r.clk.Advance(10 * time.Second)
+	r.send("w1", OK) // the probe passes
+	r.want("w1", Closed)
+	r.bs.RecordLate(stream, Fault) // the old stream aborts now
+	r.send("w1", Fault)            // one fresh fault
+	r.want("w1", Closed)
+	// Its first-byte verdict arriving late is just as old.
+	r.bs.Record(stream, Fault)
+	r.want("w1", Closed)
+	// Two fresh faults still trip it.
+	r.send("w1", Fault)
+	r.want("w1", Open)
+}

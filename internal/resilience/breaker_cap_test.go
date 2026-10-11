@@ -280,3 +280,77 @@ func TestSuppressedStreakTripsOnTheNextUnlistedFault(t *testing.T) {
 		})
 	}
 }
+
+func TestCapRelaxationTieBreaksByLargerWorkerID(t *testing.T) {
+	r := newRig(t, capParams(), ids(4)...) // cap 2
+	r.sendN("w1", Fault, 5)
+	r.sendN("w2", Fault, 5) // same instant: equal ejection time
+	r.want("w1", Open)
+	r.want("w2", Open)
+	setEligible(r, map[string]bool{"w1": true, "w2": true}) // cap 1
+	r.want("w1", Open)
+	r.want("w2", Closed)
+}
+
+func TestPruneEnforcesTheCap(t *testing.T) {
+	r := newRig(t, capParams(), ids(4)...)
+	r.sendN("w1", Fault, 5)
+	r.clk.Advance(time.Second)
+	r.sendN("w2", Fault, 5)
+	r.bs.Prune([]Key{key("w1"), key("w2")}) // w3 and w4 are gone: 2 eligible, cap 1
+	_, open, half := r.bs.Counts()
+	if open+half != 1 {
+		t.Fatalf("open+half-open = %d after Prune, want 1", open+half)
+	}
+	r.want("w1", Open)
+	r.want("w2", Closed)
+}
+
+func TestCapRelaxationClosesAsManyAsNeeded(t *testing.T) {
+	r := newRig(t, capParams(), ids(6)...) // cap 3
+	for _, id := range []string{"w1", "w2", "w3"} {
+		r.sendN(id, Fault, 5)
+		r.clk.Advance(time.Second)
+	}
+	setEligible(r, map[string]bool{"w1": true, "w2": true, "w3": true}) // cap 1
+	_, open, half := r.bs.Counts()
+	if open+half != 1 {
+		t.Fatalf("open+half-open = %d, want 1: two breakers had to be closed", open+half)
+	}
+	r.want("w1", Open) // the longest-standing ejection survives
+}
+
+// A failed probe reopens a breaker but does not make it a "recent" ejection: the cap keeps the older evidence.
+func TestFailedProbeDoesNotRefreshTheEjectionTime(t *testing.T) {
+	r := newRig(t, capParams(), ids(4)...) // cap 2
+	r.sendN("w1", Fault, 5)                // ejected at t0
+	r.clk.Advance(time.Second)
+	r.sendN("w2", Fault, 5) // ejected at t0+1s
+	r.clk.Advance(10 * time.Second)
+	probe, ok := r.bs.Acquire(key("w1")) // both are half-open now
+	if !ok || !probe.Probe() {
+		t.Fatal("probe")
+	}
+	r.bs.Record(probe, Fault) // w1 reopens, 20s
+	setEligible(r, map[string]bool{"w1": true, "w2": true})
+	r.want("w1", Open)   // still the older ejection
+	r.want("w2", Closed) // the newer one is relaxed
+}
+
+// RecordLate is for faults only: an OK or a neutral verdict must change nothing.
+func TestRecordLateIgnoresOKAndNeutral(t *testing.T) {
+	p := testParams()
+	p.FailureRatio = 0
+	r := newRig(t, p, "w1")
+	r.sendN("w1", Fault, 4)
+	tk, _ := r.bs.Acquire(key("w1"))
+	r.bs.RecordLate(tk, OK)      // would reset the streak if it counted
+	r.bs.RecordLate(tk, Neutral) // would be counted as an outcome
+	r.send("w1", Fault)
+	r.want("w1", Open)
+	// ...and on a half-open probe it does not reopen the breaker.
+	r.clk.Advance(10 * time.Second)
+	probe, _ := r.bs.Acquire(key("w1"))
+	r.bs.RecordLate(probe, OK)
+	r.want("w1", HalfOpen)
+}

@@ -135,7 +135,7 @@ func (m *refModel) acquire(id string, now time.Time) (probe, ok bool, tid, epoch
 	m.advance(b, now, id)
 	switch b.state {
 	case Closed:
-		return false, true, 0, 0
+		return false, true, 0, b.epoch
 	case HalfOpen:
 		if len(b.tickets) >= m.p.ProbeConcurrency {
 			return false, false, 0, 0
@@ -195,6 +195,9 @@ func (m *refModel) record(id string, reg int64, probe bool, tid, epoch int, v Ve
 		}
 		return
 	}
+	if b.epoch != epoch {
+		return
+	}
 	m.countClosed(b, now, v)
 }
 
@@ -241,6 +244,9 @@ func (m *refModel) late(id string, reg int64, probe bool, epoch int, v Verdict, 
 			m.open(b, now, true, ReasonProbeFailed)
 			return
 		}
+	}
+	if b.epoch != epoch {
+		return
 	}
 	m.countClosed(b, now, v)
 }

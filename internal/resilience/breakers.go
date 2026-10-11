@@ -248,7 +248,7 @@ func (bs *Breakers) Acquire(k Key) (Ticket, bool) {
 	bs.advanceLocked(b, now)
 	switch b.state {
 	case Closed:
-		return Ticket{key: k, valid: true}, true
+		return Ticket{key: k, epoch: b.epoch, valid: true}, true
 	case HalfOpen:
 		if !b.probeFree(&bs.p) {
 			return Ticket{}, false
@@ -292,8 +292,9 @@ func (bs *Breakers) Record(t Ticket, v Verdict) {
 // its first byte. Pass the attempt's own ticket (the one Record already consumed). While the breaker is closed the
 // fault counts like any other. If the ticket was a probe and its half-open period is still current, the probe did
 // not really succeed: the breaker reopens with a doubled cool-down (so with probe_successes > 1 an aborted stream
-// cannot count as a success). A fault from a request that started before the breaker opened, or from an earlier
-// open period, is ignored: the breaker already acted on the evidence.
+// cannot count as a success). A fault from a request that started before the breaker last opened (an older ticket epoch), in
+// whatever state the breaker is in now, is ignored: it already acted on that evidence, and counting it in the new
+// window could trip a recovered worker on stale information.
 func (bs *Breakers) RecordLate(t Ticket, v Verdict) {
 	if !t.valid || (v != Fault && v != RatioFault) {
 		return
@@ -315,6 +316,9 @@ func (bs *Breakers) RecordLate(t Ticket, v Verdict) {
 			bs.emit(Change{Key: b.key, From: HalfOpen, To: Open, Reason: ReasonProbeFailed, CoolDown: b.coolDown})
 			return
 		}
+	}
+	if b.epoch != t.epoch {
+		return // started before the breaker last opened, however it got back to closed
 	}
 	bs.countClosed(b, now, v)
 }
@@ -346,6 +350,9 @@ func (bs *Breakers) recordLocked(t Ticket, v Verdict) {
 			bs.emit(Change{Key: b.key, From: HalfOpen, To: Open, Reason: ReasonProbeFailed, CoolDown: b.coolDown})
 		}
 		return
+	}
+	if b.epoch != t.epoch {
+		return // the request started before the breaker last opened: that evidence is old
 	}
 	bs.countClosed(b, now, v)
 }
