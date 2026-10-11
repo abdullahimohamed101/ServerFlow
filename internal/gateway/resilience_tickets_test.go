@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,4 +259,63 @@ func TestConcurrentRequestsAndRefreshesLeakNothing(t *testing.T) {
 	e.client.CloseIdleConnections()
 	e.gw.router.client.CloseIdleConnections()
 	eventually(t, 10*time.Second, func() bool { return runtime.NumGoroutine() <= base+8 }, fmt.Sprintf("goroutines back near %d, now %d", base, runtime.NumGoroutine()))
+}
+
+// A transition caused inside Acquire (the cool-down ends while the router's lock is held) is still delivered outside
+// that lock: with the fast path forced off, the lazy open -> half-open change happens inside the routing section and an
+// observer that calls back into the router must not deadlock.
+func TestATransitionInsideAcquireIsDeliveredOutsideTheRouterLock(t *testing.T) {
+	flag, _, _, ws := twoWorkers(t)
+	e := newResEnv(t, ws, func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 1 })
+	for i := 0; i < 4; i++ {
+		e.do(t)
+	}
+	flag.set(okJSON("a-flaky"))
+	e.advance(t, 10*time.Second)
+	e.rs.nonClosed.Store(0) // skip the Admissible pass: only Acquire sees the cool-down end
+	var ran atomic.Int32
+	WithObserver(&callbackObserver{fn: func() {
+		done := make(chan struct{})
+		go func() { e.gw.router.InFlight("a-flaky"); close(done) }()
+		select {
+		case <-done:
+			ran.Add(1)
+		case <-time.After(3 * time.Second):
+			t.Error("BreakerTransition ran under the router lock")
+		}
+	}})(e.gw)
+	for i := 0; i < 3; i++ {
+		e.do(t)
+	}
+	if ran.Load() == 0 {
+		t.Fatal("no transition was delivered")
+	}
+}
+
+// Without the pre-filter nothing would be wrong for correctness, but the scheduler's rotation would be spent on
+// ejected workers: with one worker ejected, the others share requests evenly.
+func TestEjectedWorkersDoNotSkewTheRotationOfTheOthers(t *testing.T) {
+	flag := &workerFlag{}
+	flag.set(openAPI503("mock_failure"))
+	a := newScriptWorker(t, "a-1", flag.serve)
+	b := newScriptWorker(t, "b-2", okJSON("b-2"))
+	c := newScriptWorker(t, "c-3", okJSON("c-3"))
+	d := newScriptWorker(t, "d-4", okJSON("d-4"))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b"), c.snapshot("qwen-7b"), d.snapshot("qwen-7b")},
+		func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 1 })
+	for i := 0; i < 6 && e.state("a-1") != resilience.Open; i++ {
+		e.do(t)
+	}
+	if e.state("a-1") != resilience.Open {
+		t.Fatal("setup")
+	}
+	b0, c0, d0 := b.hits.Load(), c.hits.Load(), d.hits.Load()
+	for i := 0; i < 30; i++ {
+		e.do(t)
+	}
+	for name, n := range map[string]int64{"b": b.hits.Load() - b0, "c": c.hits.Load() - c0, "d": d.hits.Load() - d0} {
+		if n != 10 {
+			t.Fatalf("worker %s served %d of 30 requests, want an even 10", name, n)
+		}
+	}
 }
