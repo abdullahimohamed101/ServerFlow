@@ -176,10 +176,12 @@ func TestTheProbeHeaderTimeoutEndsWithTheHeaders(t *testing.T) {
 	flag.set(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond) // the first byte comes after the probe header timeout: that timer is over
 		for i := 0; i < 5; i++ {
 			_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
 			w.(http.Flusher).Flush()
-			time.Sleep(100 * time.Millisecond) // 500 ms in all, longer than the probe header timeout
+			time.Sleep(100 * time.Millisecond)
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	})
