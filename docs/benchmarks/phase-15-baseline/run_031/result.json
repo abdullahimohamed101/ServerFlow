@@ -1,0 +1,728 @@
+{
+  "schema_version": 1,
+  "run_id": "run_031",
+  "metadata": {
+    "date": "2026-10-11T05:55:42Z",
+    "harness_version": "1",
+    "go_version": "go1.27.1",
+    "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
+    "git_commit": "92c5488eb643fc436822f906aeec757bfab55f46",
+    "git_tree": "clean",
+    "target": "embedded",
+    "target_host": "loopback",
+    "scheduler": "round-robin",
+    "scheduler_source": "embedded",
+    "models": [
+      "qwen-7b"
+    ],
+    "worker_count": 4,
+    "gpu_type": "none (mock workers)",
+    "mode": "closed",
+    "concurrency": 19,
+    "rate_per_second": 0,
+    "max_in_flight": 0,
+    "duration_seconds": 50,
+    "warmup_seconds": 3,
+    "seed": 1,
+    "workload": "uniform-short",
+    "stream_ratio": 0.5,
+    "plan_digest": "5c17a8e856433f54",
+    "prompt_distribution": [
+      {
+        "name": "short",
+        "weight": 1,
+        "input_tokens_min": 100,
+        "input_tokens_max": 300,
+        "max_tokens_min": 50,
+        "max_tokens_max": 150
+      }
+    ],
+    "repeat": {
+      "index": 1,
+      "of": 3,
+      "group": "run_031-1791698088"
+    },
+    "resilience": "absent",
+    "cluster": {
+      "worker_profile": "identical",
+      "heartbeat_interval_ms": 1000,
+      "gateway_registry_refresh_ms": 100,
+      "workers": [
+        {
+          "id": "worker-01",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128
+        },
+        {
+          "id": "worker-02",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128
+        },
+        {
+          "id": "worker-03",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128
+        },
+        {
+          "id": "worker-04",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128
+        }
+      ]
+    }
+  },
+  "summary": {
+    "sent": 8788,
+    "succeeded": 7516,
+    "failed": 1272,
+    "warmup_excluded": 484,
+    "retried": 0,
+    "status_classes": {
+      "2xx": 7516,
+      "5xx": 1272
+    },
+    "error_classes": {
+      "status_5xx": 1272
+    },
+    "latency_ms": {
+      "count": 7516,
+      "min": 69.154084,
+      "mean": 119.32125173296987,
+      "p50": 119.384083,
+      "p95": 164.267,
+      "p99": 169.162417,
+      "max": 170.970625
+    },
+    "ttft_ms": {
+      "count": 3705,
+      "min": 20.114917,
+      "mean": 20.234957248043163,
+      "p50": 20.206542,
+      "p95": 20.386875,
+      "p99": 20.643875,
+      "max": 24.711875
+    },
+    "input_tokens": 1512763,
+    "output_tokens": 752159,
+    "usage_requests": 3811,
+    "estimated_requests": 3705,
+    "window_seconds": 50,
+    "span_seconds": 50.157806875,
+    "completed_in_window": 7516,
+    "warmup_completed_in_window": 19,
+    "requests_per_second": 150.32,
+    "input_tokens_per_second": 30253.66,
+    "output_tokens_per_second": 15040.8,
+    "requests_per_second_with_tail": 149.84706206814192,
+    "input_tokens_per_second_with_tail": 30160.0706699559,
+    "output_tokens_per_second_with_tail": 14995.85103221282,
+    "error_rate": 0.14474283113336367
+  },
+  "queue": {
+    "samples": 200,
+    "avg_total_queue_depth": 0,
+    "p95_total_queue_depth": 0,
+    "max_total_queue_depth": 0,
+    "avg_total_active_requests": 17.94,
+    "workers": [
+      {
+        "id": "worker-01",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 4.48,
+        "samples": 200
+      },
+      {
+        "id": "worker-02",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 4.49,
+        "samples": 200
+      },
+      {
+        "id": "worker-03",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 4.65,
+        "samples": 200
+      },
+      {
+        "id": "worker-04",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 4.32,
+        "samples": 200
+      }
+    ]
+  },
+  "workers": null,
+  "imbalance": {
+    "request_jain": null,
+    "request_jain_partial": false,
+    "request_jain_by_model": {},
+    "queue_jain": null
+  },
+  "gpu_utilization": null,
+  "valid": true,
+  "invalid_reasons": [],
+  "warnings": [],
+  "stats_missing": {},
+  "timings": {
+    "prerun_seconds": 0,
+    "boot_seconds": 0.608285042,
+    "warmup_seconds": 3,
+    "window_seconds": 50,
+    "drain_seconds": 0,
+    "stats_seconds": 0,
+    "close_seconds": 0,
+    "wall_clock_seconds": 53.773398,
+    "monotonic_seconds": 53.773408583
+  },
+  "not_measured": {
+    "gpu_utilization": "workers did not report GPU utilization (mock workers have no GPU)",
+    "queue_imbalance": "every worker's queue stayed empty, so the index is undefined",
+    "request_imbalance": "the workers behind the gateway could not be listed (pass --control-plane with --target)"
+  },
+  "sample_polls_failed": 0,
+  "samples_dropped": 0,
+  "notes": [
+    "Chaos run: More closed-loop clients than the cluster has request slots for the length of the fault window: the workers' slots and queues fill and the gateway answers 503.",
+    "What this embedded mock cluster cannot show here: What a real queue in the gateway does (Phase 15 D11): on master there is none, so this shows the rejections the clients get. Closed-loop clients also back off on a 503, which softens the overload an open-loop crowd would cause.",
+    "Windows follow when the fault was really applied and cleared. Gateway counters (attempts per request, retries) are read at the tick that opens and closes a window (every 1s), so an attempt of a request in flight at a boundary falls in the next window; the per-request figures come from the clients.",
+    "Closed-loop clients: 19 for the whole run, plus 29 in the fault window on 32 request slots (32 left serving). Closed-loop clients wait for each response, so a failing worker also slows the offered load.",
+    "Load average (1, 5 and 15 minutes) at the start of the run: 4.74 4.66 4.51; at the end: 4.25 4.55 4.47."
+  ],
+  "chaos": {
+    "scenario": "overload",
+    "description": "More closed-loop clients than the cluster has request slots for the length of the fault window: the workers' slots and queues fill and the gateway answers 503.",
+    "variant": "",
+    "time_scale": 1,
+    "bucket_seconds": 1,
+    "params": {
+      "bucket": "1s",
+      "clients": "19",
+      "extra_clients_in_fault": "29",
+      "mock_concurrency": "8",
+      "scheduler": "round-robin",
+      "workers": "4"
+    },
+    "fault_worker": "",
+    "fault_applied_seconds": 13.000019167,
+    "fault_cleared_seconds": 33.00028225,
+    "windows": [
+      {
+        "name": "baseline",
+        "start_seconds": 3,
+        "end_seconds": 13.000019167,
+        "sent": 1592,
+        "succeeded": 1592,
+        "failed": 0,
+        "success_rate": 1,
+        "retried": 0,
+        "gateway_attempts": 1592,
+        "gateway_retries": 0,
+        "gateway_no_capacity": 0,
+        "gateway_ineligible_selections": 0,
+        "attempts_per_request": 1,
+        "latency_p50_ms": 120.204292,
+        "latency_p95_ms": 164.362084,
+        "latency_p99_ms": 169.162125,
+        "failure_latency_p50_ms": null,
+        "error_classes": {},
+        "status_classes": {
+          "2xx": 1592
+        }
+      },
+      {
+        "name": "fault",
+        "start_seconds": 13.000019167,
+        "end_seconds": 33.00028225,
+        "sent": 4018,
+        "succeeded": 2746,
+        "failed": 1272,
+        "success_rate": 0.6834245893479343,
+        "retried": 0,
+        "gateway_attempts": 2741,
+        "gateway_retries": 0,
+        "gateway_no_capacity": 1272,
+        "gateway_ineligible_selections": 0,
+        "attempts_per_request": 0.6830301520059806,
+        "latency_p50_ms": 119.384083,
+        "latency_p95_ms": 164.183916,
+        "latency_p99_ms": 169.180792,
+        "failure_latency_p50_ms": 0.13375,
+        "error_classes": {
+          "status_5xx": 1272
+        },
+        "status_classes": {
+          "2xx": 2746,
+          "5xx": 1272
+        }
+      },
+      {
+        "name": "recovery",
+        "start_seconds": 33.00028225,
+        "end_seconds": 53,
+        "sent": 3178,
+        "succeeded": 3178,
+        "failed": 0,
+        "success_rate": 1,
+        "retried": 0,
+        "gateway_attempts": 3183,
+        "gateway_retries": 0,
+        "gateway_no_capacity": 0,
+        "gateway_ineligible_selections": 0,
+        "attempts_per_request": 1,
+        "latency_p50_ms": 119.220292,
+        "latency_p95_ms": 165.207166,
+        "latency_p99_ms": 169.170583,
+        "failure_latency_p50_ms": null,
+        "error_classes": {},
+        "status_classes": {
+          "2xx": 3178
+        }
+      }
+    ],
+    "evidence": {
+      "applied": true,
+      "requests_touched": 0,
+      "errored": 0,
+      "delayed": 0,
+      "blackholed": 0,
+      "crashes": 0,
+      "drains": 0,
+      "served_while_announcing": 0,
+      "control_plane_state": "",
+      "clients_in_fault": 48,
+      "surviving_slots": 32
+    },
+    "measures": {
+      "primary_fault_success_rate": 0.6834245893479343,
+      "primary_fault_attempts_per_request": 0.6830301520059806,
+      "time_to_isolate_seconds": null,
+      "time_to_isolate_note": "not defined: no single faulted worker",
+      "time_to_recover_seconds": 0.99971775,
+      "time_to_recover_note": "",
+      "fault_success_latency_p95_ms": 164.183916,
+      "fault_success_latency_p99_ms": 169.180792
+    },
+    "hard_bounds": {
+      "ineligible_selections": 0,
+      "goroutines_start": 46,
+      "goroutines_end": 142,
+      "heap_start_mib": 1.4694366455078125,
+      "heap_end_mib": 4.420234680175781
+    },
+    "validity_checks": [
+      {
+        "name": "load driver",
+        "ok": true,
+        "detail": "the load generator ran to the end of the run"
+      },
+      {
+        "name": "fault applied and cleared",
+        "ok": true,
+        "detail": "applied true (err \u003cnil\u003e), cleared true (err \u003cnil\u003e)"
+      },
+      {
+        "name": "baseline error rate",
+        "ok": true,
+        "detail": "0.00% of 1592 baseline requests failed, limit 5.00%"
+      },
+      {
+        "name": "fault evidenced",
+        "ok": true,
+        "detail": "1272 failed requests, 1272 gateway no-capacity refusals in the fault window (the mock workers' counters, not the harness's intention)"
+      },
+      {
+        "name": "clients exceed slots (overload)",
+        "ok": true,
+        "detail": "48 clients in the fault window against 32 slots: an overload needs more clients than slots"
+      },
+      {
+        "name": "minimum requests per window",
+        "ok": true,
+        "detail": "every window needs at least 100 requests; short: none"
+      },
+      {
+        "name": "cluster settled",
+        "ok": true,
+        "detail": "Start waited 501ms after the control plane listed every worker (five registry refreshes = 500ms)"
+      },
+      {
+        "name": "clean working tree",
+        "ok": true,
+        "detail": "tree clean, commit 92c5488eb6: the commit must be recorded and the tree clean for a result to be reproducible"
+      },
+      {
+        "name": "no sleep or clock step",
+        "ok": true,
+        "detail": "the wall clock moved 0s against the monotonic clock during the run (limit 250ms): a larger move means the machine slept or its clock was stepped"
+      }
+    ],
+    "series": [
+      {
+        "t": 3,
+        "ok": 161,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 4,
+        "ok": 157,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 5,
+        "ok": 162,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 6,
+        "ok": 160,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 7,
+        "ok": 163,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 8,
+        "ok": 162,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 9,
+        "ok": 158,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 10,
+        "ok": 156,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 11,
+        "ok": 159,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 12,
+        "ok": 154,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 13,
+        "ok": 158,
+        "failed": 65,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 14,
+        "ok": 120,
+        "failed": 63,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 15,
+        "ok": 164,
+        "failed": 65,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 16,
+        "ok": 105,
+        "failed": 63,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 17,
+        "ok": 166,
+        "failed": 64,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 18,
+        "ok": 97,
+        "failed": 64,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 19,
+        "ok": 165,
+        "failed": 65,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 20,
+        "ok": 107,
+        "failed": 63,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 21,
+        "ok": 166,
+        "failed": 67,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 22,
+        "ok": 109,
+        "failed": 61,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 23,
+        "ok": 160,
+        "failed": 69,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 24,
+        "ok": 108,
+        "failed": 59,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 25,
+        "ok": 164,
+        "failed": 66,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 26,
+        "ok": 104,
+        "failed": 62,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 27,
+        "ok": 162,
+        "failed": 68,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 28,
+        "ok": 105,
+        "failed": 60,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 29,
+        "ok": 165,
+        "failed": 68,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 30,
+        "ok": 105,
+        "failed": 60,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 31,
+        "ok": 191,
+        "failed": 56,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 32,
+        "ok": 120,
+        "failed": 64,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 33,
+        "ok": 160,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 34,
+        "ok": 157,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 35,
+        "ok": 161,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 36,
+        "ok": 160,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 37,
+        "ok": 153,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 38,
+        "ok": 163,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 39,
+        "ok": 161,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 40,
+        "ok": 157,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 41,
+        "ok": 154,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 42,
+        "ok": 164,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 43,
+        "ok": 151,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 44,
+        "ok": 158,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 45,
+        "ok": 157,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 46,
+        "ok": 158,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 47,
+        "ok": 161,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 48,
+        "ok": 158,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 49,
+        "ok": 160,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 50,
+        "ok": 165,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 51,
+        "ok": 165,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      },
+      {
+        "t": 52,
+        "ok": 160,
+        "failed": 0,
+        "faulty_selections": 0,
+        "probes": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,232 @@
+=== worker-crash lock-wait 0s load { 4.15 4.26 4.42 } Sun Oct 11 01:27:35 EDT 2026
+run_001: worker-crash, repeat 1 of 3 (load average 4.15 4.26 4.42)
+run_001: fault-window success 100.0%, attempts/request 1.009, isolate 1.0s, recover 1.0s
+run_001: wrote /tmp/p15b-runs/baseline/run_001
+run_002: worker-crash, repeat 2 of 3 (load average 3.39 4.04 4.33)
+run_002: fault-window success 100.0%, attempts/request 1.009, isolate 1.0s, recover 1.0s
+run_002: wrote /tmp/p15b-runs/baseline/run_002
+run_003: worker-crash, repeat 3 of 3 (load average 3.51 3.97 4.28)
+run_003: fault-window success 100.0%, attempts/request 1.009, isolate 1.0s, recover 1.0s
+run_003: wrote /tmp/p15b-runs/baseline/run_003
+
+worker-crash: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.009 / 1.009 / 1.009
+    time to isolate (s)                      1.0 / 1.0 / 1.0
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    164 / 165 / 165
+    fault-window success latency p99 (ms)    168 / 168 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== worker-crash exit 0 Sun Oct 11 01:30:20 EDT 2026
+=== worker-freeze lock-wait 0s load { 2.69 3.67 4.15 } Sun Oct 11 01:30:20 EDT 2026
+run_004: worker-freeze, repeat 1 of 3 (load average 2.69 3.67 4.15)
+run_004: fault-window success 93.5%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_004: wrote /tmp/p15b-runs/baseline/run_004
+run_005: worker-freeze, repeat 2 of 3 (load average 3.18 3.64 4.11)
+run_005: fault-window success 93.5%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_005: wrote /tmp/p15b-runs/baseline/run_005
+run_006: worker-freeze, repeat 3 of 3 (load average 3.43 3.65 4.08)
+run_006: fault-window success 93.5%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_006: wrote /tmp/p15b-runs/baseline/run_006
+
+worker-freeze: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  93.45 / 93.45 / 93.45
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== worker-freeze exit 0 Sun Oct 11 01:33:05 EDT 2026
+=== slow-worker-below-timeout lock-wait 0s load { 2.87 3.44 3.97 } Sun Oct 11 01:33:05 EDT 2026
+run_007: slow-worker-below-timeout, repeat 1 of 3 (load average 2.87 3.44 3.97)
+run_007: fault-window success 96.2%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_007: wrote /tmp/p15b-runs/baseline/run_007
+run_008: slow-worker-below-timeout, repeat 2 of 3 (load average 2.84 3.33 3.90)
+run_008: fault-window success 96.1%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_008: wrote /tmp/p15b-runs/baseline/run_008
+run_009: slow-worker-below-timeout, repeat 3 of 3 (load average 3.43 3.38 3.88)
+run_009: fault-window success 96.1%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_009: wrote /tmp/p15b-runs/baseline/run_009
+
+slow-worker-below-timeout: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  96.15 / 96.15 / 96.15
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    164 / 164 / 165
+    fault-window success latency p99 (ms)    168 / 168 / 168
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== slow-worker-below-timeout exit 0 Sun Oct 11 01:35:47 EDT 2026
+=== slow-worker-above-timeout lock-wait 0s load { 3.35 3.42 3.86 } Sun Oct 11 01:35:47 EDT 2026
+run_010: slow-worker-above-timeout, repeat 1 of 3 (load average 3.35 3.42 3.86)
+run_010: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_010: wrote /tmp/p15b-runs/baseline/run_010
+run_011: slow-worker-above-timeout, repeat 2 of 3 (load average 3.58 3.42 3.83)
+run_011: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_011: wrote /tmp/p15b-runs/baseline/run_011
+run_012: slow-worker-above-timeout, repeat 3 of 3 (load average 3.02 3.25 3.74)
+run_012: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_012: wrote /tmp/p15b-runs/baseline/run_012
+
+slow-worker-above-timeout: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    167 / 167 / 167
+    fault-window success latency p99 (ms)    5140 / 5140 / 5140
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== slow-worker-above-timeout exit 0 Sun Oct 11 01:38:32 EDT 2026
+=== error-burst-unavailable lock-wait 0s load { 3.59 3.42 3.77 } Sun Oct 11 01:38:32 EDT 2026
+run_013: error-burst-unavailable, repeat 1 of 3 (load average 3.59 3.42 3.77)
+run_013: fault-window success 100.0%, attempts/request 1.333, isolate not reached, recover 1.0s
+run_013: wrote /tmp/p15b-runs/baseline/run_013
+run_014: error-burst-unavailable, repeat 2 of 3 (load average 4.56 3.70 3.85)
+run_014: fault-window success 100.0%, attempts/request 1.333, isolate not reached, recover 1.0s
+run_014: wrote /tmp/p15b-runs/baseline/run_014
+run_015: error-burst-unavailable, repeat 3 of 3 (load average 4.21 3.76 3.87)
+run_015: fault-window success 100.0%, attempts/request 1.333, isolate not reached, recover 1.0s
+run_015: wrote /tmp/p15b-runs/baseline/run_015
+
+error-burst-unavailable: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.333 / 1.333 / 1.333
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== error-burst-unavailable exit 0 Sun Oct 11 01:41:17 EDT 2026
+=== error-burst-unavailable-partial lock-wait 0s load { 4.83 3.98 3.94 } Sun Oct 11 01:41:17 EDT 2026
+run_016: error-burst-unavailable-partial, repeat 1 of 3 (load average 4.83 3.98 3.94)
+run_016: fault-window success 100.0%, attempts/request 1.143, isolate not reached, recover 1.0s
+run_016: wrote /tmp/p15b-runs/baseline/run_016
+run_017: error-burst-unavailable-partial, repeat 2 of 3 (load average 5.80 4.31 4.06)
+run_017: fault-window success 100.0%, attempts/request 1.143, isolate not reached, recover 1.0s
+run_017: wrote /tmp/p15b-runs/baseline/run_017
+run_018: error-burst-unavailable-partial, repeat 3 of 3 (load average 6.19 4.68 4.21)
+run_018: fault-window success 100.0%, attempts/request 1.143, isolate not reached, recover 1.0s
+run_018: wrote /tmp/p15b-runs/baseline/run_018
+
+error-burst-unavailable-partial: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.143 / 1.143 / 1.143
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== error-burst-unavailable-partial exit 0 Sun Oct 11 01:43:58 EDT 2026
+=== error-burst-500 lock-wait 0s load { 6.03 4.93 4.33 } Sun Oct 11 01:43:58 EDT 2026
+run_019: error-burst-500, repeat 1 of 3 (load average 6.03 4.93 4.33)
+run_019: fault-window success 75.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_019: wrote /tmp/p15b-runs/baseline/run_019
+run_020: error-burst-500, repeat 2 of 3 (load average 5.99 5.13 4.44)
+run_020: fault-window success 75.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_020: wrote /tmp/p15b-runs/baseline/run_020
+run_021: error-burst-500, repeat 3 of 3 (load average 5.28 5.06 4.46)
+run_021: fault-window success 75.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_021: wrote /tmp/p15b-runs/baseline/run_021
+
+error-burst-500: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  74.99 / 74.99 / 74.99
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== error-burst-500 exit 0 Sun Oct 11 01:46:40 EDT 2026
+=== midstream lock-wait 0s load { 5.09 5.03 4.48 } Sun Oct 11 01:46:40 EDT 2026
+run_022: midstream, repeat 1 of 3 (load average 5.09 5.03 4.48)
+run_022: fault-window success 87.6%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_022: wrote /tmp/p15b-runs/baseline/run_022
+run_023: midstream, repeat 2 of 3 (load average 6.24 5.31 4.62)
+run_023: fault-window success 87.6%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_023: wrote /tmp/p15b-runs/baseline/run_023
+run_024: midstream, repeat 3 of 3 (load average 5.15 5.13 4.59)
+run_024: fault-window success 87.6%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_024: wrote /tmp/p15b-runs/baseline/run_024
+
+midstream: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  87.57 / 87.58 / 87.60
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== midstream exit 0 Sun Oct 11 01:49:21 EDT 2026
+=== conn-reset lock-wait 0s load { 4.63 4.97 4.56 } Sun Oct 11 01:49:21 EDT 2026
+run_025: conn-reset, repeat 1 of 3 (load average 4.63 4.97 4.56)
+run_025: fault-window success 100.0%, attempts/request 1.333, isolate not reached, recover 1.0s
+run_025: wrote /tmp/p15b-runs/baseline/run_025
+run_026: conn-reset, repeat 2 of 3 (load average 3.95 4.75 4.51)
+run_026: fault-window success 100.0%, attempts/request 1.334, isolate not reached, recover 1.0s
+run_026: wrote /tmp/p15b-runs/baseline/run_026
+run_027: conn-reset, repeat 3 of 3 (load average 3.55 4.50 4.43)
+run_027: fault-window success 100.0%, attempts/request 1.332, isolate not reached, recover 1.0s
+run_027: wrote /tmp/p15b-runs/baseline/run_027
+
+conn-reset: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.332 / 1.333 / 1.334
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    169 / 169 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== conn-reset exit 0 Sun Oct 11 01:52:02 EDT 2026
+=== drain-roll lock-wait 0s load { 4.10 4.49 4.42 } Sun Oct 11 01:52:02 EDT 2026
+run_028: drain-roll, repeat 1 of 3 (load average 4.10 4.49 4.42)
+run_028: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_028: wrote /tmp/p15b-runs/baseline/run_028
+run_029: drain-roll, repeat 2 of 3 (load average 4.44 4.56 4.45)
+run_029: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_029: wrote /tmp/p15b-runs/baseline/run_029
+run_030: drain-roll, repeat 3 of 3 (load average 4.92 4.64 4.49)
+run_030: fault-window success 100.0%, attempts/request 1.000, isolate not reached, recover 1.0s
+run_030: wrote /tmp/p15b-runs/baseline/run_030
+
+drain-roll: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  100.00 / 100.00 / 100.00
+    fault-window attempts per request (primary) 1.000 / 1.000 / 1.000
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    165 / 165 / 165
+    fault-window success latency p99 (ms)    168 / 168 / 168
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== drain-roll exit 0 Sun Oct 11 01:54:48 EDT 2026
+=== overload lock-wait 0s load { 4.72 4.66 4.50 } Sun Oct 11 01:54:48 EDT 2026
+run_031: overload, repeat 1 of 3 (load average 4.74 4.66 4.51)
+run_031: fault-window success 68.3%, attempts/request 0.683, isolate not reached, recover 1.0s
+run_031: wrote /tmp/p15b-runs/baseline/run_031
+run_032: overload, repeat 2 of 3 (load average 4.25 4.55 4.47)
+run_032: fault-window success 67.3%, attempts/request 0.672, isolate not reached, recover 1.0s
+run_032: wrote /tmp/p15b-runs/baseline/run_032
+run_033: overload, repeat 3 of 3 (load average 4.54 4.61 4.50)
+run_033: fault-window success 68.0%, attempts/request 0.679, isolate not reached, recover 1.0s
+run_033: wrote /tmp/p15b-runs/baseline/run_033
+
+overload: 3 run(s), 3 valid.
+  resilience: absent. Min / median / max across the valid runs:
+    fault-window success rate (%) (primary)  67.30 / 67.98 / 68.34
+    fault-window attempts per request (primary) 0.672 / 0.679 / 0.683
+    time to isolate (s)                      not reached in any run
+    time to recover (s)                      1.0 / 1.0 / 1.0
+    fault-window success latency p95 (ms)    163 / 164 / 164
+    fault-window success latency p99 (ms)    168 / 168 / 169
+  Only the two primary measures support a claim, and only when `benchmark compare` of two groups reports ranges that do not overlap.
+=== overload exit 0 Sun Oct 11 01:57:31 EDT 2026
+ALL DONE Sun Oct 11 01:57:31 EDT 2026

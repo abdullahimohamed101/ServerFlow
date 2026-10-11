@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
 	"serverflow/internal/mockworker"
@@ -83,6 +85,19 @@ type Config struct {
 	TTFT            time.Duration
 	MaxConcurrency  int
 	QueueSize       int
+
+	// GatewayMutate, if set, edits the gateway's configuration after the harness has filled it in and
+	// before the gateway starts (the chaos harness lowers the header timeout through it). It must not
+	// change what the harness depends on: the worker source, control plane URL and token.
+	GatewayMutate func(*config.Config)
+	// Resilience is "on", "off" or "" for the build's default; see ApplyResilience. On a build without
+	// the feature it changes nothing and Cluster.Resilience reports "absent".
+	Resilience string
+	// MockDrainAnnounce is how long a drained mock worker keeps serving after it reports "draining"
+	// (mockworker --drain-announce); 0 refuses at once. MockDrainTimeout bounds the drain itself
+	// (default one second).
+	MockDrainAnnounce time.Duration
+	MockDrainTimeout  time.Duration
 
 	// LogWriter, if set, receives the JSON logs of the control plane, workers and gateway; by
 	// default they are discarded.
@@ -198,9 +213,30 @@ type Cluster struct {
 	Workers []WorkerSpec
 
 	cancel  context.CancelFunc
+	runCtx  context.Context
 	wg      sync.WaitGroup
 	cp      *client.Client
 	settled time.Duration
+	gw      *gateway.Server
+	cfg     Config
+	log     *slog.Logger
+
+	resilience string
+
+	mu   sync.Mutex // guards live and the URL of Workers
+	live map[string]*liveWorker
+}
+
+// liveWorker is a running mock worker and the agent that keeps it registered. Each has its own
+// context so a worker can be drained or replaced on its own.
+type liveWorker struct {
+	mock        *mockworker.Server
+	mockCancel  context.CancelFunc
+	mockDone    chan error
+	agent       *worker.Agent
+	agentCancel context.CancelFunc
+	agentDone   chan struct{}
+	drained     bool
 }
 
 // Settled is how long Start waited, after the control plane listed every worker, for the gateway
@@ -249,21 +285,11 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	c.cp = client.New(cpURL, token, nil)
 
 	// Mock workers, each behind its own agent.
+	c.cfg, c.log, c.runCtx, c.live = cfg, log, runCtx, map[string]*liveWorker{}
 	for i := range c.Workers {
-		w := &c.Workers[i]
-		mcfg := mockworker.DefaultConfig()
-		mcfg.Model, mcfg.WorkerID, mcfg.Seed = w.Model, w.ID, 1
-		mcfg.TTFT, mcfg.TokensPerSecond, mcfg.OutputTokens = w.TTFT, w.TokensPerSecond, MockOutputTokens
-		mcfg.MaxConcurrency, mcfg.QueueSize = w.MaxConcurrency, w.QueueSize
-		mcfg.DrainTimeout = time.Second
-		mock := mockworker.New(mcfg, log)
-		if w.URL, err = c.serve(runCtx, mock.Serve); err != nil {
+		if err := c.startWorker(i); err != nil {
 			return fail(err)
 		}
-		agent := worker.New(worker.Config{WorkerID: w.ID, Model: w.Model, AdvertiseURL: w.URL, Interval: HeartbeatInterval},
-			worker.NewMockBackend(w.URL), c.cp, log)
-		c.wg.Add(1)
-		go func() { defer c.wg.Done(); _ = agent.Run(runCtx) }()
 	}
 
 	// Gateway in registry mode.
@@ -277,10 +303,17 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token
 	gcfg.Scheduler.Strategy = cfg.Scheduler
+	if c.resilience, _, err = ApplyResilience(&gcfg, cfg.Resilience); err != nil {
+		return fail(err)
+	}
+	if cfg.GatewayMutate != nil {
+		cfg.GatewayMutate(&gcfg)
+	}
 	gw, err := gateway.NewRegistry(gcfg, log)
 	if err != nil {
 		return fail(err)
 	}
+	c.gw = gw
 	if c.GatewayURL, err = c.serve(runCtx, gw.Serve); err != nil {
 		return fail(err)
 	}
@@ -289,6 +322,44 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 		return fail(err)
 	}
 	return c, nil
+}
+
+// startWorker boots mock worker i and its agent. The worker's URL (a new port each time) is recorded
+// in c.Workers.
+func (c *Cluster) startWorker(i int) error {
+	w := &c.Workers[i]
+	mcfg := mockworker.DefaultConfig()
+	mcfg.Model, mcfg.WorkerID, mcfg.Seed = w.Model, w.ID, 1
+	mcfg.TTFT, mcfg.TokensPerSecond, mcfg.OutputTokens = w.TTFT, w.TokensPerSecond, MockOutputTokens
+	mcfg.MaxConcurrency, mcfg.QueueSize = w.MaxConcurrency, w.QueueSize
+	mcfg.DrainTimeout = time.Second
+	if c.cfg.MockDrainTimeout > 0 {
+		mcfg.DrainTimeout = c.cfg.MockDrainTimeout
+	}
+	mcfg.DrainAnnounce = c.cfg.MockDrainAnnounce
+	lw := &liveWorker{mock: mockworker.New(mcfg, c.log), mockDone: make(chan error, 1), agentDone: make(chan struct{})}
+	mctx, mcancel := context.WithCancel(c.runCtx)
+	lw.mockCancel = mcancel
+	url, err := c.serve(mctx, func(ctx context.Context, ln net.Listener) error {
+		err := lw.mock.Serve(ctx, ln)
+		lw.mockDone <- err
+		return err
+	})
+	if err != nil {
+		mcancel()
+		return err
+	}
+	actx, acancel := context.WithCancel(c.runCtx)
+	lw.agentCancel = acancel
+	lw.agent = worker.New(worker.Config{WorkerID: w.ID, Model: w.Model, AdvertiseURL: url, Interval: HeartbeatInterval},
+		worker.NewMockBackend(url), c.cp, c.log)
+	c.wg.Add(1)
+	go func() { defer c.wg.Done(); defer close(lw.agentDone); _ = lw.agent.Run(actx) }()
+	c.mu.Lock()
+	w.URL = url
+	c.live[w.ID] = lw
+	c.mu.Unlock()
+	return nil
 }
 
 // serve listens on a free loopback port, runs serve in the background, and returns its URL.
@@ -353,6 +424,107 @@ func (c *Cluster) ready(ctx context.Context, models []string) bool {
 		}
 	}
 	return true
+}
+
+// Resilience is the resilience setting the gateway runs with: "on", "off", or "absent" on a build
+// without the feature.
+func (c *Cluster) Resilience() string { return c.resilience }
+
+// Specs returns the workers as they are now: a replaced worker has a new URL.
+func (c *Cluster) Specs() []WorkerSpec {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]WorkerSpec(nil), c.Workers...)
+}
+
+// Metrics is the gateway's Prometheus registry, to read its series in process.
+func (c *Cluster) Metrics() prometheus.Gatherer { return c.gw.MetricsGatherer() }
+
+func (c *Cluster) lookup(id string) *liveWorker {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.live[id]
+}
+
+// Faults returns the fault handle of worker id's current mock, or nil for an unknown worker.
+func (c *Cluster) Faults(id string) *mockworker.Faults {
+	if lw := c.lookup(id); lw != nil {
+		return lw.mock.Faults()
+	}
+	return nil
+}
+
+// ServedWhileAnnouncing is how many chat requests worker id admitted after it began to report
+// "draining" and before it began refusing (see Config.MockDrainAnnounce).
+func (c *Cluster) ServedWhileAnnouncing(id string) int64 {
+	if lw := c.lookup(id); lw != nil {
+		return lw.mock.ServedWhileAnnouncing()
+	}
+	return 0
+}
+
+// drainBudget bounds the agent's goodbye to the control plane.
+const drainBudget = 3 * time.Second
+
+// DrainWorker shuts worker id down the way a SIGTERM does in production. The embedded cluster
+// otherwise never calls agent.Shutdown (cancelling an agent simulates a crash), so this does both
+// halves: the mock starts draining (it reports "draining", serves for Config.MockDrainAnnounce, then
+// refuses new work and finishes what is in flight, up to its drain timeout), and the agent stops its
+// loop, reports DRAINING and deregisters, so the registry stops offering the worker within one
+// registry refresh. Unlike production, where the agent learns of the drain from its next probe,
+// the registry is told at once; the announce period therefore only has to cover the gateway's
+// refresh. It returns when the mock has stopped. The error is the mock's: non-nil when the drain
+// timed out and in-flight requests were cut.
+func (c *Cluster) DrainWorker(ctx context.Context, id string) error {
+	c.mu.Lock()
+	lw := c.live[id]
+	if lw != nil && lw.drained {
+		lw = nil
+	} else if lw != nil {
+		lw.drained = true
+	}
+	c.mu.Unlock()
+	if lw == nil {
+		return fmt.Errorf("worker %q is unknown or already drained", id)
+	}
+	lw.mockCancel()
+	lw.agentCancel()
+	select {
+	case <-lw.agentDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	sctx, cancel := context.WithTimeout(ctx, drainBudget)
+	lw.agent.Shutdown(sctx) // safe now: the agent's loop has ended
+	cancel()
+	select {
+	case err := <-lw.mockDone:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// ReplaceWorker starts a fresh worker under the ID of one that DrainWorker has stopped (a rolling
+// replacement) and returns once the control plane lists every worker eligible and the gateway has
+// taken several snapshots.
+func (c *Cluster) ReplaceWorker(ctx context.Context, id string) error {
+	c.mu.Lock()
+	lw := c.live[id]
+	idx := -1
+	for i := range c.Workers {
+		if c.Workers[i].ID == id {
+			idx = i
+		}
+	}
+	c.mu.Unlock()
+	if lw == nil || !lw.drained || idx < 0 {
+		return fmt.Errorf("worker %q is not a drained worker", id)
+	}
+	if err := c.startWorker(idx); err != nil {
+		return err
+	}
+	return c.waitReady(ctx, c.cfg.Models)
 }
 
 // Close stops the cluster and waits for it to finish.
