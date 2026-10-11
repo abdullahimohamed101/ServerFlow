@@ -376,3 +376,25 @@ func TestDegradedMeansMoreThanOneMissedRefresh(t *testing.T) {
 		t.Fatal("recovery clears it")
 	}
 }
+
+func TestServesSaysWhetherAnyWorkerServesTheModelAndWhetherThatIsKnown(t *testing.T) {
+	lost := snapWorker("w-lost", "dead-model", 0)
+	lost.State, lost.Health, lost.Eligible = protocol.StateLost, protocol.HealthLost, false
+	src := &fakeLister{workers: []protocol.WorkerSnapshot{snapWorker("a", "qwen", 0), lost}}
+	c, clock, _ := newCache(t, src)
+	if serves, ok := c.Serves("qwen"); ok || serves {
+		t.Fatal("with no snapshot nothing is known: ok must be false")
+	}
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for model, want := range map[string]bool{"qwen": true, "dead-model": true, "nope": false, "": false} {
+		if serves, ok := c.Serves(model); !ok || serves != want {
+			t.Fatalf("Serves(%q) = %v, %v; want %v, true", model, serves, ok, want)
+		}
+	}
+	clock.Advance(time.Hour) // the snapshot is too old to trust
+	if serves, ok := c.Serves("qwen"); ok || serves {
+		t.Fatal("a stale snapshot is not usable")
+	}
+}

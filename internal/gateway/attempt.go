@@ -85,25 +85,7 @@ func (idleTimeoutError) Temporary() bool { return true }
 func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, ireq *protocol.InferenceRequest, body []byte, info *reqInfo, start time.Time) {
 	run, apiErr := s.routeAttempt(r, ireq, info, nil)
 	if apiErr != nil {
-		// info.model becomes a metrics label, so only a model the registry confirmed exists may be
-		// recorded; arbitrary client text must not.
-		if apiErr.Code == api.CodeNoCapacity {
-			info.model = ireq.Model
-		}
-		if r.Context().Err() != nil {
-			info.clientClosed = true // the client left while we were choosing
-			return
-		}
-		s.rejectedAPI(r.Context(), info, apiErr)
-		// Unknown models are client typos or probes, which a client could use to fill the log, so
-		// they stay at debug.
-		level := slog.LevelInfo
-		if apiErr.Code == api.CodeModelNotFound {
-			level = slog.LevelDebug
-		}
-		s.log.Log(r.Context(), level, "no worker selected", append([]any{"request_id", info.id, "attempt_id", info.attemptID,
-			"strategy", s.router.strategy, "error_code", apiErr.Code}, tenantAttrs(info)...)...)
-		s.fail(w, info, apiErr)
+		s.refuseNoWorker(w, r, info, ireq, apiErr)
 		return
 	}
 	info.model = ireq.Model
@@ -142,6 +124,46 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 	default:
 		s.relay(w, r, rc, run.resp, run.src, run.idle, info, start)
 	}
+}
+
+// refuseNoWorker answers a request for which no worker was selected: it tells the observers, logs, and sends
+// the error. A client that left while a worker was being chosen is recorded as closed instead.
+func (s *Server) refuseNoWorker(w http.ResponseWriter, r *http.Request, info *reqInfo, ireq *protocol.InferenceRequest, apiErr *api.Error) {
+	// info.model becomes a metrics label, so only a model the registry confirmed exists may be
+	// recorded; arbitrary client text must not.
+	if apiErr.Code == api.CodeNoCapacity {
+		info.model = ireq.Model
+	}
+	if r.Context().Err() != nil {
+		info.clientClosed = true // the client left while we were choosing
+		return
+	}
+	s.rejectedAPI(r.Context(), info, apiErr)
+	// Unknown models are client typos or probes, which a client could use to fill the log, so
+	// they stay at debug.
+	level := slog.LevelInfo
+	if apiErr.Code == api.CodeModelNotFound {
+		level = slog.LevelDebug
+	}
+	s.log.Log(r.Context(), level, "no worker selected", append([]any{"request_id", info.id, "attempt_id", info.attemptID,
+		"strategy", s.router.strategy, "error_code", apiErr.Code}, tenantAttrs(info)...)...)
+	s.fail(w, info, apiErr)
+}
+
+// refuseUnknownModel is the registry-mode model pre-check (Phase 15 D3). It runs before the rate limiter so a
+// request for a model no worker serves costs the tenant no quota: it is answered 404 here, as routing would
+// have answered it, without taking a request, token or concurrency charge. With no usable snapshot nothing is
+// known and the request goes on to the limiter as before. It reports whether it answered.
+func (s *Server) refuseUnknownModel(w http.ResponseWriter, r *http.Request, info *reqInfo, ireq *protocol.InferenceRequest) bool {
+	checking := time.Now()
+	serves, ok := s.router.cache.Serves(ireq.Model)
+	if !ok || serves {
+		return false
+	}
+	info.selectStart, info.selectDuration = checking, time.Since(checking)
+	s.admitted(r.Context(), info) // no rate limit decision was made: the admission says so
+	s.refuseNoWorker(w, r, info, ireq, api.ErrModelNotFound(ireq.Model))
+	return true
 }
 
 // routeAttempt picks a worker for the next attempt and starts its record. exclude lists the workers
