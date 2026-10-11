@@ -85,6 +85,8 @@ type attemptRun struct {
 	ticketDone  bool
 	retryDenied string
 	peek        *peekRead
+	// okPending says a closed breaker's success verdict is held until the response completes (see settleVerdict).
+	okPending bool
 }
 
 // nextRouteResult names why a retry's routing failed, for AttemptEnd.NextRouteResult.
@@ -421,7 +423,7 @@ func (s *Server) finishAttempt(run *attemptRun, info *reqInfo) {
 	case info.errCode != "" || run.err != nil || (run.resp != nil && run.resp.StatusCode >= 500):
 		outcome = outcomeFailed
 	}
-	s.recordLateFault(run, info)
+	s.recordAfterRelay(run, info)
 	s.abandonAttempt(run, info, outcome)
 }
 

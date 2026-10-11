@@ -407,12 +407,9 @@ func TestAFailureAfterTheFirstByteIsOneAttemptAndAFaultWithoutRetry(t *testing.T
 			})
 			good := newScriptWorker(t, "b-good", okJSON("b-good"))
 			e := newResEnv(t, []protocol.WorkerSnapshot{bad.snapshot("qwen-7b"), good.snapshot("qwen-7b")},
-				func(c *config.Config) {
-					c.Resilience.Breaker.ConsecutiveFailures = 100
-					c.Resilience.Breaker.MinVolume = 4
-				})
-			// Round-robin: a-bad then b-good then a-bad. Each abort is an ok verdict (the first byte) followed by a
-			// late fault, so the streak is reset every time and the ratio rule is what trips: 2 faults in 4 outcomes.
+				func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 2 })
+			// Round-robin: a-bad then b-good then a-bad. The success of a stream is counted when it completes, so an
+			// abort is one fault and nothing else: two aborts in a row open the breaker by the streak rule.
 			for i := 0; i < 4; i++ {
 				e.postLoose(stream)
 			}
@@ -459,4 +456,78 @@ func (e *resEnv) postLoose(stream bool) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+}
+
+// A worker with a long healthy history that starts aborting its streams is ejected after consecutive_failures aborts:
+// the success of a stream is counted when it completes, so an abort is one fault and not a success followed by a
+// fault, and history does not dilute it.
+func TestAbortingStreamsOpenTheBreakerAfterTheConfiguredNumberDespiteAHealthyHistory(t *testing.T) {
+	flag := &workerFlag{}
+	flag.set(sseEvents("a-1", 2))
+	a := newScriptWorker(t, "a-1", flag.serve)
+	b := newScriptWorker(t, "b-2", sseEvents("b-2", 2))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")},
+		func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 5 })
+	for i := 0; i < 40; i++ {
+		e.postLoose(true) // healthy history on both workers
+	}
+	e.settle(t, "a-1", "b-2")
+	if e.state("a-1") != resilience.Closed {
+		t.Fatal("setup")
+	}
+	flag.set(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	})
+	before := a.hits.Load()
+	for i := 0; i < 30 && e.state("a-1") != resilience.Open; i++ {
+		e.postLoose(true)
+		e.settle(t, "a-1", "b-2")
+	}
+	if e.state("a-1") != resilience.Open {
+		t.Fatal("the aborting worker was not ejected")
+	}
+	if n := a.hits.Load() - before; n != 5 {
+		t.Fatalf("%d aborted streams before the breaker opened, want exactly the configured 5", n)
+	}
+}
+
+// A probe's verdict is taken at its first byte, not when its stream ends: a probe stream that is still running has
+// already closed the breaker, and its ticket is not held for the length of the stream.
+func TestAProbeStreamClosesTheBreakerAtItsFirstByte(t *testing.T) {
+	release := make(chan struct{})
+	flag := &workerFlag{}
+	flag.set(openAPI503("mock_failure"))
+	a := newScriptWorker(t, "a-flaky", flag.serve)
+	b := newScriptWorker(t, "b-good", okJSON("b-good"))
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")},
+		func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 1 })
+	for i := 0; i < 4; i++ {
+		e.do(t)
+	}
+	flag.set(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	e.advance(t, 10*time.Second)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 4 && e.state("a-flaky") != resilience.Closed; i++ {
+			e.postLoose(true)
+		}
+	}()
+	eventually(t, 5*time.Second, func() bool { return e.state("a-flaky") == resilience.Closed }, "the probe's first byte closes the breaker while its stream is still open")
+	if probeSlots(e) != 0 {
+		t.Fatal("the ticket is back")
+	}
+	close(release)
+	<-done
 }

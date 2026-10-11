@@ -172,7 +172,16 @@ func (s *Server) settleVerdict(r *http.Request, run *attemptRun, info *reqInfo, 
 	run.verdict = label
 	if !run.ticketDone {
 		run.ticketDone = true
-		rs.breakers.Record(run.target.ticket, v)
+		if v == resilience.OK && !run.target.probe() {
+			// A closed breaker's ticket holds nothing, so there is nothing to return at the first byte. The
+			// success is counted when the response completes, so that a stream that aborts later counts as a fault
+			// and not as a success followed by a fault (which would dilute the ratio to exactly one half and reset
+			// the consecutive streak every time). A probe's verdict is taken now: its ticket must not be held for
+			// the length of a stream.
+			run.okPending = true
+		} else {
+			rs.breakers.Record(run.target.ticket, v)
+		}
 	}
 	rs.flush()
 }
@@ -327,15 +336,27 @@ func skip(dec *json.Decoder) error {
 	return dec.Decode(&raw)
 }
 
-// recordLateFault tells the breaker that a stream whose first byte had arrived (verdict ok) failed afterwards.
-// The client already has bytes, so nothing is retried; the fault is recorded with the attempt's own ticket.
-func (s *Server) recordLateFault(run *attemptRun, info *reqInfo) {
+// recordAfterRelay settles what the response's end says about the worker. A stream whose first byte had arrived and
+// that then failed is a fault, recorded with the attempt's own ticket (the client already has bytes, so nothing is
+// retried): for a closed breaker it is the only outcome counted for the request, for a probe it reopens the
+// breaker. A response that completed counts the success that was held back at the first byte. A client that left
+// proves nothing either way.
+func (s *Server) recordAfterRelay(run *attemptRun, info *reqInfo) {
 	rs := s.res
-	if rs == nil || run.verdict != VerdictOK || run.resp == nil || info.clientClosed || info.errCode != api.CodeInferenceFailed {
+	if rs == nil || run.verdict != VerdictOK || run.resp == nil || info.clientClosed {
 		return
 	}
-	run.verdict = VerdictFault
-	rs.breakers.RecordLate(run.target.ticket, resilience.Fault)
+	switch {
+	case info.errCode == api.CodeInferenceFailed:
+		run.verdict = VerdictFault
+		run.okPending = false
+		rs.breakers.RecordLate(run.target.ticket, resilience.Fault)
+	case run.okPending && info.errCode == "":
+		run.okPending = false
+		rs.breakers.Record(run.target.ticket, resilience.OK)
+	default:
+		return
+	}
 	rs.flush()
 }
 
