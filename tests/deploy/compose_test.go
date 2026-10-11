@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -42,9 +44,11 @@ var volumePaths = map[string][]string{
 }
 
 var (
-	interp        = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}`)
-	secretName    = regexp.MustCompile(`(?i)PASSWORD|TOKEN|SECRET|KEY|DSN|CREDENTIAL`)
-	pinnedImageRe = regexp.MustCompile(`^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
+	interp     = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}`)
+	secretName = regexp.MustCompile(`(?i)PASSWORD|TOKEN|SECRET|KEY|DSN|CREDENTIAL`)
+	// pinnedImageRe: an explicit registry host (a dot, or localhost), a path, a tag and a digest. A hostless reference
+	// such as jaegertracing/jaeger:2.22.0@sha256:... is an implicit Docker Hub pull and must not match.
+	pinnedImageRe = regexp.MustCompile(`^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::[0-9]+)?|localhost(?::[0-9]+)?)/[a-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$`)
 )
 
 // expand replaces ${VAR:-default} with its default (and ${VAR} with ""), which is what compose does when the
@@ -400,4 +404,73 @@ func orEmpty(v any) any {
 		return map[string]any{}
 	}
 	return v
+}
+
+const digest = "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestPinnedImageRefNeedsARegistryHost: a reference without a registry host is an implicit Docker Hub pull
+// (rate-limited on shared runners) and must be rejected, as must anything unpinned.
+func TestPinnedImageRefNeedsARegistryHost(t *testing.T) {
+	for _, ok := range []string{
+		"quay.io/jaegertracing/jaeger:2.22.0" + digest,
+		"mirror.gcr.io/grafana/grafana:11.1.0" + digest,
+		"public.ecr.aws/docker/library/redis:7-alpine" + digest,
+		"registry.example:5000/team/app:1" + digest,
+		"localhost:5000/app:1" + digest,
+	} {
+		if !pinnedImageRe.MatchString(ok) {
+			t.Errorf("%s should be accepted", ok)
+		}
+	}
+	for _, bad := range []string{
+		"jaegertracing/jaeger:2.22.0" + digest,
+		"redis:7-alpine" + digest,
+		"library/redis:7" + digest,
+		"grafana/grafana:11.1.0" + digest,
+		"quay.io/jaegertracing/jaeger:2.22.0",
+		"quay.io/jaegertracing/jaeger:latest",
+		"quay.io/jaegertracing/jaeger" + digest,
+	} {
+		if pinnedImageRe.MatchString(bad) {
+			t.Errorf("%s must be rejected", bad)
+		}
+	}
+}
+
+// TestWorkflowImagesNameTheirRegistry: every container image the workflows run (service containers, TRIVY_IMAGE-style
+// variables, docker run/pull lines) names a registry host.
+func TestWorkflowImagesNameTheirRegistry(t *testing.T) {
+	files, _ := filepath.Glob(filepath.Join(root(t), ".github/workflows/*.yml"))
+	if len(files) < 2 {
+		t.Fatal("workflows not found")
+	}
+	imageLine := regexp.MustCompile(`(?m)^\s*(?:image|[A-Z_]*IMAGE):\s*([^\s#]+)`)
+	hostOK := regexp.MustCompile(`^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::[0-9]+)?|localhost(?::[0-9]+)?)/`)
+	n := 0
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range imageLine.FindAllStringSubmatch(string(b), -1) {
+			n++
+			if strings.Contains(m[1], "$") {
+				continue
+			}
+			if !hostOK.MatchString(m[1]) {
+				t.Errorf("%s: image %q has no registry host", filepath.Base(f), m[1])
+			}
+		}
+		for _, m := range regexp.MustCompile(`docker (?:run|pull)[^\n]*?\s([a-z0-9][a-z0-9./_-]*:[A-Za-z0-9._-]+)`).FindAllStringSubmatch(string(b), -1) {
+			if regexp.MustCompile(`^[0-9.]+:[0-9]+`).MatchString(m[1]) { // a published port, not an image
+				continue
+			}
+			if !hostOK.MatchString(m[1]) {
+				t.Errorf("%s: docker command uses %q without a registry host", filepath.Base(f), m[1])
+			}
+		}
+	}
+	if n < 3 {
+		t.Errorf("expected at least three image references in the workflows, found %d", n)
+	}
 }

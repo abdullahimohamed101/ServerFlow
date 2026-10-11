@@ -116,3 +116,28 @@ func TestLoopbackForms(t *testing.T) {
 		}
 	}
 }
+
+func TestStalledOrBrokenBodyFails(t *testing.T) {
+	release := make(chan struct{})
+	stall := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("ok"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer stall.Close()
+	defer close(release)
+	if code, _ := probe(t, 300*time.Millisecond, stall.URL); code != 1 {
+		t.Errorf("a stalled body: exit %d, want 1", code)
+	}
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer broken.Close()
+	if code, _ := probe(t, time.Second, broken.URL); code != 1 {
+		t.Errorf("a truncated body: exit %d, want 1", code)
+	}
+}

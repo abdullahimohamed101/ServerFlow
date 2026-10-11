@@ -54,7 +54,11 @@ func run(args []string, timeout time.Duration, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	// A body that stalls or breaks after the headers is not healthy either (the 3 s timeout covers the read).
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)); err != nil {
+		_, _ = fmt.Fprintln(stderr, "healthcheck: reading the body failed")
+		return 1
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		_, _ = fmt.Fprintf(stderr, "healthcheck: status %d\n", resp.StatusCode)
 		return 1

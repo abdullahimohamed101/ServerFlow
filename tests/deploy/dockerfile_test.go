@@ -10,7 +10,7 @@ import (
 
 var (
 	fromLine   = regexp.MustCompile(`(?m)^FROM\s+(\S+)(?:\s+AS\s+(\S+))?\s*$`)
-	pinnedFrom = regexp.MustCompile(`^[a-z0-9.\-]+(:[0-9]+)?/[a-z0-9._/\-]+:[A-Za-z0-9._\-]+@sha256:[0-9a-f]{64}$`)
+	pinnedFrom = pinnedImageRe
 )
 
 // TestDockerfile pins the properties ADR-021 promises: literal digest-pinned FROM lines on non-Docker-Hub hosts,
