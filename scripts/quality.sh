@@ -193,7 +193,7 @@ deploy() {
   fi
   for t in TestDockerfile TestDockerignore TestGitignoreCoversGeneratedFiles TestComposeStructure TestOverrideFilesOnlyNarrow \
     TestStartupOrdering TestPrometheusComposeMatchesLocal TestTargetsMatchComposeServices TestEnvVariablesAreHonoured \
-    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestWorkflowOutputsAndDockerCommands TestDevUpDoesNotUseComposeWait TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
+    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestWorkflowOutputsAndDockerCommands TestDevUpDoesNotUseComposeWait TestDevUpSecretsUnderStrictShell TestScriptsUnderStrictShell TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
     TestNoServiceRunsAsRoot TestRestartPolicies TestGrafanaIsNotAnonymous TestStopGraceCoversShutdown TestRedisPasswordNotOnTheCommandLine \
     TestHealthchecksAreBoundedAndAimedAtTheService TestHealthcheckBinaryIsInEveryImageThatUsesIt TestTraceInsecureFlagOnlyBesideATracingEndpoint TestStalledOrBrokenBodyFails TestDevUpCheckEnv TestNoSecretsCommitted TestComposeLeavesNoDefaultSecrets \
     TestHealthy2xx TestNon2xxFails TestRedirectIsNotFollowed TestTimeout TestNonHTTPPortAndClosedPort TestOnlyLoopbackAndWellFormedArguments; do
@@ -211,6 +211,13 @@ deploy() {
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   rm -f "$log"
+
+  # CI's bash is 5.2, a Mac's /bin/bash is 3.2, and they differ under `set -u` (an unassigned `local` is unbound in 5.x). When a Docker
+  # daemon and a bash 5 image are at hand, run the first-run secret path under bash 5 as well (the Go test covers every bash on PATH).
+  if docker image inspect public.ecr.aws/docker/library/bash:5.2 >/dev/null 2>&1; then
+    step "dev-up secrets under bash 5.2 -u"
+    docker run --rm -v "$PWD":/repo:ro -w /repo public.ecr.aws/docker/library/bash:5.2 env -i PATH=/usr/local/bin:/usr/bin:/bin DEV_UP_DIR=/tmp/secrets-check bash -u scripts/dev-up.sh secrets || fail "dev-up.sh secrets failed under bash 5.2"
+  fi
 
   step "hadolint"
   if command -v hadolint >/dev/null 2>&1; then

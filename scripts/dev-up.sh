@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-DEV_DIR=".dev"
+DEV_DIR="${DEV_UP_DIR:-.dev}" # DEV_UP_DIR only exists so tests can point the pure-shell paths at a temporary directory
 ENV_FILE=".env"
 ENV_EXAMPLE="deploy/compose/.env.example"
 COMPOSE_ENV="$DEV_DIR/compose.env"
@@ -226,7 +226,7 @@ ensure_secrets() {
   umask 077
   mkdir -p "$DEV_DIR"
   chmod 700 "$DEV_DIR"
-  local pg redis kafka cp metrics grafana
+  local pg metrics
   if [ ! -s "$DEV_DIR/postgres.env" ]; then
     pg="$(rand_hex)"
     write_secret postgres.env "POSTGRES_PASSWORD=$pg"
@@ -244,7 +244,6 @@ ensure_secrets() {
     chmod 644 "$DEV_DIR/metrics_token"
   fi
   [ -s "$DEV_DIR/grafana.env" ] || write_secret grafana.env "GF_SECURITY_ADMIN_PASSWORD=$(rand_hex)"
-  : "$redis$kafka$cp$grafana"
 }
 
 # Writes the environment compose reads: the validated .env plus what the active profiles imply. Nothing secret.
@@ -560,6 +559,7 @@ need_stack() {
 
 # shellcheck disable=SC2016 # redis-cli and rpk run single-quoted scripts that are expanded inside the container, where the secret is
 case "$CMD" in
+  secrets) ensure_secrets ;; # pure shell, no Docker: used by tests/deploy under `bash -u`
   up) cmd_up ;;
   down) cmd_down ;;
   reset) cmd_reset ;;

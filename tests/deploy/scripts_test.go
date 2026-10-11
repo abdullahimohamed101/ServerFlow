@@ -222,3 +222,114 @@ func TestDevUpDoesNotUseComposeWait(t *testing.T) {
 		t.Error("dev-up.sh must wait with wait_stack")
 	}
 }
+
+// bashes returns the distinct bash interpreters available (the CI runner has 5.2, macOS /bin/bash is 3.2; they differ:
+// `local x` leaves x unset in bash 5 and set-but-empty in 3.2, which is how an unbound variable once passed on a Mac and
+// aborted `make dev-up` on the runner).
+func bashes(t *testing.T) []string {
+	t.Helper()
+	bashOrSkip(t)
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range []string{"bash", "/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"} {
+		p, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TestDevUpSecretsUnderStrictShell runs the first-run secret generation (the part of `make dev-up` that only ever runs on a
+// pristine tree) with `bash -u`, an empty environment and a temporary directory, under every bash available.
+func TestDevUpSecretsUnderStrictShell(t *testing.T) {
+	script := filepath.Join(root(t), "scripts/dev-up.sh")
+	for _, bash := range bashes(t) {
+		t.Run(filepath.Base(filepath.Dir(bash))+"/"+filepath.Base(bash), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "dev")
+			run := func() string {
+				cmd := exec.Command(bash, "-u", script, "secrets")
+				cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "DEV_UP_DIR=" + dir}
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("%s -u dev-up.sh secrets: %v\n%s", bash, err, out)
+				}
+				return string(out)
+			}
+			if out := run(); strings.TrimSpace(out) != "" {
+				t.Errorf("secret generation must print nothing, got %q", out)
+			}
+			vals := map[string]string{}
+			for _, n := range []string{"postgres.env", "dsn.env", "redis.env", "kafka.env", "controlplane.env", "metrics.env", "grafana.env"} {
+				b, err := os.ReadFile(filepath.Join(dir, n))
+				if err != nil || len(b) < 20 {
+					t.Fatalf("%s missing or empty: %v", n, err)
+				}
+				fi, _ := os.Stat(filepath.Join(dir, n))
+				if fi.Mode().Perm() != 0o600 {
+					t.Errorf("%s mode %v, want 0600", n, fi.Mode().Perm())
+				}
+				_, v, _ := strings.Cut(strings.TrimSpace(string(b)), "=")
+				vals[n] = v
+			}
+			if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
+				t.Errorf("directory mode %v, want 0700", fi.Mode().Perm())
+			}
+			if !strings.Contains(vals["dsn.env"], ":"+vals["postgres.env"]+"@") {
+				t.Error("the DSN does not carry the generated PostgreSQL password")
+			}
+			if b, _ := os.ReadFile(filepath.Join(dir, "metrics_token")); string(b) != vals["metrics.env"] {
+				t.Error("metrics_token must equal the metrics token")
+			}
+			if fi, _ := os.Stat(filepath.Join(dir, "metrics_token")); fi.Mode().Perm() != 0o644 {
+				t.Errorf("metrics_token mode %v, want 0644", fi.Mode().Perm())
+			}
+			seen := map[string]bool{}
+			for n, v := range vals {
+				if n != "dsn.env" && seen[v] {
+					t.Errorf("%s repeats another secret", n)
+				}
+				seen[v] = true
+			}
+			// Idempotent: a second run keeps every value.
+			before, _ := os.ReadFile(filepath.Join(dir, "redis.env"))
+			run()
+			after, _ := os.ReadFile(filepath.Join(dir, "redis.env"))
+			if string(before) != string(after) {
+				t.Error("a second run regenerated an existing secret")
+			}
+			// An empty placeholder (scripts/dev-placeholders.sh) counts as absent and is filled.
+			if err := os.WriteFile(filepath.Join(dir, "kafka.env"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			run()
+			if b, _ := os.ReadFile(filepath.Join(dir, "kafka.env")); len(b) < 20 {
+				t.Error("an empty placeholder was not replaced by a generated secret")
+			}
+		})
+	}
+}
+
+// TestScriptsUnderStrictShell runs the Docker-free paths of the scripts with `bash -u` and an empty environment.
+func TestScriptsUnderStrictShell(t *testing.T) {
+	for _, bash := range bashes(t) {
+		for _, args := range [][]string{
+			{"scripts/dev-up.sh", "--check-env", "deploy/compose/.env.example"},
+			{"scripts/dev-placeholders.sh", "remove"},
+		} {
+			cmd := exec.Command(bash, append([]string{"-u"}, args...)...)
+			cmd.Dir = root(t)
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("%s -u %v: %v\n%s", bash, args, err, out)
+			}
+		}
+	}
+}
