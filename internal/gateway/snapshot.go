@@ -178,6 +178,17 @@ func (c *snapshotCache) age(in []protocol.WorkerSnapshot, age time.Duration) []p
 	return out
 }
 
+// Serves reports whether any worker in the snapshot serves model, eligible or not (a model whose workers are
+// all lost is still a model the registry knows). ok is false when there is no usable snapshot, in which case
+// nothing is known about the model. It does not copy the workers.
+func (c *snapshotCache) Serves(model string) (serves, ok bool) {
+	s, _, ok := c.fresh()
+	if !ok {
+		return false, false
+	}
+	return len(s.byModel[model]) > 0, true
+}
+
 // Models lists the models that have at least one eligible worker, sorted.
 func (c *snapshotCache) Models() (models []string, ok bool) {
 	s, age, ok := c.fresh()

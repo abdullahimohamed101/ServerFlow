@@ -53,7 +53,7 @@ live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
 a small value struct (no bodies, prompts or keys), and `RequestStarted`/`AttemptStarted` return a context so a tracing observer can hold a span.
 A `multiObserver` built at construction fans events out in order and contains panics. Prometheus metrics are the first observer
 (registered first); `gateway.WithObserver` adds more, so tracing and event publishing (Phases 11-12) do not touch the request path.
-Observers must be fast, because they run on the request goroutine. See ADR-016 and `docs/development/observers.md`.
+Observers must be fast, because they run on the request goroutine. Every started attempt ends exactly once, even when the request panics (ADR-020). Two further methods, `QueueWaited` and `BreakerTransition`, exist for Phase 15 and are not fired yet. See ADR-016, ADR-020 and `docs/development/observers.md`.
 Configuration is likewise one file per feature under `internal/config`.
 
 **Metrics (Phase 10).** `/metrics` is not on the data port: the gateway and the control plane serve it on a listener of their own (`internal/telemetry/metricsserver`,

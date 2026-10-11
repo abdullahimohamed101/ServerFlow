@@ -32,6 +32,14 @@ import (
 //	    RequestRejected                        refused by validation, model, rate limit, or capacity
 //	    (AttemptStarted [FirstToken] AttemptEnded)+   one pair per attempt; a retry adds a pair
 //	RequestCompleted                           always last, exactly once
+//
+// Every AttemptStarted is followed by exactly one AttemptEnded, including when the request panics, and an
+// AttemptEnded is never delivered for an attempt that was not started.
+//
+// QueueWaited and BreakerTransition are the two moments outside that sequence. QueueWaited belongs to a request
+// that waited in an admission queue; BreakerTransition is not part of any request and is delivered on a
+// background context. Neither is fired yet (Phase 15 adds the features that fire them), so an implementation
+// that embeds NopObserver needs no change.
 type Observer interface {
 	RequestStarted(ctx context.Context, e RequestStart) context.Context
 	RequestAdmitted(ctx context.Context, e Admission)
@@ -40,6 +48,8 @@ type Observer interface {
 	FirstToken(ctx context.Context, e FirstToken)
 	AttemptEnded(ctx context.Context, e AttemptEnd)
 	RequestCompleted(ctx context.Context, e Completion)
+	QueueWaited(ctx context.Context, e QueueWait)
+	BreakerTransition(ctx context.Context, e BreakerChange)
 }
 
 // NopObserver implements Observer with empty methods. Embed it to implement only the moments you care about.
@@ -52,6 +62,8 @@ func (NopObserver) AttemptStarted(ctx context.Context, _ AttemptStart) context.C
 func (NopObserver) FirstToken(context.Context, FirstToken)                             {}
 func (NopObserver) AttemptEnded(context.Context, AttemptEnd)                           {}
 func (NopObserver) RequestCompleted(context.Context, Completion)                       {}
+func (NopObserver) QueueWaited(context.Context, QueueWait)                             {}
+func (NopObserver) BreakerTransition(context.Context, BreakerChange)                   {}
 
 // WithObserver registers an additional observer. Metrics is always registered first; observers run in
 // registration order and each sees the context returned by those before it. Like every Option it must be
@@ -192,4 +204,26 @@ func (m *multiObserver) RequestCompleted(ctx context.Context, e Completion) {
 func (m *multiObserver) requestCompleted(g *guarded, ctx context.Context, e Completion) {
 	defer g.recoverPanic(m, "RequestCompleted")
 	g.o.RequestCompleted(ctx, e)
+}
+
+func (m *multiObserver) QueueWaited(ctx context.Context, e QueueWait) {
+	for _, g := range m.obs {
+		m.queueWaited(g, ctx, e)
+	}
+}
+
+func (m *multiObserver) queueWaited(g *guarded, ctx context.Context, e QueueWait) {
+	defer g.recoverPanic(m, "QueueWaited")
+	g.o.QueueWaited(ctx, e)
+}
+
+func (m *multiObserver) BreakerTransition(ctx context.Context, e BreakerChange) {
+	for _, g := range m.obs {
+		m.breakerTransition(g, ctx, e)
+	}
+}
+
+func (m *multiObserver) breakerTransition(g *guarded, ctx context.Context, e BreakerChange) {
+	defer g.recoverPanic(m, "BreakerTransition")
+	g.o.BreakerTransition(ctx, e)
 }

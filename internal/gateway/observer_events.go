@@ -54,6 +54,17 @@ const (
 	RejectModel      = "model"
 	RejectCapacity   = "capacity"
 	RejectInternal   = "internal" // the gateway itself is misconfigured (a required component was not wired)
+	// RejectOverload is a request shed because the gateway or the model's queue is full or draining (Phase 15,
+	// not yet fired). It is not a scheduling decision and must not feed scheduler_decisions_total.
+	RejectOverload = "overload"
+)
+
+// Reasons of a RejectOverload rejection (Phase 15, not yet fired).
+const (
+	OverloadGlobalLimit  = "global_limit"
+	OverloadQueueFull    = "queue_full"
+	OverloadQueueTimeout = "queue_timeout"
+	OverloadDraining     = "draining"
 )
 
 // Rejection is a request refused before it reached a worker.
@@ -61,8 +72,9 @@ type Rejection struct {
 	RequestID string
 	TenantID  string
 	// Kind is one of the Reject* constants. Reason is a short fixed token: the authentication failure
-	// reason, the rate limit that refused (requests, tokens, concurrency, model, unavailable), or for
-	// validation, model and capacity refusals the lower-case error code.
+	// reason, the rate limit that refused (requests, tokens, concurrency, model, unavailable), for
+	// validation, model and capacity refusals the lower-case error code, or for overload one of the
+	// Overload* constants.
 	Kind   string
 	Reason string
 	Status int
@@ -92,6 +104,11 @@ type AttemptStart struct {
 	// WorkerEligible is whether the gateway's registry view judged the chosen worker eligible when it was
 	// chosen. A registry-mode selection with this false is a routing bug (scheduler_ineligible_selections_total).
 	WorkerEligible bool
+	// Probe is true when the attempt is a circuit breaker's trial request to a worker it had taken out of
+	// routing. QueueWait is how long the request waited in the admission queue before this attempt (it is
+	// excluded from the gateway overhead measurement). Both are zero until Phase 15 fires them.
+	Probe     bool
+	QueueWait time.Duration
 }
 
 // FirstToken marks the first streamed chunk reaching the client.
@@ -124,6 +141,54 @@ type AttemptEnd struct {
 	// was wanted but no other worker could take it, so this attempt's response is the client's.
 	WillRetry             bool
 	NextWorkerUnavailable bool
+	// NextRouteResult says why a wanted retry found no worker: one of the NextRoute* constants, or "" when
+	// the retry was routed or none was wanted (and when the client left during the second routing). It feeds
+	// the scheduling decision counters, as a first routing's refusal does.
+	NextRouteResult string
+	// RetryDenied says why a wanted retry was not made although another worker might exist: one of the
+	// RetryDenied* constants, or "". Never set until Phase 15 adds the retry budget and deadline.
+	RetryDenied string
+}
+
+// Values of AttemptEnd.NextRouteResult.
+const (
+	NextRouteNoCapacity        = "no_capacity"        // every other worker is excluded, ineligible or full
+	NextRouteWorkerUnavailable = "worker_unavailable" // the registry view was missing or too old
+	NextRouteError             = "error"              // anything else (the model vanished, the scheduler failed)
+)
+
+// Values of AttemptEnd.RetryDenied.
+const (
+	RetryDeniedBudget   = "budget"
+	RetryDeniedDeadline = "deadline"
+)
+
+// Results of a QueueWait.
+const (
+	QueueServed     = "served"      // the request got a worker slot
+	QueueTimeout    = "timeout"     // it waited the maximum and was shed
+	QueueClientGone = "client_gone" // the client left while it waited
+	QueueDrained    = "drained"     // the gateway began shutting down
+)
+
+// QueueWait is a request that waited in the admission queue (Phase 15, not yet fired). It fires once per
+// request that actually waited, and never for one that did not.
+type QueueWait struct {
+	RequestID string
+	Model     string // the registry-confirmed model
+	Waited    time.Duration
+	Result    string // one of the Queue* constants
+}
+
+// BreakerChange is a worker's circuit breaker changing state (Phase 15, not yet fired). It is delivered on a
+// background context and is not part of any request.
+type BreakerChange struct {
+	WorkerID string
+	Model    string
+	To       string // closed, open or half_open
+	Reason   string // a short fixed token naming what caused the change
+	Failures int    // faults counted when it opened
+	CoolDown time.Duration
 }
 
 // Completion is the final outcome of an inference request.

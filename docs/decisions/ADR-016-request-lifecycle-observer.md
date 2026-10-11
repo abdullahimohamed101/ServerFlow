@@ -28,7 +28,7 @@ validation, which three phases adding `metrics`, `tracing` and `events` sections
   | unknown model, or no capacity (registry mode) | `RequestStarted`, `RequestAdmitted`, `RequestRejected(model or capacity)`, `RequestCompleted` |
   | retry on a second worker | `... AttemptStarted(1), AttemptStarted(2), AttemptEnded(1, WillRetry), AttemptEnded(2) ...` |
   | client disconnect | as a success, with `AttemptEnded(client_closed)` and `RequestCompleted(499)` |
-  | handler panic | `AttemptEnded(failed)` (static mode), `RequestCompleted(500)` |
+  | handler panic | `AttemptEnded(failed)`, `RequestCompleted(500)` (registry mode: class `panic`, since Phase 15) |
 
   `RequestStarted` fires for inference requests only (`POST /v1/chat/completions`), before authentication, so an authentication
   refusal is observable. `RequestCompleted` fires exactly once, last. In registry mode the second attempt starts before the first is
@@ -66,8 +66,18 @@ validation, which three phases adding `metrics`, `tracing` and `events` sections
 - `inference_requests_active` changed meaning slightly: `RequestStarted` fires before authentication, so the gauge now includes the time spent
   authenticating for every inference request (a key-cache miss that reads PostgreSQL counts as in flight), where before it started after authentication. No dashboard or alert
   references the gauge yet (Phase 10 will). Every other series is pinned by the golden test.
-- A panic in registry mode between `AttemptStarted` and the attempt's deferred cleanup skips `AttemptEnded` and leaves the worker slot held. The cleanup is registered after the send loop, so the path includes the upstream call and the `RequestRecorder` callback. This is a known pre-existing gap, identical on master (observers only expose it); it is not fixed here and is planned for Phase 15.
+- A panic in registry mode between `AttemptStarted` and the attempt's deferred cleanup skipped `AttemptEnded` and left the worker slot held. The cleanup was registered after the send loop, so the path included the upstream call and the `RequestRecorder` callback. This was a known pre-existing gap, identical on master (observers only exposed it). **Closed in Phase 15 (see the amendment below).**
 - The event set is deliberately small. Add a field only when a phase needs it; token counts arrive with Phase 12's proxy change.
 - Alternatives rejected: a channel or goroutine per observer (allocation and ordering cost on the hot path, and it hides back
   pressure), passing `*reqInfo` (observers could mutate request state and every `reqInfo` change would become an API change), and
   making logging an observer now (it would have moved every log assertion in the test suite for no benefit).
+
+## Amendment (Phase 15, PR A; ADR-020)
+
+The seam gains stubs for fault tolerance and one guarantee. Nothing is fired by the new members yet; they exist so the later Phase 15 PRs add behaviour, not API.
+
+- **Contract: every `AttemptStarted` is followed by exactly one `AttemptEnded`, including when the request panics, and an `AttemptEnded` is never delivered for an attempt that was not started.** A panic in the request recorder, the upstream call or the attempt hand-over ends the open attempts as `failed` with class `panic`; the panic still propagates and `withRequest` answers 500. `http.ErrAbortHandler` (the deliberate abort after a response body failed) is not a panic here and ends its attempt as before. The handler panic row of the sequence table in registry mode is therefore `AttemptEnded(failed, class=panic)`, `RequestCompleted(500)`.
+- **`AttemptEnd.NextRouteResult`** (`no_capacity`, `worker_unavailable`, `error`, or empty): why a wanted retry found no worker. The metrics observer counts it in `scheduler_decisions_total` and `scheduler_no_capacity_total` exactly as a first routing's refusal. It is empty when the client left during the second routing. `NextWorkerUnavailable` stays and is true whenever the second routing failed.
+- **`AttemptEnd.RetryDenied`** (`budget`, `deadline`, or empty), **`AttemptStart.Probe`** and **`AttemptStart.QueueWait`**: fields reserved for the retry budget, the circuit breaker and the admission queue. Always zero today.
+- **`Rejection` kind `overload`** with reasons `global_limit`, `queue_full`, `queue_timeout`, `draining`. It must not feed `scheduler_decisions_total`; the metrics observer ignores it until Phase 15 gives it its own series. Never fired yet.
+- **Two new methods, `QueueWaited(ctx, QueueWait)` and `BreakerTransition(ctx, BreakerChange)`**, on `Observer`, with empty defaults on `NopObserver` and panic-contained fan-out in `multiObserver`. Observers that embed `NopObserver` (tracing, events) need no change; an observer that implements the interface from scratch must add them. `BreakerTransition` is delivered on a background context, not a request's. Never fired yet.

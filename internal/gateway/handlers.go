@@ -119,6 +119,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ireq.TenantID, ireq.Priority = p.TenantID, p.Policy.Priority
 	}
 
+	if s.router != nil && s.refuseUnknownModel(w, r, info, ireq) {
+		return
+	}
+
 	if s.limitRequired {
 		// After parsing (the token cost needs the body) and the model checks, before any worker is touched.
 		// The slot is given back on every way out of this function: a normal return, an error, a client that
