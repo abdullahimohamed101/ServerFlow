@@ -193,12 +193,15 @@ deploy() {
   fi
   for t in TestDockerfile TestDockerignore TestGitignoreCoversGeneratedFiles TestComposeStructure TestOverrideFilesOnlyNarrow \
     TestStartupOrdering TestPrometheusComposeMatchesLocal TestTargetsMatchComposeServices TestEnvVariablesAreHonoured \
-    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
+    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestWorkflowOutputsAndDockerCommands TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
     TestNoServiceRunsAsRoot TestRestartPolicies TestGrafanaIsNotAnonymous TestStopGraceCoversShutdown TestRedisPasswordNotOnTheCommandLine \
     TestHealthchecksAreBoundedAndAimedAtTheService TestHealthcheckBinaryIsInEveryImageThatUsesIt TestTraceInsecureFlagOnlyBesideATracingEndpoint TestStalledOrBrokenBodyFails TestDevUpCheckEnv TestNoSecretsCommitted TestComposeLeavesNoDefaultSecrets \
     TestHealthy2xx TestNon2xxFails TestRedirectIsNotFollowed TestTimeout TestNonHTTPPortAndClosedPort TestOnlyLoopbackAndWellFormedArguments; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
+  if docker compose version >/dev/null 2>&1; then
+    grep -q -- "--- PASS: TestComposeConfigFromACleanTree " "$log" || fail "expected TestComposeConfigFromACleanTree to run and pass (the compose plugin is installed)"
+  fi
   rm -f "$log"
   printf 'deploy: the named deployment tests ran and passed\n'
   # The configuration guards the container stack leans on (W1 and W3 of the plan), with the race detector like the rest.
@@ -220,7 +223,7 @@ deploy() {
 
   step "shellcheck"
   if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck scripts/dev-up.sh scripts/dev-smoke.sh scripts/dev-pull.sh
+    shellcheck scripts/dev-up.sh scripts/dev-smoke.sh scripts/dev-pull.sh scripts/dev-placeholders.sh
   elif [ "${CI:-}" = "true" ]; then
     fail "shellcheck is not installed in CI"
   else
@@ -229,6 +232,10 @@ deploy() {
 
   step "docker compose config (every file and profile combination, no secrets needed)"
   if docker compose version >/dev/null 2>&1; then
+    # A fresh checkout has no .dev/; compose (v2.38.2 on the CI runner) checks that env_file entries exist even with
+    # --no-env-resolution, so empty placeholders stand in for the generated secret files (removed again afterwards).
+    scripts/dev-placeholders.sh create
+    trap 'scripts/dev-placeholders.sh remove' RETURN
     local envfile=deploy/compose/.env.example prof files
     for prof in core core,data core,data,events core,data,observability core,tracing 'core,data,events,observability,tracing,scale'; do
       for files in "" "-f docker-compose.persist.yml" "-f docker-compose.scale.yml" "-f docker-compose.private-control-plane.yml" \

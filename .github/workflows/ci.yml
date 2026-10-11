@@ -137,9 +137,12 @@ jobs:
         run: docker load -i "$RUNNER_TEMP/redpanda-image.tar"
       - name: Pull the Redpanda image (cache miss only; retries with backoff)
         if: steps.redpanda-cache.outputs.cache-hit != 'true'
+        env:
+          REDPANDA_IMAGE: ${{ steps.redpanda.outputs.image }}
         run: |
+          if [ -z "$REDPANDA_IMAGE" ]; then echo "::error::the Redpanda image reference is empty"; exit 1; fi
           scripts/dev-kafka.sh pull
-          docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
+          docker save "$REDPANDA_IMAGE" -o "$RUNNER_TEMP/redpanda-image.tar"
       - name: Start Kafka
         run: scripts/dev-kafka.sh start
       - name: Keep the Kafka log on failure
@@ -272,7 +275,10 @@ jobs:
           persist-credentials: false
       - name: Redpanda image reference
         id: redpanda
-        run: echo "image=$(docker compose --profile events config --no-env-resolution --images | grep redpanda | head -1)" >> "$GITHUB_OUTPUT"
+        run: |
+          image="$(scripts/dev-pull.sh --list | grep '/redpanda' | head -1)"
+          if [ -z "$image" ]; then echo "::error::could not determine the Redpanda image reference from docker-compose.yml"; exit 1; fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
       - name: Cache the Redpanda image
         id: redpanda-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -286,7 +292,11 @@ jobs:
         run: scripts/dev-pull.sh --skip-present
       - name: Save the Redpanda image for the cache
         if: steps.redpanda-cache.outputs.cache-hit != 'true'
-        run: docker save "${{ steps.redpanda.outputs.image }}" -o "$RUNNER_TEMP/redpanda-image.tar"
+        env:
+          REDPANDA_IMAGE: ${{ steps.redpanda.outputs.image }}
+        run: |
+          if [ -z "$REDPANDA_IMAGE" ]; then echo "::error::the Redpanda image reference is empty"; exit 1; fi
+          docker save "$REDPANDA_IMAGE" -o "$RUNNER_TEMP/redpanda-image.tar"
       - name: Start the stack (three gateways, so check S13 runs too and nothing is skipped)
         run: |
           cp deploy/compose/.env.example .env

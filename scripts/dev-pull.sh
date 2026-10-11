@@ -4,7 +4,7 @@
 # mirror.gcr.io, quay.io) rate-limit shared addresses such as CI runners; a 429 or a dropped connection is the usual
 # failure and the next attempt usually works (ADR-021, docs/development/ci.md).
 #
-#   scripts/dev-pull.sh [--skip-present] [IMAGE...]     (no IMAGE: every one the compose file and Dockerfile name)
+#   scripts/dev-pull.sh [--skip-present] [--list] [IMAGE...]   (--list prints the references and pulls nothing)     (no IMAGE: every one the compose file and Dockerfile name)
 #
 # Environment: DEV_PULL_ATTEMPTS (5), DEV_PULL_DELAY (first backoff in seconds, 5; tripled each attempt),
 # DEV_PULL_DOCKER (the docker binary, for tests). Nothing here handles credentials: it never logs in.
@@ -15,24 +15,36 @@ DOCKER="${DEV_PULL_DOCKER:-docker}"
 attempts="${DEV_PULL_ATTEMPTS:-5}"
 first_delay="${DEV_PULL_DELAY:-5}"
 skip_present=0
+list_only=0
 images=()
 for a in "$@"; do
   case "$a" in
     --skip-present) skip_present=1 ;;
+    --list) list_only=1 ;;
     -*) echo "dev-pull: unknown option $a" >&2; exit 2 ;;
     *) images+=("$a") ;;
   esac
 done
 
 if [ ${#images[@]} -eq 0 ]; then
+  # Compose may insist that the env files under .dev/ exist even for `config --images`; empty placeholders satisfy it.
+  scripts/dev-placeholders.sh create
+  trap 'scripts/dev-placeholders.sh remove' EXIT
   envargs=()
   [ -f .dev/compose.env ] && envargs=(--env-file .dev/compose.env)
   while IFS= read -r img; do
     case "$img" in serverflow/*) ;; *) [ -n "$img" ] && images+=("$img") ;; esac
   done < <("$DOCKER" compose ${envargs[@]+"${envargs[@]}"} --profile '*' config --no-env-resolution --images | sort -u)
+  [ ${#images[@]} -gt 0 ] || { echo "dev-pull: docker compose listed no images" >&2; exit 1; }
   while IFS= read -r img; do
     [ -n "$img" ] && images+=("$img")
   done < <(awk 'toupper($1)=="FROM" && $2 !~ /^\$/ && $2 != "runtime" && $2 != "build" {print $2}' deploy/docker/Dockerfile | sort -u)
+fi
+
+if [ "$list_only" = 1 ]; then
+  printf '%s\n' "${images[@]}"
+  [ ${#images[@]} -gt 0 ] || { echo "dev-pull: no images found (is docker compose working?)" >&2; exit 1; }
+  exit 0
 fi
 
 pull_one() {
