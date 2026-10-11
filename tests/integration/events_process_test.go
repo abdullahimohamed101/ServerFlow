@@ -215,3 +215,27 @@ func TestProcessUsageConsumerEndToEnd(t *testing.T) {
 		t.Fatal("the consumer log contains the SASL password")
 	}
 }
+
+// A dead Kafka and a dead trace collector together: requests are served, and the gateway still exits within the sum of
+// the two flush bounds (spans: 5s; events: events.shutdown_flush_timeout, 2s here), not their product or never.
+func TestProcessGatewayWithDeadKafkaAndDeadCollectorStopsOnTime(t *testing.T) {
+	mock, _ := startMock(t)
+	deadKafka, deadCollector := freePort(t), freePort(t)
+	gw, metrics := freePort(t), freePort(t)
+	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL,
+		"SERVERFLOW_EVENTS_BROKERS="+deadKafka, "SERVERFLOW_METRICS_LISTEN="+metrics,
+		"SERVERFLOW_TRACING_ENABLED=true", "SERVERFLOW_TRACING_ENDPOINT=http://"+deadCollector))
+	for i := 0; i < 20; i++ {
+		if code, body := gatewayChat(gw); code != 200 {
+			t.Fatalf("request %d with Kafka and the collector down: %d %s", i, code, body)
+		}
+	}
+	began := time.Now()
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	if err := p.wait(t, 30*time.Second); err != nil {
+		t.Fatalf("exit: %v\n%s", err, p.stderr.String())
+	}
+	if d := time.Since(began); d > 15*time.Second {
+		t.Fatalf("shutdown took %v with Kafka and the collector both down; bounds are 5s + 2s", d)
+	}
+}

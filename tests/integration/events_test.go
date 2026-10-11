@@ -438,3 +438,40 @@ func TestEventMetricsAppearOnTheGatewayRegistryOnlyWhenEventsAreOn(t *testing.T)
 		t.Fatalf("event series may only be labelled by reason, got %v", labels)
 	}
 }
+
+type ctxKeyTest string
+
+// ctxObserver adds a value to the contexts it returns, like the tracing observer does with its spans.
+type ctxObserver struct {
+	gateway.NopObserver
+	tag string
+}
+
+func (o ctxObserver) RequestStarted(ctx context.Context, _ gateway.RequestStart) context.Context {
+	return context.WithValue(ctx, ctxKeyTest("req-"+o.tag), true)
+}
+
+func (o ctxObserver) AttemptStarted(ctx context.Context, _ gateway.AttemptStart) context.Context {
+	return context.WithValue(ctx, ctxKeyTest("att-"+o.tag), true)
+}
+
+// The events observer keeps its per-request state on the context and must work whether other observers (tracing)
+// are registered before it or after it, each returning contexts derived from the one they were given.
+func TestEventsObserverWorksWithContextReturningObserversOnBothSides(t *testing.T) {
+	mock, _ := startMock(t)
+	obs, sink := newEventsObserver(t, quiet())
+	cfg := config.Default().Gateway
+	cfg.UpstreamURL, cfg.Models = mock.URL, []string{model}
+	ts := httptest.NewServer(gateway.New(cfg, quiet(),
+		gateway.WithObserver(ctxObserver{tag: "before"}), gateway.WithObserver(obs), gateway.WithObserver(ctxObserver{tag: "after"})).Handler())
+	t.Cleanup(ts.Close)
+	for _, stream := range []bool{false, true} {
+		resp := mustPost(t, ts.URL, chat(stream, "hi"))
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	evs := settleEvents(t, sink, 7)
+	if terminalCount(evs) != 2 || !strings.Contains(typesOf(evs), "completed") {
+		t.Fatalf("events: %s", typesOf(evs))
+	}
+}
