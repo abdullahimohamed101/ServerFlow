@@ -34,7 +34,7 @@ func TestResilienceDefaults(t *testing.T) {
 	if r.Retry != (ResilienceRetryConfig{BudgetRatio: 0.2, BudgetMin: 10, BudgetWindow: 10 * time.Second, MinRemaining: time.Second}) {
 		t.Errorf("retry defaults = %+v", r.Retry)
 	}
-	if r.Queue != (ResilienceQueueConfig{MaxModelDepth: 128, MaxWait: 3 * time.Second, MaxTenantShare: 0.5}) {
+	if r.Queue != (ResilienceQueueConfig{MaxModelDepth: 128, MaxTenantShare: 0.5}) {
 		t.Errorf("queue defaults = %+v", r.Queue)
 	}
 	if r.Drain.ReadinessGrace != nil || r.Breaker.ProbeHeaderTimeout != 0 {
@@ -42,6 +42,9 @@ func TestResilienceDefaults(t *testing.T) {
 	}
 	if got := r.Breaker.EffectiveProbeHeaderTimeout(60 * time.Second); got != 10*time.Second {
 		t.Errorf("effective probe header timeout = %v", got)
+	}
+	if got := r.Queue.EffectiveMaxWait(180 * time.Second); got != 3*time.Second {
+		t.Errorf("effective queue max wait = %v", got)
 	}
 	if got := r.Drain.EffectiveReadinessGrace(30 * time.Second); got != 5*time.Second {
 		t.Errorf("effective readiness grace = %v", got)
@@ -306,6 +309,7 @@ func TestResilienceValidation(t *testing.T) {
 		{"queue depth negative", func(c *Config) { c.Resilience.Queue.MaxModelDepth = -1 }, "max_model_depth"},
 		{"queue depth 100000", func(c *Config) { c.Resilience.Queue.MaxModelDepth = 100000 }, ""},
 		{"queue depth over", func(c *Config) { c.Resilience.Queue.MaxModelDepth = 100001 }, "max_model_depth"},
+		{"queue wait negative", func(c *Config) { c.Resilience.Queue.MaxWait = -1 }, "max_wait"},
 		{"queue wait 99ms", func(c *Config) { c.Resilience.Queue.MaxWait = 99 * time.Millisecond }, "max_wait"},
 		{"queue wait 60s", func(c *Config) { c.Resilience.Queue.MaxWait = time.Minute }, ""},
 		{"queue wait 61s", func(c *Config) { c.Resilience.Queue.MaxWait = time.Minute + time.Second }, "max_wait"},
@@ -479,5 +483,76 @@ func TestResilienceDerivedDefaultsFromYAMLAndEnv(t *testing.T) {
 	cfg, err := Load("")
 	if err != nil || cfg.Resilience.Drain.ReadinessGrace == nil || *cfg.Resilience.Drain.ReadinessGrace != 0 {
 		t.Fatalf("env zero grace: %v %+v", err, cfg.Resilience.Drain)
+	}
+}
+
+func TestResilienceQueueMaxWaitIsDerivedFromTheDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		header, idle time.Duration
+		explicit     time.Duration // first_byte_deadline
+		want         time.Duration
+	}{
+		{"production", 60 * time.Second, 120 * time.Second, 0, 3 * time.Second},
+		{"deadline exactly 3s", time.Second, 2 * time.Second, 0, 3 * time.Second},
+		{"deadline 2s clamps", time.Second, time.Second, 0, 2 * time.Second},
+		{"deadline 100ms clamps", 50 * time.Millisecond, 50 * time.Millisecond, 0, 100 * time.Millisecond},
+		{"explicit deadline", time.Second, time.Second, 2500 * time.Millisecond, 2500 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := resilienceRegistryConfig()
+			c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout = tc.header, tc.idle
+			c.Resilience.Breaker.ProbeHeaderTimeout = 0
+			c.Resilience.Retry.FirstByteDeadline = tc.explicit
+			if err := c.Validate(); err != nil {
+				t.Fatalf("valid without the feature, must stay valid with it: %v", err)
+			}
+			deadline := c.Resilience.Retry.EffectiveFirstByteDeadline(tc.header, tc.idle)
+			if got := c.Resilience.Queue.EffectiveMaxWait(deadline); got != tc.want {
+				t.Errorf("effective max wait = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// An explicit value is still cross-checked, and 0 stays the "derived" marker.
+	c := resilienceRegistryConfig()
+	c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout = time.Second, time.Second
+	c.Resilience.Queue.MaxWait = 3 * time.Second
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "first-byte deadline") {
+		t.Errorf("explicit max_wait above the deadline: %v", err)
+	}
+}
+
+// Every combination of small and large gateway timeouts: a master configuration that is valid with the feature off
+// must stay valid with mode on and registry workers (explicit bad values excluded). This is the guard for the day
+// the shipped default flips to on.
+func TestResilienceDefaultsValidateWithAnyGatewayTimeouts(t *testing.T) {
+	sizes := []time.Duration{50 * time.Millisecond, time.Second, 5 * time.Second, 30 * time.Second, 5 * time.Minute}
+	for _, header := range sizes {
+		for _, idle := range sizes {
+			for _, shutdown := range sizes {
+				base := Default()
+				base.Gateway.WorkerSource = WorkerSourceRegistry
+				base.Gateway.UpstreamHeaderTimeout, base.Gateway.UpstreamIdleTimeout, base.Gateway.ShutdownTimeout = header, idle, shutdown
+				if err := base.Validate(); err != nil {
+					t.Fatalf("header %v idle %v shutdown %v: invalid even with the feature off: %v", header, idle, shutdown, err)
+				}
+				c := base
+				c.Resilience.Mode = ResilienceOn
+				if err := c.Validate(); err != nil {
+					t.Errorf("header %v idle %v shutdown %v: valid with the feature off but not on: %v", header, idle, shutdown, err)
+				}
+				// The derived values are sane too.
+				deadline := c.Resilience.Retry.EffectiveFirstByteDeadline(header, idle)
+				if w := c.Resilience.Queue.EffectiveMaxWait(deadline); w <= 0 || w > deadline || w > 3*time.Second {
+					t.Errorf("header %v idle %v: derived max wait %v vs deadline %v", header, idle, w, deadline)
+				}
+				if p := c.Resilience.Breaker.EffectiveProbeHeaderTimeout(header); p <= 0 || p > header {
+					t.Errorf("header %v: derived probe header timeout %v", header, p)
+				}
+				if g := c.Resilience.Drain.EffectiveReadinessGrace(shutdown); g < 0 || g >= shutdown {
+					t.Errorf("shutdown %v: derived grace %v", shutdown, g)
+				}
+			}
+		}
 	}
 }

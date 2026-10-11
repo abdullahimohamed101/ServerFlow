@@ -62,7 +62,8 @@ type ResilienceRetryConfig struct {
 	MinRemaining      time.Duration `yaml:"min_remaining"`
 }
 
-// ResilienceQueueConfig configures the per-model admission queue. MaxModelDepth 0 means no queue. MaxTenantShare is
+// ResilienceQueueConfig configures the per-model admission queue. MaxModelDepth 0 means no queue. MaxWait unset (0)
+// means min(3s, the effective first-byte deadline); read it through EffectiveMaxWait. MaxTenantShare is
 // the largest fraction of a model's depth one authenticated tenant may hold (0 switches the guard off).
 type ResilienceQueueConfig struct {
 	MaxModelDepth  int           `yaml:"max_model_depth"`
@@ -82,6 +83,7 @@ type ResilienceDrainConfig struct {
 const (
 	defaultProbeHeaderTimeout = 10 * time.Second
 	defaultReadinessGrace     = 5 * time.Second
+	defaultQueueMaxWait       = 3 * time.Second
 )
 
 // EffectiveProbeHeaderTimeout returns the probe header timeout in force: the explicit value, or by default
@@ -91,6 +93,15 @@ func (b ResilienceBreakerConfig) EffectiveProbeHeaderTimeout(upstreamHeader time
 		return b.ProbeHeaderTimeout
 	}
 	return min(defaultProbeHeaderTimeout, upstreamHeader)
+}
+
+// EffectiveMaxWait returns the queue wait in force: the explicit value, or by default min(3s, firstByteDeadline) where
+// firstByteDeadline is ResilienceRetryConfig.EffectiveFirstByteDeadline.
+func (q ResilienceQueueConfig) EffectiveMaxWait(firstByteDeadline time.Duration) time.Duration {
+	if q.MaxWait != 0 {
+		return q.MaxWait
+	}
+	return min(defaultQueueMaxWait, firstByteDeadline)
 }
 
 // EffectiveReadinessGrace returns the grace in force: the explicit value, or by default min(5s, shutdown/2).
@@ -146,7 +157,6 @@ func defaultResilience() ResilienceConfig {
 		},
 		Queue: ResilienceQueueConfig{
 			MaxModelDepth:  128,
-			MaxWait:        3 * time.Second,
 			MaxTenantShare: 0.5,
 		},
 		Drain: ResilienceDrainConfig{},
@@ -234,11 +244,14 @@ func (c *Config) validateResilience() error {
 	if q.MaxModelDepth < 0 || q.MaxModelDepth > maxQueueDepth {
 		return fmt.Errorf("resilience.queue.max_model_depth must be in 0-%d, got %d", maxQueueDepth, q.MaxModelDepth)
 	}
-	if q.MaxWait < minQueueMaxWait || q.MaxWait > maxQueueMaxWait {
-		return fmt.Errorf("resilience.queue.max_wait must be between %v and %v", minQueueMaxWait, maxQueueMaxWait)
-	}
-	if deadline := t.EffectiveFirstByteDeadline(c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout); q.MaxWait > deadline {
-		return fmt.Errorf("resilience.queue.max_wait (%v) must not exceed the first-byte deadline (%v)", q.MaxWait, deadline)
+	// Unset (0) derives min(3s, first-byte deadline); only an explicit value is checked.
+	if q.MaxWait != 0 {
+		if q.MaxWait < minQueueMaxWait || q.MaxWait > maxQueueMaxWait {
+			return fmt.Errorf("resilience.queue.max_wait must be 0 (derived) or between %v and %v", minQueueMaxWait, maxQueueMaxWait)
+		}
+		if deadline := t.EffectiveFirstByteDeadline(c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout); q.MaxWait > deadline {
+			return fmt.Errorf("resilience.queue.max_wait (%v) must not exceed the first-byte deadline (%v)", q.MaxWait, deadline)
+		}
 	}
 	if !inRange01(q.MaxTenantShare) {
 		return fmt.Errorf("resilience.queue.max_tenant_share must be between 0 and 1")

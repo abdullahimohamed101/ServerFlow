@@ -55,7 +55,8 @@ type QueueParams struct {
 // QueueParamsFrom takes the queue settings from the configuration (the model cap is metrics.max_models).
 func QueueParamsFrom(c config.Config) QueueParams {
 	q := c.Resilience.Queue
-	return QueueParams{MaxModelDepth: q.MaxModelDepth, MaxWait: q.MaxWait, MaxTenantShare: q.MaxTenantShare, MaxModels: c.Metrics.MaxModels}
+	deadline := c.Resilience.Retry.EffectiveFirstByteDeadline(c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout)
+	return QueueParams{MaxModelDepth: q.MaxModelDepth, MaxWait: q.EffectiveMaxWait(deadline), MaxTenantShare: q.MaxTenantShare, MaxModels: c.Metrics.MaxModels}
 }
 
 // tenantCap is the most waiters one tenant may hold in a queue of the given depth; 0 means no guard.
@@ -93,10 +94,9 @@ type Waiter struct {
 	ch            chan Grant
 
 	// Guarded by Queue.mu.
-	elem   *list.Element
-	woken  bool // a Reroute is out: the waiter is routing and may not receive a hand-off
-	missed bool // a slot was released while the waiter was routing: it must route again
-	left   bool // no longer in the queue (granted, flushed, removed)
+	elem  *list.Element
+	woken bool // a Reroute is out: the waiter is routing and may not receive a hand-off
+	left  bool // no longer in the queue (granted, flushed, removed)
 }
 
 // C delivers the waiter's grants. The channel is never closed.
@@ -111,6 +111,10 @@ func (w *Waiter) Model() string { return w.model }
 type modelQueue struct {
 	waiters *list.List
 	tenants map[string]int
+	// credit counts slots that were released while the head waiter was routing and so could not be handed over
+	// (the caller freed them normally). Invariant: credit > 0 only while every waiter is routing; otherwise the
+	// credit is spent at once by telling the first waiter that is not routing to route (settle).
+	credit int
 }
 
 // Queue is the set of per-model FIFO queues. Waiting requests do not poll: a freed slot is handed directly to
@@ -212,17 +216,18 @@ func (q *Queue) Enqueue(model, tenant string) (*Waiter, error) {
 	if tenant != "" {
 		mq.tenants[tenant]++
 	}
+	settle(mq, nil) // a new waiter can take credit that nobody else was free to take
 	return w, nil
 }
 
-// leaveLocked removes a waiter from its queue's bookkeeping. With cascade, a slot that was released while the
-// waiter was routing (a missed hand-off) is not forgotten: the next waiter that is not already routing is told to
-// route, so a freed slot does not sit unused while waiters exist.
-func (q *Queue) leaveLocked(w *Waiter, cascade bool) {
+// leaveLocked removes a waiter from its queue's bookkeeping. With settleAfter, credit for slots that were released
+// while waiters were routing is spent on the waiters that remain (see settle), so a freed slot is not left unused
+// while waiters exist.
+func (q *Queue) leaveLocked(w *Waiter, settleAfter, giveBack bool) {
 	mq := q.models[w.model]
-	missed := w.missed
+	wasRouting := w.woken
 	w.left = true
-	w.woken, w.missed = false, false
+	w.woken = false
 	if mq == nil || w.elem == nil {
 		return
 	}
@@ -237,16 +242,39 @@ func (q *Queue) leaveLocked(w *Waiter, cascade bool) {
 		delete(q.models, w.model)
 		return
 	}
-	if cascade && missed {
+	if settleAfter {
+		if giveBack && wasRouting {
+			mq.credit++ // it was woken for a slot and never used it (timeout, cancel): somebody else may
+		}
+		settle(mq, nil)
+	}
+}
+
+// settle spends credit: for each unit, the first waiter (in queue order) that is not routing is told to route
+// (Reroute), or, if it is self, reported through the return value instead of through its channel. It stops when
+// credit is gone or every waiter is routing. A unit may find nothing to take (the waiter that was routing took the
+// freed slot itself); the cost is one routing attempt that fails, and each unit is spent once, so nothing loops.
+func settle(mq *modelQueue, self *Waiter) (selfRoutes bool) {
+	for mq.credit > 0 {
+		var next *Waiter
 		for e := mq.waiters.Front(); e != nil; e = e.Next() {
-			if next := e.Value.(*Waiter); !next.woken {
-				next.woken = true
-				next.missed = false
-				next.send(Grant{Kind: Reroute})
+			if w := e.Value.(*Waiter); !w.woken {
+				next = w
 				break
 			}
 		}
+		if next == nil {
+			return selfRoutes
+		}
+		mq.credit--
+		next.woken = true
+		if next == self {
+			selfRoutes = true
+		} else {
+			next.send(Grant{Kind: Reroute})
+		}
 	}
+	return selfRoutes
 }
 
 // send delivers a grant on the buffered channel. At most one grant is ever pending: a pending Reroute that the
@@ -273,10 +301,11 @@ func (q *Queue) Handoff(model string, value any) bool {
 	}
 	head := mq.waiters.Front().Value.(*Waiter)
 	if head.woken {
-		head.missed = true
+		mq.credit++
+		settle(mq, nil)
 		return false
 	}
-	q.leaveLocked(head, false)
+	q.leaveLocked(head, false, false)
 	head.send(Grant{Kind: Handoff, Value: value})
 	return true
 }
@@ -298,7 +327,6 @@ func (q *Queue) Wake(model string, n int) int {
 			continue
 		}
 		w.woken = true
-		w.missed = false
 		w.send(Grant{Kind: Reroute})
 		woken++
 	}
@@ -317,33 +345,37 @@ func (q *Queue) Models() []string {
 }
 
 // Park is called by a waiter that was woken, routed, and found every worker still full. It keeps its place and
-// goes back to waiting. It returns true when a slot was released while it was routing (a missed hand-off): the
-// waiter must then route again before it waits.
+// goes back to waiting. It returns true when a slot was released while waiters were routing and nobody else was free
+// to take it (a missed hand-off): the waiter must then route again before it waits. Otherwise credit goes to the
+// first waiter that is not routing.
 func (q *Queue) Park(w *Waiter) (routeAgain bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if w.left {
 		return false
 	}
-	if w.missed {
-		w.missed = false
-		return true // stays woken
-	}
 	w.woken = false
-	return false
+	mq := q.models[w.model]
+	if mq == nil {
+		return false
+	}
+	return settle(mq, w)
 }
 
-// Done removes a woken waiter that was served by its own routing. It is Leave without a grant to give back.
-func (q *Queue) Done(w *Waiter) { q.Leave(w) }
+// Done removes a woken waiter that was served by its own routing. Unlike Leave it does not give its wake-up back:
+// it used the slot it was woken for.
+func (q *Queue) Done(w *Waiter) { q.leave(w, false) }
 
 // Leave removes the waiter (cancelled, timed out, or served). If a hand-off had already been delivered to it, the
 // grant is returned with true and the caller owns the slot in it (it must use or release it); the waiter is
 // never lost and a slot never dropped. It is idempotent.
-func (q *Queue) Leave(w *Waiter) (Grant, bool) {
+func (q *Queue) Leave(w *Waiter) (Grant, bool) { return q.leave(w, true) }
+
+func (q *Queue) leave(w *Waiter, giveBack bool) (Grant, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if !w.left {
-		q.leaveLocked(w, true)
+		q.leaveLocked(w, true, giveBack)
 		select { // a pending Reroute is moot
 		case g := <-w.ch:
 			if g.Kind != Reroute {
@@ -407,7 +439,7 @@ func (q *Queue) Flush(model string) int {
 		}
 		for mq.waiters.Len() > 0 {
 			w := mq.waiters.Front().Value.(*Waiter)
-			q.leaveLocked(w, false)
+			q.leaveLocked(w, false, false)
 			w.send(Grant{Kind: Flushed})
 			n++
 		}

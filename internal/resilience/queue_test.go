@@ -378,72 +378,124 @@ func TestShedReasonOfOtherErrors(t *testing.T) {
 	}
 }
 
-// The verifier's lost wake-up: a refresh wakes the head (Wake(1)); a slot is released while it is routing, so the
-// hand-off is declined and the slot is freed normally; the head then ends by taking a different slot (Done) or by
-// leaving (timeout, cancel). Nobody told the second waiter about the free slot. Done and Leave now cascade.
-func TestQueueMissedHandoffIsPassedOnWhenTheRoutingWaiterLeaves(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		leave func(q *Queue, w *Waiter)
-	}{
-		{"head served by its own routing (Done)", func(q *Queue, w *Waiter) { q.Done(w) }},
-		{"head timed out or cancelled (Leave)", func(q *Queue, w *Waiter) { q.Leave(w) }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			q, _ := newTestQueue(10, 0, 0)
-			w1, w2, w3 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
-			if q.Wake("m", 1) != 1 {
-				t.Fatal("wake")
-			}
-			recv(t, w1) // w1 is routing
-			if q.Handoff("m", "freed slot") {
-				t.Fatal("the head is routing: the slot is released normally")
-			}
-			noGrant(t, w2)
-			tc.leave(q, w1)
-			if g := recv(t, w2); g.Kind != Reroute {
-				t.Fatalf("w2 must be told to route again, got %+v", g)
-			}
-			noGrant(t, w3) // only the next waiter, one at a time
-			// w2 is now the routing head; a further miss cascades to w3 in turn.
-			if q.Handoff("m", "another") {
-				t.Fatal("w2 is routing")
-			}
-			q.Done(w2)
-			if g := recv(t, w3); g.Kind != Reroute {
-				t.Fatalf("w3: %+v", g)
-			}
-		})
+// settled reports the queue invariant: credit is outstanding only while every waiter of the model is routing.
+func (q *Queue) settled(model string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	mq := q.models[model]
+	if mq == nil || mq.credit == 0 {
+		return true
+	}
+	for e := mq.waiters.Front(); e != nil; e = e.Next() {
+		if !e.Value.(*Waiter).woken {
+			return false
+		}
+	}
+	return true
+}
+
+func (q *Queue) creditOf(model string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if mq := q.models[model]; mq != nil {
+		return mq.credit
+	}
+	return 0
+}
+
+// The verifier's three scenarios for a slot freed while waiters are routing. A declined hand-off becomes credit
+// that is spent on the first waiter not routing, and otherwise waits for the first routing waiter to stop.
+
+// (a) Wake(2) wakes both; a slot is released while they route; w1 ends with Done; w2 parks and must be told to look again.
+func TestQueueCreditScenarioA_BothRoutingFirstDone(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w1, w2 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
+	q.Wake("m", 2)
+	recv(t, w1)
+	recv(t, w2)
+	if q.Handoff("m", "freed") {
+		t.Fatal("the head is routing: the slot is released normally")
+	}
+	if q.creditOf("m") != 1 {
+		t.Fatalf("credit %d", q.creditOf("m"))
+	}
+	q.Done(w1) // took some other slot
+	noGrant(t, w2)
+	if !q.Park(w2) {
+		t.Fatal("w2 must be told to route again: the freed slot is still unused")
+	}
+	if q.creditOf("m") != 0 || !q.settled("m") {
+		t.Fatal("credit spent once")
+	}
+	if q.Park(w2) {
+		t.Fatal("no credit left: w2 waits")
 	}
 }
 
-func TestQueueNoCascadeWithoutAMissedHandoff(t *testing.T) {
+// (a') the same with Leave (timeout or cancel) instead of Done, and with a routing waiter that leaves.
+func TestQueueCreditScenarioA_LeaveGivesTheWakeUpBack(t *testing.T) {
 	q, _ := newTestQueue(10, 0, 0)
 	w1, w2 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
 	q.Wake("m", 1)
 	recv(t, w1)
-	q.Done(w1) // no slot was released meanwhile
-	noGrant(t, w2)
-	// A cascade skips a waiter that is already routing.
-	q2, _ := newTestQueue(10, 0, 0)
-	a, b, c := mustEnqueue(t, q2, "m", ""), mustEnqueue(t, q2, "m", ""), mustEnqueue(t, q2, "m", "")
-	q2.Wake("m", 2)
-	recv(t, a)
-	recv(t, b)
-	q2.Handoff("m", "x") // missed by the head a
-	q2.Leave(a)
-	if g := recv(t, c); g.Kind != Reroute {
-		t.Fatalf("the first waiter not already routing is c: %+v", g)
+	q.Leave(w1) // woken for a slot, gave up before using it: someone else may use the slot
+	if g := recv(t, w2); g.Kind != Reroute {
+		t.Fatalf("w2: %+v", g)
 	}
+	// Done does not give the wake-up back: the slot was used.
+	q2, _ := newTestQueue(10, 0, 0)
+	a, b := mustEnqueue(t, q2, "m", ""), mustEnqueue(t, q2, "m", "")
+	q2.Wake("m", 1)
+	recv(t, a)
+	q2.Done(a)
 	noGrant(t, b)
 }
 
-func TestQueueFlushDoesNotCascade(t *testing.T) {
+// (b) three slots released during one routing: each is offered to a different waiter, none is dropped.
+func TestQueueCreditScenarioB_ThreeReleasesDuringOneRouting(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	ws := []*Waiter{mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")}
+	q.Wake("m", 1)
+	recv(t, ws[0]) // w1 is routing
+	for i := 1; i <= 3; i++ {
+		if q.Handoff("m", i) {
+			t.Fatal("the head is routing")
+		}
+		if g := recv(t, ws[i]); g.Kind != Reroute {
+			t.Fatalf("release %d must wake w%d: %+v", i, i+1, g)
+		}
+	}
+	// A fourth release finds everybody routing: it waits as credit for the first one that stops.
+	if q.Handoff("m", 4) || q.creditOf("m") != 1 {
+		t.Fatalf("credit %d", q.creditOf("m"))
+	}
+	q.Done(ws[0])
+	if !q.Park(ws[3]) {
+		t.Fatal("the last unused slot must reach a waiter")
+	}
+	if !q.settled("m") {
+		t.Fatal("invariant")
+	}
+}
+
+func TestQueueArrivalTakesCredit(t *testing.T) {
+	q, _ := newTestQueue(10, 0, 0)
+	w1 := mustEnqueue(t, q, "m", "")
+	q.Wake("m", 1)
+	recv(t, w1)
+	q.Handoff("m", "x") // credit: the only waiter is routing
+	w2 := mustEnqueue(t, q, "m", "")
+	if g := recv(t, w2); g.Kind != Reroute {
+		t.Fatalf("a new waiter must take the credit: %+v", g)
+	}
+}
+
+func TestQueueFlushDoesNotSettle(t *testing.T) {
 	q, _ := newTestQueue(10, 0, 0)
 	w1, w2 := mustEnqueue(t, q, "m", ""), mustEnqueue(t, q, "m", "")
 	q.Wake("m", 1)
 	recv(t, w1)
-	q.Handoff("m", "x") // missed
+	q.Handoff("m", "x")
 	q.Flush("m")
 	if g := recv(t, w1); g.Kind != Flushed {
 		t.Fatal(g)
