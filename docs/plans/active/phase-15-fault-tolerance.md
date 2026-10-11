@@ -257,3 +257,39 @@ Follow D26 in order; A and B and C are independent and can proceed in parallel, 
 5. **PR E**: queue, hand-off, shedding, global cap, tenant guard, overhead exclusion, queue series; overload test; Run A groups.
 6. **PR F**: gateway drain and its process tests; drain-roll.
 7. **PR G**: flip the default, D25 differential, dashboard, alerts and D23 re-measurement, ADR-020, operations guide, README, benchmark note, full gate, independent verification, review, hardening; stop for approval before any push.
+
+## Implementation progress
+
+### PR A (seam and unconditional fixes): done
+
+Branch `feature/phase-15-fault-tolerance`, five commits on top of the plan: D3 pre-check, seam stubs with the typed routing result and debt 3, D2 panic-safe attempts, a test that a shed request is never a scheduling decision, and the documentation (ADR-020 created with the PR A sections and placeholders for the later PRs, ADR-016 amended, ADR-015, ADR-017, the operations guide, `observers.md` and `ARCHITECTURE.md` updated). Nothing is pushed.
+
+What changed in behaviour: only the three fixes. Panic safety (D2, debt 1), the model pre-check before the limiter (D3, debt 2) and the counting of a retry whose second routing fails (debt 3). The golden series files are unchanged (no series was added or renamed).
+
+Acceptance subset, with the evidence:
+
+| # | Criterion | Evidence |
+| --- | --- | --- |
+| 1 | Panic safety | `attempt_panic_test.go`: recorder panic on the first attempt, upstream-call panic, recorder panic after a retry, panic while closing the abandoned response (inside `abandonAttempt`, after the next attempt started), observer panic, client cancel, 40 repeated panics on a capacity-1 worker (slot and goroutine leak test), unstarted-attempt and idempotence unit tests. Red on the pre-fix code (4 sequence tests and the leak test fail), green after. |
+| 2 | Model pre-check | `precheck_test.go`: unknown model, limiter call count 0 and no lease; known model charged once; no snapshot reaches the limiter; all-LOST model charged; log line and `no_model` series kept; `TestServesSays...` in `snapshot_test.go`. |
+| 3 | Second-routing metric | `nextroute_test.go`: `no_capacity` and `worker_unavailable` (stale view) results counted once each, a successful retry adds nothing. |
+| 14 | Seam stubs | `observer_seam_test.go`: new fields and methods exist, fan-out contains panics, the new fields stay zero in every registry sequence, `NextRouteResult` per case, `overload` never reaches the scheduler series. Observer benchmark: 0 allocs/op for the metrics observer, 102/109 allocs/op for the request benchmark, identical to master. |
+| 4(a) | Off means off | Golden tests unchanged; master-versus-branch binary differential of 38 request shapes (see below). |
+
+Differential: the master binary (commit d3e5cc9, the plan's parent) and the branch binary were each run against the same fake control plane and fake workers (success, stream, unknown model, bad JSON, missing fields, retry on refused/reset/502/503/empty stream, both workers 503, a single worker 503, all workers full, draining, 500, 504, 4xx, mid-stream failure in stream and JSON, client disconnect before and during the response, header timeout, stale registry, `/readyz`, `/v1/models`, 404/405/413, an unknown and a lost model; static mode: 9 shapes; and three Redis-backed shapes with a per-model cap). Status, headers, bodies, normalised log lines and `/metrics` series were compared. 35 of 38 identical; the three differences are exactly the fixes, plus Redis lease-renewal timing noise that did not repeat:
+- `r10-single-503`: the branch adds `scheduler_decisions_total{result="no_capacity"}` 1 and `scheduler_no_capacity_total{reason="no_capacity"}` 1 (debt 3).
+- `l02-registry-unknown-capped`: with a per-model cap of 2 on a model that does not exist, master answers 404, 404, 429 (the third is refused by the limiter); the branch answers 404 three times, makes 3 fewer limiter calls (`redis_commands_total` 4 against 7, `rate_limit_decision_seconds_count` 1 against 4), and the request, failure and scheduling counters follow (D3).
+- `l01-registry-known-cap`: `redis_commands_total` 6 against 7 in the first pass; two repeats were identical (lease renewal timing).
+A shutdown log line that flaps between runs in both directions and `/readyz` polls made while waiting for start-up are ignored by the comparison.
+
+Deviations and decisions made while implementing:
+1. `RequestRecorder` ordering is unchanged: the recorder is called after `AttemptStarted`, so "a panic in the recorder before the first attempt" is tested as a panic after the first attempt started (it ends `failed`, class `panic`). The "never ended when not started" half of the contract is covered by driving `closeAttempts` with a reserved, unstarted run.
+2. The typed routing result is `*routeError`, which embeds `*api.Error` so existing callers and tests compile unchanged; it carries `Serving`, `Eligible`, `AtCapacity`. Nothing reads the counts yet (PR E).
+3. The pre-check reports its own duration as the scheduling decision duration, so `scheduler_decision_duration_seconds` keeps observing unknown-model refusals as before. A retry whose second routing fails does **not** observe a decision duration (no field for it in the stub list).
+4. `NextRouteResult` is empty when the client left during the second routing (it is not a scheduling outcome); `NextWorkerUnavailable` stays true there, as before.
+5. `rate_limit_decision_seconds` no longer observes unknown-model requests in registry mode (no decision is made) and their `Admission` has `RateLimitChecked=false`. Documented in ADR-020.
+6. A real panic ends attempts with class `panic`; this class can now appear as an attempt-level `failure_class` in Kafka events and in the tracing attempt-class attribute. `http.ErrAbortHandler` (the deliberate abort after a body failed) keeps its old classification.
+7. The retry-denied sequence (D13) is prepared but not testable until the budget exists (PR D); a test pins `RetryDenied` to the empty value everywhere today.
+8. Per registry request the attempt guard adds one small allocation for its run list and a deferred closure; the static path and the metrics observer are unchanged.
+
+Mutation checks by hand (apply, run the focused tests, see them fail, revert): slot not released in `abandonAttempt`; panics ignored by the cleanup; the next run not tracked; no idempotence guard (double `AttemptEnded`); an unstarted attempt ended; pre-check disabled; pre-check after the limiter; `Serves` always true; `Serves` refusing without a snapshot; `NextRouteResult` not set; metrics ignoring it. All killed. Two survivors argued equivalent: moving the response-close out of its `defer` (the later defers still run during a panic) and routing `overload` to the scheduler series (the switch in `schedulingRefused` has no case for it; the new test guards PR E).
