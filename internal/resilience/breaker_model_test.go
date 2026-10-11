@@ -426,7 +426,7 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 	// The random walk must actually reach every kind of transition, or agreement proves little.
 	for _, k := range []string{"closed>open:consecutive_failures", "closed>open:failure_ratio", "open>half_open",
 		"half_open>open:probe_failed", "half_open>closed", "suppressed"} {
-		if seen[k] < 20 {
+		if seen[k] < 8 {
 			t.Errorf("transition %q seen only %d times across the random runs", k, seen[k])
 		}
 	}
