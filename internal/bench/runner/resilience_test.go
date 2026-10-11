@@ -7,9 +7,10 @@ import (
 	"testing"
 )
 
-// On a build without the Phase 15 resilience feature the flag is a no-op and the result says "absent":
-// recording "off" would make a before/after comparison claim the feature was switched off.
-func TestResilienceFlagIsANoOpRecordedAsAbsentWithoutTheFeature(t *testing.T) {
+// Since Phase 15 PR C the configuration has a resilience section (default off), so the flag is applied and the
+// result records the effective mode. (The "absent" case for a build without the section is covered in
+// internal/bench/embedded.) The gateway does not read the section before PR D.
+func TestResilienceFlagIsRecordedAsTheEffectiveMode(t *testing.T) {
 	for _, v := range []string{"", "on", "off"} {
 		args := []string{"--workload", "uniform-short"}
 		if v != "" {
@@ -21,11 +22,12 @@ func TestResilienceFlagIsANoOpRecordedAsAbsentWithoutTheFeature(t *testing.T) {
 		if err != nil || len(rs) != 1 {
 			t.Fatalf("--resilience %q: %v", v, err)
 		}
-		if got := rs[0].Metadata.Resilience; got != "absent" {
-			t.Fatalf("--resilience %q recorded %q, want absent", v, got)
+		want := map[string]string{"": "off", "on": "on", "off": "off"}[v]
+		if got := rs[0].Metadata.Resilience; got != want {
+			t.Fatalf("--resilience %q recorded %q, want %q", v, got, want)
 		}
-		if noted := strings.Contains(out.String(), "has no effect"); noted != (v != "") {
-			t.Fatalf("--resilience %q: no-op note printed=%v\n%s", v, noted, out.String())
+		if strings.Contains(out.String(), "has no effect") {
+			t.Fatalf("--resilience %q: the build has the section, so the flag is not a no-op\n%s", v, out.String())
 		}
 	}
 }
