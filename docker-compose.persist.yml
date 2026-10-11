@@ -1,0 +1,33 @@
+# Added by scripts/dev-up.sh when PERSIST=1 (ADR-021): the data directories become explicitly named volumes instead
+# of tmpfs, so PostgreSQL, Redis, Redpanda, Prometheus and Grafana survive `make dev-down`. `make dev-reset` removes
+# them. Without this file nothing persists and `make dev-down` leaves no volume behind.
+services:
+  postgres:
+    tmpfs: !override
+      - /var/run/postgresql:uid=70,gid=70,mode=0755,size=1m
+      - /tmp:uid=70,gid=70,mode=1777,size=16m
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+  redis:
+    tmpfs: !override
+      - /tmp:uid=999,gid=1000,mode=0700,size=1m
+    volumes: ["redisdata:/data"]
+  redpanda:
+    tmpfs: !override
+      - /etc/redpanda:uid=101,gid=101,mode=0755,size=1m
+      - /var/lib/redpanda/.config:uid=101,gid=101,mode=0700,size=1m
+      - /tmp:uid=101,gid=101,mode=1777,size=16m
+    volumes: ["redpandadata:/var/lib/redpanda/data"]
+  prometheus:
+    tmpfs: !reset []
+    volumes: ["prometheusdata:/prometheus"]
+  grafana:
+    tmpfs: !override
+      - /tmp:uid=472,gid=0,mode=1777,size=16m
+    volumes: ["grafanadata:/var/lib/grafana"]
+
+volumes:
+  pgdata: {}
+  redisdata: {}
+  redpandadata: {}
+  prometheusdata: {}
+  grafanadata: {}

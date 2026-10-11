@@ -143,3 +143,55 @@ obs-logs:
 # promtool checks of the config and rules plus the dashboard validation (needs promtool or Docker).
 obs-check:
 	scripts/quality.sh observability
+
+# Phase 16: the whole system in containers on one machine (docs/operations/docker-deployment.md, ADR-021).
+# Needs Docker with Compose 2.24+. Configuration is .env (copied from deploy/compose/.env.example on the first run);
+# secrets are generated into .dev/ (gitignored). The host-process workflow above (dev-cluster, dev-postgres, ...) is unchanged.
+.PHONY: dev-up dev-down dev-reset dev-smoke dev-audit dev-ps dev-logs dev-config dev-pull dev-psql dev-redis-cli dev-rpk dev-key deploy-check
+dev-up:
+	scripts/dev-up.sh up
+
+dev-down:
+	scripts/dev-up.sh down
+
+# Also removes named volumes (PERSIST=1), .dev/ (secrets, API keys) and the serverflow/*:dev images.
+dev-reset:
+	scripts/dev-up.sh reset
+
+dev-smoke:
+	scripts/dev-up.sh smoke
+
+# The running containers against the promises of ADR-021: read-only, no capabilities, loopback-only ports, no anonymous volume.
+dev-audit:
+	scripts/dev-up.sh audit
+
+dev-ps:
+	scripts/dev-up.sh ps
+
+# make dev-logs SERVICE=gateway
+dev-logs:
+	scripts/dev-up.sh logs $(SERVICE)
+
+# The rendered compose file without any secret value (safe to paste into an issue).
+dev-config:
+	scripts/dev-up.sh config
+
+dev-pull:
+	scripts/dev-up.sh pull
+
+dev-psql:
+	scripts/dev-up.sh psql
+
+dev-redis-cli:
+	scripts/dev-up.sh redis-cli
+
+dev-rpk:
+	scripts/dev-up.sh rpk $(ARGS)
+
+# Prints where the dev API key is stored (never the key itself).
+dev-key:
+	scripts/dev-up.sh key
+
+# Static checks of the deployment files: no Docker daemon needed (docs/development/ci.md).
+deploy-check:
+	scripts/quality.sh deploy

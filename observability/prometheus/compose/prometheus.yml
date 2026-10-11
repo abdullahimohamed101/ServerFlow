@@ -1,0 +1,49 @@
+# Prometheus configuration for the container stack (Phase 16, ADR-021), mounted as /etc/prometheus/prometheus.yml. It mirrors
+# ../prometheus.yml (same job
+# names, relabelling, sample limits, global settings and rule files; a test fails if they drift) with two
+# differences the container network needs:
+#   - the gateway and control-plane jobs present the metrics bearer token (their listeners bind 0.0.0.0, which
+#     the binaries only allow with a token), read from a file the stack generates;
+#   - the gateway replicas are discovered by DNS, so `GATEWAYS=N` needs no edit.
+# prometheus.yml itself is unchanged: a shared file cannot carry the token for one stack and none for the other
+# (a missing credentials file is a scrape error).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: serverflow
+
+rule_files:
+  - rules/*.yml
+
+scrape_configs:
+  - job_name: serverflow-gateway
+    sample_limit: 20000 # last line of defence against a cardinality blow-up (ADR-017 D5)
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics_token
+    dns_sd_configs:
+      - names: [gateway]
+        type: A
+        port: 9100
+        refresh_interval: 5s
+    relabel_configs:
+      - {target_label: component, replacement: gateway}
+
+  - job_name: serverflow-control-plane
+    scrape_interval: 5s
+    sample_limit: 20000
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics_token
+    file_sd_configs:
+      - files: [targets/*.yml]
+    relabel_configs:
+      - {source_labels: [component], regex: control-plane, action: keep}
+
+  - job_name: serverflow-mock-worker
+    sample_limit: 20000
+    file_sd_configs:
+      - files: [targets/*.yml]
+    relabel_configs:
+      - {source_labels: [component], regex: mock-worker, action: keep}

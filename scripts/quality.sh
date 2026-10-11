@@ -10,7 +10,10 @@
 #   scripts/quality.sh vuln         govulncheck
 #   scripts/quality.sh tracing      the Phase 11 tracing tests, which MUST run (no Docker needed)
 #   scripts/quality.sh observability  promtool on the Prometheus config, rules and rule tests, and the dashboard checks
-#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), build
+#   scripts/quality.sh deploy       Phase 16: the container deployment's static checks (no Docker daemon, no image pulls): the
+#                                   tests/deploy tests (which MUST run), hadolint, shellcheck, `docker compose config` of every
+#                                   file/profile combination
+#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), deploy, build
 #
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
@@ -165,12 +168,103 @@ observability() {
   export SERVERFLOW_REQUIRE_PROMTOOL=1
   step "promtool check config"
   scripts/promtool.sh check config observability/prometheus/prometheus.yml
+  step "promtool check config (container stack, syntax only: the token file is generated at run time)"
+  scripts/promtool.sh check config --syntax-only observability/prometheus/compose/prometheus.yml
   step "promtool check rules"
   scripts/promtool.sh check rules observability/prometheus/rules/recording.yml observability/prometheus/rules/alerts.yml
   step "promtool test rules"
   scripts/promtool.sh test rules observability/prometheus/tests/recording.test.yml observability/prometheus/tests/alerts.test.yml
   step "dashboards, rules and exported metrics"
   go test -race -count=1 ./internal/observability/...
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# Phase 16: static checks of the container deployment (docs/operations/docker-deployment.md, ADR-021). No Docker
+# daemon and no image pulls: the tests parse the Dockerfile, the compose files, the Prometheus configuration and the
+# scripts; `docker compose config` needs only the CLI. hadolint, shellcheck and the compose CLI are required in CI
+# (CI=true) and reported as skipped, loudly, on a laptop that lacks them.
+deploy() {
+  local log t
+  log="$(mktemp "${TMPDIR:-/tmp}/serverflow-deploy.XXXXXX")"
+  step "deploy tests must run, not skip"
+  if ! go test -race -count=1 -v ./tests/deploy/... ./cmd/healthcheck/... ./internal/version/... \
+    -run 'Test' >"$log" 2>&1; then
+    show_failures "$log"
+    tail -80 "$log"
+    printf 'quality: full log kept at %s\n' "$log" >&2
+    exit 1
+  fi
+  for t in TestDockerfile TestDockerignore TestGitignoreCoversGeneratedFiles TestComposeStructure TestOverrideFilesOnlyNarrow \
+    TestStartupOrdering TestPrometheusComposeMatchesLocal TestTargetsMatchComposeServices TestEnvVariablesAreHonoured \
+    TestMockWorkerCommandsParse TestControlPlaneClientsOptIntoPlainHTTP TestMakefileTargets TestDeploymentYAMLParses TestWorkflowOutputsAndDockerCommands TestDevUpDoesNotUseComposeWait TestDevUpSecretsUnderStrictShell TestScriptsUnderStrictShell TestPinnedImageRefNeedsARegistryHost TestWorkflowImagesNameTheirRegistry \
+    TestNoServiceRunsAsRoot TestRestartPolicies TestGrafanaIsNotAnonymous TestStopGraceCoversShutdown TestRedisPasswordNotOnTheCommandLine \
+    TestHealthchecksAreBoundedAndAimedAtTheService TestHealthcheckBinaryIsInEveryImageThatUsesIt TestTraceInsecureFlagOnlyBesideATracingEndpoint TestStalledOrBrokenBodyFails TestDevUpCheckEnv TestNoSecretsCommitted TestComposeLeavesNoDefaultSecrets \
+    TestHealthy2xx TestNon2xxFails TestRedirectIsNotFollowed TestTimeout TestNonHTTPPortAndClosedPort TestOnlyLoopbackAndWellFormedArguments; do
+    grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
+  done
+  if docker compose version >/dev/null 2>&1; then
+    grep -q -- "--- PASS: TestComposeConfigFromACleanTree " "$log" || fail "expected TestComposeConfigFromACleanTree to run and pass (the compose plugin is installed)"
+  fi
+  rm -f "$log"
+  printf 'deploy: the named deployment tests ran and passed\n'
+  # The configuration guards the container stack leans on (W1 and W3 of the plan), with the race detector like the rest.
+  log="$(mktemp "${TMPDIR:-/tmp}/serverflow-deploy.XXXXXX")"
+  go test -race -count=1 -v -run 'TestControlPlaneInsecureTransport|TestTracingAllowInsecureTransportEnv' ./internal/config/ >"$log" 2>&1 || { tail -60 "$log"; fail "the control-plane/tracing insecure-transport tests failed"; }
+  for t in TestControlPlaneInsecureTransportDefaultsOff TestControlPlaneInsecureTransportMatrix TestControlPlaneInsecureTransportEnv TestTracingAllowInsecureTransportEnv; do
+    grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
+  done
+  rm -f "$log"
+
+  # CI's bash is 5.2, a Mac's /bin/bash is 3.2, and they differ under `set -u` (an unassigned `local` is unbound in 5.x). When a Docker
+  # daemon and a bash 5 image are at hand, run the first-run secret path under bash 5 as well (the Go test covers every bash on PATH).
+  if docker image inspect public.ecr.aws/docker/library/bash:5.2 >/dev/null 2>&1; then
+    step "dev-up secrets under bash 5.2 -u"
+    docker run --rm -v "$PWD":/repo:ro -w /repo public.ecr.aws/docker/library/bash:5.2 env -i PATH=/usr/local/bin:/usr/bin:/bin DEV_UP_DIR=/tmp/secrets-check bash -u scripts/dev-up.sh secrets || fail "dev-up.sh secrets failed under bash 5.2"
+  fi
+
+  step "hadolint"
+  if command -v hadolint >/dev/null 2>&1; then
+    hadolint deploy/docker/Dockerfile
+  elif [ "${CI:-}" = "true" ]; then
+    fail "hadolint is not installed in CI"
+  else
+    printf 'quality: SKIPPING hadolint (not installed; CI runs the pinned release).\n'
+  fi
+
+  step "shellcheck"
+  if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck scripts/dev-up.sh scripts/dev-smoke.sh scripts/dev-pull.sh scripts/dev-placeholders.sh
+  elif [ "${CI:-}" = "true" ]; then
+    fail "shellcheck is not installed in CI"
+  else
+    printf 'quality: SKIPPING shellcheck (not installed; CI runs it).\n'
+  fi
+
+  step "docker compose config (every file and profile combination, no secrets needed)"
+  if docker compose version >/dev/null 2>&1; then
+    # A fresh checkout has no .dev/; compose (v2.38.2 on the CI runner) checks that env_file entries exist even with
+    # --no-env-resolution, so empty placeholders stand in for the generated secret files (removed again afterwards).
+    scripts/dev-placeholders.sh create
+    trap 'scripts/dev-placeholders.sh remove' RETURN
+    local envfile=deploy/compose/.env.example prof files
+    for prof in core core,data core,data,events core,data,observability core,tracing 'core,data,events,observability,tracing,scale'; do
+      for files in "" "-f docker-compose.persist.yml" "-f docker-compose.scale.yml" "-f docker-compose.private-control-plane.yml" \
+        "-f docker-compose.persist.yml -f docker-compose.scale.yml -f docker-compose.private-control-plane.yml"; do
+        local profs=() p
+        for p in ${prof//,/ }; do profs+=(--profile "$p"); done
+        # shellcheck disable=SC2086 # $files is a deliberate word list
+        docker compose -p serverflow-ci --env-file "$envfile" -f docker-compose.yml $files "${profs[@]}" config --no-env-resolution -q \
+          || fail "docker compose config failed for profiles [$prof] files [$files]"
+      done
+    done
+    printf 'deploy: docker compose config passed for 6 profile sets x 5 file sets\n'
+  elif [ "${CI:-}" = "true" ]; then
+    fail "the docker compose plugin is not available in CI"
+  else
+    printf 'quality: SKIPPING docker compose config (no compose plugin). CI runs it.\n'
+  fi
+
+  # YAML syntax of every deployment file is covered by the named tests above (they parse each file with the repository's Go YAML library).
 }
 
 have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
@@ -203,6 +297,7 @@ full() {
   else
     printf '\nquality: SKIPPING observability (no promtool binary and no running Docker). CI will run it.\n'
   fi
+  deploy
   build
 }
 
@@ -215,6 +310,7 @@ case "${1:-}" in
   vuln) vuln ;;
   tracing) tracing_tests ;;
   observability) observability ;;
+  deploy) deploy ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|deploy|full\n' "$0" >&2; exit 2 ;;
 esac

@@ -9,10 +9,22 @@ import (
 // listens (loopback by default). Token, if set, is the shared secret every
 // request must present as a bearer token; it is required for any address that
 // is not loopback (see ValidateServe). MaxWorkers bounds registry memory.
+//
+// AllowInsecureTransport lets the gateway and the worker agent send the token over plaintext http:// to a
+// control plane that is not on this machine (gateway.control_plane_url, worker.control_plane_url). Without it
+// those two settings must be https or loopback. It exists for the single-host container stack (ADR-021), where
+// the control plane must listen on a non-loopback address inside a private network; it is off by default,
+// like the other allow_insecure_transport settings, and nothing that holds a secret ever prints it.
 type ControlPlaneConfig struct {
-	Addr       string `yaml:"addr"`
-	Token      string `yaml:"token"`
-	MaxWorkers int    `yaml:"max_workers"`
+	Addr                   string `yaml:"addr"`
+	Token                  string `yaml:"token"`
+	MaxWorkers             int    `yaml:"max_workers"`
+	AllowInsecureTransport bool   `yaml:"allow_insecure_transport"`
+}
+
+// cleartextTokenError is the one message both client guards return. It never includes the URL or the token.
+func cleartextTokenError(setting string) error {
+	return fmt.Errorf("%s must use https (or a loopback address) when control_plane.token is set, or the token would cross the network in cleartext; set control_plane.allow_insecure_transport only on a network you control", setting)
 }
 
 const minTokenLen = 16

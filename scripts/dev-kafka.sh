@@ -30,10 +30,10 @@ user=serverflow-test
 password=serverflow-test-kafka-password
 topic=inference.lifecycle.v1
 
-command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || {
+if ! { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; then
   echo "dev-kafka: a running Docker daemon is required" >&2
   exit 1
-}
+fi
 
 # pull fetches the image, retrying with backoff: a rate-limited anonymous pull (HTTP 429) is the usual failure.
 pull() {

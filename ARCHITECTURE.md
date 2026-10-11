@@ -17,7 +17,7 @@ request based on the requested model and current worker load. Workers run
 vLLM instances on GPUs and report heartbeats, queue state, and resource
 utilization to a registry. Shared services provide distributed state
 (Redis), durable metadata (PostgreSQL), asynchronous lifecycle events
-(Kafka), and observability (Prometheus, Grafana, OpenTelemetry).
+(Kafka), and observability (Prometheus, Grafana, OpenTelemetry). `make dev-up` runs all of it in containers (Phase 16).
 
 As of Phase 9 (and Phase 8's rate limiting) the repository contains the foundation (configuration,
 structured logging, CI), the gateway MVP, a configurable mock worker, the
@@ -118,6 +118,16 @@ async lifecycle events (Kafka), metrics (Prometheus), dashboards (Grafana),
 tracing (OpenTelemetry). Location: `internal/redis`, `internal/postgres`,
 `internal/events`, `observability/`. Status: PostgreSQL implemented (Phase 9), Redis rate limiting (Phase 8), Prometheus and
 Grafana (Phase 10) and Kafka lifecycle events (Phase 12); the rest are skeletons.
+
+### Containerized Deployment
+Purpose: the whole system on one machine from a clean checkout, hardened and secret-free. Location: `deploy/docker/Dockerfile` (one build stage, six
+distroless non-root images), the root `docker-compose.yml` with `docker-compose.{persist,scale,private-control-plane}.yml` overrides, `deploy/compose`
+(the `.env` template and the nginx front for several gateways), `scripts/dev-up.sh` (validated `.env`, generated secrets under `.dev/`, bootstrap),
+`scripts/dev-smoke.sh` (13 end-to-end checks), `scripts/dev-pull.sh`, `cmd/healthcheck` (the probe for images that have no shell), `internal/version`
+(link-time version stamp), `observability/prometheus/compose` (Prometheus for the container network) and the static tests in `tests/deploy`.
+Every container is read-only, capability-free, memory-limited and on an internal network; only the gateway (or load balancer), the control plane,
+Prometheus, Grafana and the Jaeger UI publish a port, on `127.0.0.1`. Status: implemented (Phase 16). See ADR-021 and
+`docs/operations/docker-deployment.md`; Kubernetes (Phase 17) reuses the images.
 
 ### Tracing (OpenTelemetry)
 Purpose: follow one request across the gateway and the worker, including retries. Location: `internal/tracing` (provider setup, bounded
@@ -249,6 +259,7 @@ go run ./cmd/mock-worker --model=mock-model --addr=127.0.0.1:9001   # GPU-free u
 go run ./cmd/control-plane                                         # worker registry on 127.0.0.1:9090
 make dev-postgres && go run ./cmd/admin migrate up                  # throwaway PostgreSQL + schema (docs/operations/postgres-and-auth.md)
 make dev-cluster                                                   # control plane + 3 mock workers + agents
+make dev-up && make dev-smoke                                      # the whole system in containers, then 13 end-to-end checks (Docker only)
 ```
 
 ## Known Architectural Risks
@@ -257,6 +268,8 @@ make dev-cluster                                                   # control pla
   module path should be renamed via `go mod edit -module`.
 - **`go test -race` requires cgo** (a C compiler); not available on
   this Windows dev machine yet. CI runs it on Linux.
-- **Docker Compose skeleton is unvalidated** until Docker is installed.
+- **The container stack is a development stack** (Phase 16): no TLS between services, one broker and one database, the control-plane token crosses
+  the private network in plain http by an explicit opt-in (`control_plane.allow_insecure_transport`, ADR-021). amd64, Docker Desktop and rootful
+  Docker are unverified from the development machine.
 - **Scheduler strategy claims** must be backed by benchmark evidence before
   any strategy is declared superior (spec section 14, 65).

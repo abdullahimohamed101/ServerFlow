@@ -170,6 +170,11 @@ func applyTracingEnv(cfg *Config) {
 			t.IncludeTenantID = b
 		}
 	}
+	if v, ok := env("ALLOW_INSECURE_TRANSPORT"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			t.AllowInsecureTransport = b
+		}
+	}
 	if v, ok := env("ENDPOINT"); ok {
 		t.Endpoint = strings.TrimSpace(v)
 	}

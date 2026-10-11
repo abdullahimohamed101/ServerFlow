@@ -1,71 +1,440 @@
-# ServerFlow Phase 0 skeleton.
+# ServerFlow on one machine: `make dev-up` (scripts/dev-up.sh) generates the secrets under .dev/, validates .env, builds
+# the images and runs this file; `make dev-smoke` proves it works. Documented in docs/operations/docker-deployment.md,
+# decided in ADR-021. Use the make targets: they pass the generated environment files and the right profiles.
 #
-# NOTE: This compose file is a skeleton. No ServerFlow application images
-# exist yet, so only shared infrastructure services are defined. Application
-# services arrive in later phases (see spec section 58). This file is not
-# validated locally because Docker is not installed on the development machine.
-name: serverflow
+# Every container is non-root, read-only, capability-free, memory-limited, log-rotated and on an internal network.
+# Only the gateway (or the load balancer), the control plane, Prometheus, Grafana and the Jaeger UI publish a port,
+# always on 127.0.0.1. Data directories are size-capped tmpfs: `make dev-down` leaves nothing behind
+# (docker-compose.persist.yml adds named volumes for PERSIST=1).
+#
+# Profiles: core, data, events, observability, tracing, scale (added for GATEWAYS>1), tools (admin, run on demand).
+name: serverflow-dev
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: "on-failure:5"
+  pids_limit: 256
+  networks: [backend]
+  logging: &logging
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+  stop_grace_period: 15s
+
+x-build: &build
+  context: .
+  dockerfile: deploy/docker/Dockerfile
+  args:
+    VERSION: ${SF_VERSION:-dev}
+    COMMIT: ${SF_COMMIT:-unknown}
 
 services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+  # ---------------------------------------------------------------- core
+  control-plane:
+    <<: *hardened
+    profiles: [core]
+    image: serverflow/control-plane:${SF_TAG:-dev}
+    build: {<<: *build, target: control-plane}
+    env_file: [.dev/controlplane.env, .dev/metrics.env]
+    environment:
+      SERVERFLOW_CONTROL_PLANE_ADDR: 0.0.0.0:9090
+      SERVERFLOW_METRICS_LISTEN: 0.0.0.0:9101
+      GOMEMLIMIT: 48MiB
+    ports: ["127.0.0.1:${CONTROL_PLANE_PORT:-19090}:9090"]
+    networks: [backend, edge]
+    healthcheck: &hc
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9090/healthz"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      timeout: 4s
+      retries: 6
+      start_period: 2s
+    mem_limit: 64m
 
+  mock-worker-1: &mock
+    <<: *hardened
+    profiles: [core]
+    image: serverflow/mock-worker:${SF_TAG:-dev}
+    build: {<<: *build, target: mock-worker}
+    command:
+      - --addr=0.0.0.0:9000
+      - --worker-id=mock-1
+      - --model=mock-model
+      - --ttft=${MOCK_1_TTFT:-100ms}
+      - --tokens-per-second=${MOCK_1_TPS:-100}
+      - --max-concurrency=${WORKER_CONCURRENCY:-8}
+      - --queue-size=${WORKER_QUEUE:-64}
+      - --failure-rate=${MOCK_1_FAILURE_RATE:-0}
+      - --failure-mode=${MOCK_1_FAILURE_MODE:-error}
+      - --startup-delay=${MOCK_1_STARTUP_DELAY:-0s}
+      - --seed=${MOCK_1_SEED:-1}
+      - --otlp-endpoint=${SF_OTLP_ENDPOINT:-}
+      - --trace-insecure-ok
+    environment: {GOMEMLIMIT: 48MiB}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9000/readyz"]
+    mem_limit: 64m
+
+  mock-worker-2:
+    <<: *mock
+    command:
+      - --addr=0.0.0.0:9000
+      - --worker-id=mock-2
+      - --model=mock-model
+      - --ttft=${MOCK_2_TTFT:-150ms}
+      - --tokens-per-second=${MOCK_2_TPS:-60}
+      - --max-concurrency=${WORKER_CONCURRENCY:-8}
+      - --queue-size=${WORKER_QUEUE:-64}
+      - --failure-rate=${MOCK_2_FAILURE_RATE:-0}
+      - --failure-mode=${MOCK_2_FAILURE_MODE:-error}
+      - --startup-delay=${MOCK_2_STARTUP_DELAY:-0s}
+      - --seed=${MOCK_2_SEED:-2}
+      - --otlp-endpoint=${SF_OTLP_ENDPOINT:-}
+      - --trace-insecure-ok
+
+  mock-worker-3:
+    <<: *mock
+    command:
+      - --addr=0.0.0.0:9000
+      - --worker-id=mock-3
+      - --model=mock-model
+      - --ttft=${MOCK_3_TTFT:-300ms}
+      - --tokens-per-second=${MOCK_3_TPS:-20}
+      - --max-concurrency=${WORKER_CONCURRENCY:-8}
+      - --queue-size=${WORKER_QUEUE:-64}
+      - --failure-rate=${MOCK_3_FAILURE_RATE:-0}
+      - --failure-mode=${MOCK_3_FAILURE_MODE:-error}
+      - --startup-delay=${MOCK_3_STARTUP_DELAY:-0s}
+      - --seed=${MOCK_3_SEED:-3}
+      - --otlp-endpoint=${SF_OTLP_ENDPOINT:-}
+      - --trace-insecure-ok
+
+  worker-agent-1: &agent
+    <<: *hardened
+    profiles: [core]
+    image: serverflow/worker-agent:${SF_TAG:-dev}
+    build: {<<: *build, target: worker-agent}
+    env_file: [.dev/controlplane.env]
+    environment: &agent-env
+      SERVERFLOW_WORKER_ID: mock-1
+      SERVERFLOW_WORKER_MODEL: mock-model
+      SERVERFLOW_WORKER_BACKEND_URL: http://mock-worker-1:9000
+      SERVERFLOW_WORKER_ADVERTISE_URL: http://mock-worker-1:9000
+      SERVERFLOW_WORKER_CONTROL_PLANE_URL: http://control-plane:9090
+      # The control plane listens on the private network, so the token crosses it in plain http: see ADR-021.
+      SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT: "true"
+      GOMEMLIMIT: 24MiB
+    depends_on:
+      mock-worker-1: {condition: service_healthy}
+      control-plane: {condition: service_healthy}
+    # The agent has no HTTP endpoint (Phase 17 decides its liveness probe): restart on-failure covers crashes and
+    # dev-smoke checks registration and heartbeats through the control plane.
+    healthcheck: {disable: true}
+    mem_limit: 32m
+
+  worker-agent-2:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      SERVERFLOW_WORKER_ID: mock-2
+      SERVERFLOW_WORKER_BACKEND_URL: http://mock-worker-2:9000
+      SERVERFLOW_WORKER_ADVERTISE_URL: http://mock-worker-2:9000
+    depends_on:
+      mock-worker-2: {condition: service_healthy}
+      control-plane: {condition: service_healthy}
+
+  worker-agent-3:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      SERVERFLOW_WORKER_ID: mock-3
+      SERVERFLOW_WORKER_BACKEND_URL: http://mock-worker-3:9000
+      SERVERFLOW_WORKER_ADVERTISE_URL: http://mock-worker-3:9000
+    depends_on:
+      mock-worker-3: {condition: service_healthy}
+      control-plane: {condition: service_healthy}
+
+  gateway:
+    <<: *hardened
+    profiles: [core]
+    image: serverflow/gateway:${SF_TAG:-dev}
+    build: {<<: *build, target: gateway}
+    scale: ${GATEWAYS:-1}
+    env_file: [.dev/controlplane.env, .dev/metrics.env, .dev/dsn.env, .dev/redis.env, .dev/kafka.env]
+    environment:
+      SERVERFLOW_GATEWAY_WORKER_SOURCE: registry
+      SERVERFLOW_GATEWAY_CONTROL_PLANE_URL: http://control-plane:9090
+      SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT: "true"
+      SERVERFLOW_SCHEDULER_STRATEGY: ${SF_STRATEGY:-round-robin}
+      SERVERFLOW_METRICS_LISTEN: 0.0.0.0:9100
+      SERVERFLOW_AUTH_MODE: ${SF_AUTH_MODE:-required}
+      SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT: "true"
+      SERVERFLOW_RATE_LIMIT_MODE: ${SF_RATE_LIMIT_MODE:-required}
+      SERVERFLOW_REDIS_ADDRESS: redis:6379
+      SERVERFLOW_REDIS_ALLOW_INSECURE_TRANSPORT: "true"
+      SERVERFLOW_EVENTS_MODE: ${SF_EVENTS_MODE:-on}
+      SERVERFLOW_EVENTS_BROKERS: redpanda:9092
+      SERVERFLOW_EVENTS_SASL_MECHANISM: scram-sha-256
+      SERVERFLOW_EVENTS_SASL_USERNAME: serverflow
+      SERVERFLOW_TRACING_ENABLED: ${SF_TRACING_ENABLED:-true}
+      SERVERFLOW_TRACING_ENDPOINT: http://jaeger:4318
+      SERVERFLOW_TRACING_SAMPLE_RATIO: ${TRACING_SAMPLE_RATIO:-1.0}
+      SERVERFLOW_TRACING_ALLOW_INSECURE_TRANSPORT: "true"
+      GOMEMLIMIT: 100MiB
+    ports: ["127.0.0.1:${GATEWAY_PORT:-18080}:8080"]
+    networks: [backend, edge]
+    depends_on:
+      control-plane: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully, required: false}
+      redis: {condition: service_healthy, required: false}
+      redpanda-init: {condition: service_completed_successfully, required: false}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:8080/healthz"]
+    stop_grace_period: 40s
+    mem_limit: 128m
+
+  # ---------------------------------------------------------------- data
   postgres:
-    image: postgres:16-alpine
+    <<: *hardened
+    profiles: [data]
+    image: ${POSTGRES_IMAGE:-public.ecr.aws/docker/library/postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea}
+    user: "70:70"
+    env_file: [.dev/postgres.env]
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: serverflow
       POSTGRES_DB: serverflow
-    ports:
-      - "5432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data:uid=70,gid=70,mode=0700,size=256m
+      - /var/run/postgresql:uid=70,gid=70,mode=0755,size=1m
+      - /tmp:uid=70,gid=70,mode=1777,size=16m
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      <<: *hc
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U serverflow -d serverflow"]
+      start_period: 5s
+    mem_limit: 256m
 
-  kafka:
-    image: bitnami/kafka:3.7
+  redis:
+    <<: *hardened
+    profiles: [data]
+    image: ${REDIS_IMAGE:-public.ecr.aws/docker/library/redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499}
+    user: "999:1000"
+    env_file: [.dev/redis.env]
+    # The password reaches redis-server through a config file on tmpfs, not on the command line (visible in `docker top`).
+    command: ["sh", "-c", "umask 077; printf 'requirepass %s\\n' \"$$SERVERFLOW_REDIS_PASSWORD\" > /tmp/redis.conf; exec redis-server /tmp/redis.conf --save '' --appendonly no --maxmemory 48mb --maxmemory-policy noeviction"]
+    tmpfs:
+      - /data:uid=999,gid=1000,mode=0700,size=64m
+      - /tmp:uid=999,gid=1000,mode=0700,size=1m
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$SERVERFLOW_REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+    mem_limit: 64m
+
+  migrate:
+    <<: *hardened
+    profiles: [data]
+    image: serverflow/admin:${SF_TAG:-dev}
+    build: {<<: *build, target: admin}
+    command: ["migrate", "up"]
+    env_file: [.dev/dsn.env]
+    environment: {SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT: "true"}
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck: {disable: true}
+    mem_limit: 64m
+
+  # ---------------------------------------------------------------- events
+  redpanda:
+    <<: *hardened
+    profiles: [events]
+    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.1.1@sha256:e52ef1cfa21307cdbed3a21826c0a004739fa679bda196fd6c84e7764f01274e}
+    user: "101:101"
+    env_file: [.dev/kafka.env]
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        export RP_BOOTSTRAP_USER="serverflow:$$SERVERFLOW_EVENTS_SASL_PASSWORD:SCRAM-SHA-256"
+        exec /entrypoint.sh "$$@"
+      - --
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --kafka-addr=internal://0.0.0.0:9092
+      - --advertise-kafka-addr=internal://redpanda:9092
+      # One node: the RPC listener is for peers that do not exist, so keep it on loopback.
+      - --rpc-addr=127.0.0.1:33145
+      - --advertise-rpc-addr=127.0.0.1:33145
+      - --set
+      - redpanda.enable_sasl=true
+      - --set
+      - redpanda.superusers=["serverflow"]
+    tmpfs:
+      - /var/lib/redpanda/data:uid=101,gid=101,mode=0700,size=512m
+      # rpk start writes its generated redpanda.yaml here and its own settings under .config.
+      - /etc/redpanda:uid=101,gid=101,mode=0755,size=1m
+      - /var/lib/redpanda/.config:uid=101,gid=101,mode=0700,size=1m
+      - /tmp:uid=101,gid=101,mode=1777,size=16m
+    healthcheck:
+      <<: *hc
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      start_period: 10s
+    mem_limit: 768m
+
+  redpanda-init:
+    <<: *hardened
+    profiles: [events]
+    image: ${REDPANDA_IMAGE:-mirror.gcr.io/redpandadata/redpanda:v25.1.1@sha256:e52ef1cfa21307cdbed3a21826c0a004739fa679bda196fd6c84e7764f01274e}
+    user: "101:101"
+    env_file: [.dev/kafka.env]
+    entrypoint: ["/bin/bash", "-c"]
+    # Idempotent: create the lifecycle topic (6 partitions, 7 days) unless it exists.
+    command:
+      - |
+        set -e
+        export RPK_BROKERS=redpanda:9092 RPK_USER=serverflow RPK_PASS="$$SERVERFLOW_EVENTS_SASL_PASSWORD" RPK_SASL_MECHANISM=SCRAM-SHA-256
+        for i in $$(seq 1 30); do
+          if rpk topic describe inference.lifecycle.v1 >/dev/null 2>&1; then echo "topic exists"; exit 0; fi
+          if rpk topic create inference.lifecycle.v1 -p 6 -r 1 -c retention.ms=604800000 >/dev/null 2>&1; then echo "topic created"; exit 0; fi
+          sleep 1
+        done
+        echo "could not create the lifecycle topic" >&2
+        exit 1
+    restart: "no"
+    # The image declares VOLUME for its data directory; a tmpfs there keeps docker from creating an anonymous volume.
+    tmpfs:
+      - /var/lib/redpanda/data:uid=101,gid=101,mode=0700,size=1m
+      - /tmp:uid=101,gid=101,mode=1777,size=8m
+    depends_on:
+      redpanda: {condition: service_healthy}
+    healthcheck: {disable: true}
+    mem_limit: 128m
+
+  usage-consumer:
+    <<: *hardened
+    profiles: [events]
+    image: serverflow/usage-consumer:${SF_TAG:-dev}
+    build: {<<: *build, target: usage-consumer}
+    env_file: [.dev/dsn.env, .dev/kafka.env]
     environment:
-      KAFKA_CFG_NODE_ID: 0
-      KAFKA_CFG_PROCESS_ROLES: controller,broker
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-    ports:
-      - "9092:9092"
+      SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT: "true"
+      SERVERFLOW_EVENTS_BROKERS: redpanda:9092
+      SERVERFLOW_EVENTS_SASL_MECHANISM: scram-sha-256
+      SERVERFLOW_EVENTS_SASL_USERNAME: serverflow
+      GOMEMLIMIT: 48MiB
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redpanda-init: {condition: service_completed_successfully}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9103/healthz"]
+    mem_limit: 64m
 
+  # ---------------------------------------------------------------- observability
   prometheus:
-    image: prom/prometheus:v2.53.0
-    ports:
-      - "9090:9090"
+    <<: *hardened
+    profiles: [observability]
+    image: ${PROMETHEUS_IMAGE:-quay.io/prometheus/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc}
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-2d}
+      - --web.listen-address=0.0.0.0:9090
     volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - ./observability/prometheus/compose/targets.yml:/etc/prometheus/targets/compose.yml:ro
+      - ./.dev/metrics_token:/etc/prometheus/secrets/metrics_token:ro
+    tmpfs: ["/prometheus:uid=65534,gid=65534,mode=0700,size=512m"]
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-19091}:9090"]
+    networks: [backend, edge]
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+    mem_limit: 256m
 
   grafana:
-    image: grafana/grafana:11.1.0
-    ports:
-      - "3000:3000"
+    <<: *hardened
+    profiles: [observability]
+    image: ${GRAFANA_IMAGE:-mirror.gcr.io/grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5}
+    user: "472:0"
+    env_file: [.dev/grafana.env]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.105.0
-    ports:
-      - "4317:4317"
-      - "4318:4318"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PATHS_LOGS: /tmp/grafana-logs
+      GF_LOG_MODE: console
+      PROMETHEUS_URL: http://prometheus:9090
     volumes:
-      - ./observability/otel/otel-collector.yml:/etc/otelcol/config.yml:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    tmpfs:
+      - /var/lib/grafana:uid=472,gid=0,mode=0700,size=64m
+      - /tmp:uid=472,gid=0,mode=1777,size=16m
+    ports: ["127.0.0.1:${GRAFANA_PORT:-13000}:3000"]
+    networks: [backend, edge]
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      start_period: 10s
+    mem_limit: 256m
+
+  # ---------------------------------------------------------------- tracing
+  jaeger:
+    <<: *hardened
+    profiles: [tracing]
+    image: ${JAEGER_IMAGE:-quay.io/jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17}
+    tmpfs: ["/tmp:uid=10001,gid=0,mode=1777,size=64m"]
+    ports: ["127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"]
+    networks: [backend, edge]
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:16686/"]
+    mem_limit: 256m
+
+  # ---------------------------------------------------------------- scale (GATEWAYS>1, see docker-compose.scale.yml)
+  lb:
+    <<: *hardened
+    profiles: [scale]
+    image: ${NGINX_IMAGE:-public.ecr.aws/nginx/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0}
+    volumes:
+      - ./deploy/compose/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    tmpfs: ["/tmp:uid=101,gid=101,mode=1777,size=16m"]
+    ports: ["127.0.0.1:${GATEWAY_PORT:-18080}:8080"]
+    networks: [backend, edge]
+    depends_on:
+      gateway: {condition: service_healthy}
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+    mem_limit: 64m
+
+  # ---------------------------------------------------------------- tools (docker compose run --rm admin ...)
+  admin:
+    <<: *hardened
+    profiles: [tools]
+    image: serverflow/admin:${SF_TAG:-dev}
+    build: {<<: *build, target: admin}
+    env_file: [.dev/dsn.env]
+    environment: {SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT: "true"}
+    restart: "no"
+    healthcheck: {disable: true}
+    mem_limit: 64m
+
+networks:
+  # No route to the internet and nothing published: data stores and workers live here only.
+  backend:
+    internal: true
+  # Joined only by the services that publish a port on 127.0.0.1.
+  edge: {}

@@ -71,8 +71,10 @@ per-worker concurrency.
 - `observability/.env` is untracked and holds the Grafana admin password; compose refuses to start without it and no default password is
   committed. It can also change the host ports (`OBS_PROMETHEUS_PORT`, `OBS_GRAFANA_PORT`), the retention and the targets file
   (`OBS_TARGETS_FILE`). Both ports bind `127.0.0.1`.
-- Prometheus listens on `9091`, not `9090`: the control plane owns `9090`. The root `docker-compose.yml` still has Prometheus and Grafana services
-  on `9090` and `3000`; they are unvalidated and Phase 16's to reconcile. Do not run both stacks at once.
+- Prometheus listens on `9091`, not `9090`: the control plane owns `9090`. This stack is for ServerFlow processes on the host (`make dev-cluster`).
+  `make dev-up` (Phase 16, `docs/operations/docker-deployment.md`) runs the whole system in containers with its own Prometheus and Grafana on
+  `19091` and `13000`, using `observability/prometheus/compose/` (the same job names, rules and dashboards; the gateway and control-plane jobs present the
+  metrics bearer token and the gateway replicas are found by DNS). The two stacks use different ports and project names, but running both is pointless.
 - The containers reach the host's processes through `host.docker.internal` (`observability/prometheus/targets/local.yml`). A loopback-bound
   metrics listener is reachable that way on Colima (verified for Phase 10). If it is not on your Docker, either bind the listener to a reachable
   address with a token (`SERVERFLOW_METRICS_LISTEN=0.0.0.0:9100 SERVERFLOW_METRICS_TOKEN=...` and `credentials_file` in the scrape job) or

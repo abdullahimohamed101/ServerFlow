@@ -1,0 +1,13 @@
+# Targets for the container stack (mounted as /etc/prometheus/targets/compose.yml; it lives here, not in ../targets/, because
+# the host-process stack mounts the whole ../ directory and loads every ../targets/*.yml, which would make it scrape these names) (docker-compose.yml, Phase 16): the control plane and the three mock workers by
+# service name on the backend network. The gateway replicas are found by DNS in prometheus.yml (this directory), so
+# `GATEWAYS=3` is scraped without editing anything. worker_id equals the agents' SERVERFLOW_WORKER_ID so the
+# worker-side series join the control plane's per-worker gauges.
+- targets: ["control-plane:9101"]
+  labels: {component: control-plane}
+- targets: ["mock-worker-1:9000"]
+  labels: {component: mock-worker, worker_id: mock-1}
+- targets: ["mock-worker-2:9000"]
+  labels: {component: mock-worker, worker_id: mock-2}
+- targets: ["mock-worker-3:9000"]
+  labels: {component: mock-worker, worker_id: mock-3}
