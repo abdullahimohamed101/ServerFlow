@@ -181,7 +181,7 @@ observability() {
   step "promtool check config"
   scripts/promtool.sh check config observability/prometheus/prometheus.yml
   step "promtool check config (container stack, syntax only: the token file is generated at run time)"
-  scripts/promtool.sh check config --syntax-only observability/prometheus/prometheus.compose.yml
+  scripts/promtool.sh check config --syntax-only observability/prometheus/compose/prometheus.yml
   step "promtool check rules"
   scripts/promtool.sh check rules observability/prometheus/rules/recording.yml observability/prometheus/rules/alerts.yml
   step "promtool test rules"
@@ -263,7 +263,7 @@ deploy() {
   step "YAML syntax of the deployment files"
   if command -v python3 >/dev/null 2>&1; then
     python3 scripts/check-yaml.py docker-compose.yml docker-compose.persist.yml docker-compose.scale.yml docker-compose.private-control-plane.yml \
-      observability/prometheus/prometheus.compose.yml observability/prometheus/targets/compose.yml 2>&1 | tail -3 || true
+      observability/prometheus/compose/prometheus.yml observability/prometheus/compose/targets.yml 2>&1 | tail -3 || true
   fi
 }
 

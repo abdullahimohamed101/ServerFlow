@@ -1,4 +1,5 @@
-# Prometheus configuration for the container stack (Phase 16, ADR-021). It mirrors prometheus.yml (same job
+# Prometheus configuration for the container stack (Phase 16, ADR-021), mounted as /etc/prometheus/prometheus.yml. It mirrors
+# ../prometheus.yml (same job
 # names, relabelling, sample limits, global settings and rule files; a test fails if they drift) with two
 # differences the container network needs:
 #   - the gateway and control-plane jobs present the metrics bearer token (their listeners bind 0.0.0.0, which

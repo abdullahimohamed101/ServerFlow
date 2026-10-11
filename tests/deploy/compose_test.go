@@ -32,11 +32,13 @@ var noHealthcheck = map[string]string{
 
 // Image volumes that must be covered by a tmpfs or a named volume so no anonymous volume is ever created.
 var volumePaths = map[string][]string{
-	"postgres":   {"/var/lib/postgresql/data"},
-	"redis":      {"/data"},
-	"redpanda":   {"/var/lib/redpanda/data"},
-	"prometheus": {"/prometheus"},
-	"jaeger":     {"/tmp"},
+	"postgres": {"/var/lib/postgresql/data"},
+	"redis":    {"/data"},
+	"redpanda": {"/var/lib/redpanda/data"},
+	// the init job uses the same image, so it declares the same VOLUME
+	"redpanda-init": {"/var/lib/redpanda/data"},
+	"prometheus":    {"/prometheus"},
+	"jaeger":        {"/tmp"},
 }
 
 var (
@@ -251,7 +253,7 @@ func TestComposeStructure(t *testing.T) {
 			if !mountsPath(svcs[svc], p) {
 				t.Errorf("%s: %s is not covered by a tmpfs (an anonymous volume would be created)", svc, p)
 			}
-			if svc != "jaeger" && !mountsPath(persist[svc], p) {
+			if svc != "jaeger" && svc != "redpanda-init" && !mountsPath(persist[svc], p) {
 				t.Errorf("persist file: %s %s is not mounted", svc, p)
 			}
 		}

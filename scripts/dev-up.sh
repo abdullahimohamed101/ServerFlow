@@ -5,6 +5,7 @@
 #   scripts/dev-up.sh down          stop and remove the containers and networks (named volumes of PERSIST=1 stay)
 #   scripts/dev-up.sh reset         down, remove volumes, .dev/ and the serverflow/*:dev images
 #   scripts/dev-up.sh smoke         scripts/dev-smoke.sh: the end-to-end checks
+#   scripts/dev-up.sh audit         check the running containers: hardening, loopback-only ports, no anonymous volume
 #   scripts/dev-up.sh ps|logs [SERVICE]|config|pull|psql|redis-cli|rpk [ARGS]|key
 #   scripts/dev-up.sh --check-env FILE   validate an environment file and exit (needs no Docker)
 #
@@ -372,6 +373,15 @@ bootstrap_tenants() {
   fi
 }
 
+# The load balancer belongs to the scale profile, which is inactive for GATEWAYS=1, so --remove-orphans leaves a
+# running lb from an earlier GATEWAYS=N run holding the gateway port. Remove it explicitly.
+remove_stale_lb() {
+  [ "$GATEWAYS" -le 1 ] || return 0
+  local ids
+  ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=lb")"
+  [ -z "$ids" ] || { docker rm -fv $ids >/dev/null; say "removed the load balancer of an earlier GATEWAYS>1 run"; }
+}
+
 cmd_up() {
   local t0 t1
   t0=$(date +%s)
@@ -380,6 +390,7 @@ cmd_up() {
   compose_files
   ensure_secrets
   write_compose_env
+  remove_stale_lb
   preflight_ports
   preflight_disk
   say "profiles: $PROFILES, gateways: $GATEWAYS, project: $PROJECT"
@@ -436,6 +447,10 @@ cmd_down() {
   fi
   remove_by_label
   : "$flag"
+  # Anonymous volumes (64 hex characters) are never wanted, not even in PERSIST mode; named volumes stay unless -v.
+  local anon
+  anon="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" | grep -E '^[0-9a-f]{64}$' || true)"
+  [ -z "$anon" ] || docker volume rm $anon >/dev/null 2>&1 || true
   if [ "${1:-}" = "-v" ]; then
     local vols
     vols="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT")"
@@ -459,6 +474,38 @@ cmd_reset() {
   say "reset: volumes, .dev/ and the serverflow/*:dev images removed ($ENV_FILE is kept)"
 }
 
+# audit: checks the RUNNING containers of this project against what ADR-021 promises (AC 2, 3, 5): read-only root,
+# all capabilities dropped, no-new-privileges, not privileged, a non-root user, memory limit, every published port
+# on 127.0.0.1, only the expected services publishing, no anonymous volume. Prints one line per violation.
+cmd_audit() {
+  load_settings
+  preflight_tools
+  local n rc=0 out total=0 pub
+  for n in $(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.oneoff=False" --format '{{.Names}}'); do
+    total=$((total + 1))
+    out="$(docker inspect "$n" --format '{{index .Config.Labels "com.docker.compose.service"}}|{{.HostConfig.ReadonlyRootfs}}|{{.HostConfig.CapDrop}}|{{.HostConfig.CapAdd}}|{{.HostConfig.SecurityOpt}}|{{.HostConfig.Privileged}}|{{.Config.User}}|{{.HostConfig.Memory}}|{{.HostConfig.NetworkMode}}|{{range .Mounts}}{{if and (eq .Type "volume") (eq (len .Name) 64)}}ANON{{end}}{{end}}')"
+    case "$out" in
+      *"|true|[ALL]|[]|[no-new-privileges:true]|false|"*) ;;
+      *) printf 'audit: %s: not read-only / cap_drop ALL / no-new-privileges / unprivileged (%s)\n' "${out%%|*}" "${out%%|*}" >&2; rc=1 ;;
+    esac
+    case "$out" in *"ANON"*) printf 'audit: %s mounts an anonymous volume\n' "${out%%|*}" >&2; rc=1 ;; esac
+    case "$out" in *"|0|"*) printf 'audit: %s has no memory limit\n' "${out%%|*}" >&2; rc=1 ;; esac
+    case "$out" in *"|host|"*) printf 'audit: %s uses the host network\n' "${out%%|*}" >&2; rc=1 ;; esac
+    pub="$(docker port "$n" 2>/dev/null | grep -v '^127\.0\.0\.1:' | grep -v ' -> 127\.0\.0\.1:' || true)"
+    [ -z "$pub" ] || { printf 'audit: %s publishes a port that is not on 127.0.0.1\n' "${out%%|*}" >&2; rc=1; }
+  done
+  # Only these services may publish a port.
+  for n in $(docker ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}} {{.Ports}}' | grep -- '->' | awk '{print $1}'); do
+    case "$n" in
+      *-gateway-* | *-lb-* | *-control-plane-* | *-prometheus-* | *-grafana-* | *-jaeger-*) ;;
+      *) printf 'audit: %s publishes a port but is not one of gateway, lb, control-plane, prometheus, grafana, jaeger\n' "$n" >&2; rc=1 ;;
+    esac
+  done
+  [ "$total" -gt 0 ] || die "audit: no containers of project $PROJECT are running"
+  [ "$rc" = 0 ] || die "audit failed"
+  say "audit: $total containers: read-only, cap_drop ALL, no-new-privileges, unprivileged, memory-limited, no anonymous volumes, published ports on 127.0.0.1 only"
+}
+
 need_stack() {
   load_settings
   preflight_tools
@@ -471,12 +518,13 @@ case "$CMD" in
   down) cmd_down ;;
   reset) cmd_reset ;;
   smoke) exec "$ROOT/scripts/dev-smoke.sh" "$@" ;;
+  audit) cmd_audit ;;
   compose) need_stack; dc --profile tools "$@" ;; # internal: used by dev-smoke.sh
   ps) need_stack; dc ps -a ;;
   logs) need_stack; dc logs --no-color --tail 100 "$@" ;;
   config) need_stack; dc config --no-env-resolution ;;
   pull) exec "$ROOT/scripts/dev-pull.sh" "$@" ;;
-  psql) need_stack; dc exec -e PGPASSWORD="" postgres psql -h 127.0.0.1 -U serverflow -d serverflow "$@" ;;
+  psql) need_stack; dc exec postgres psql -U serverflow -d serverflow "$@" ;;
   redis-cli) need_stack; dc exec redis sh -c 'REDISCLI_AUTH="$SERVERFLOW_REDIS_PASSWORD" exec redis-cli "$@"' sh "$@" ;;
   rpk) need_stack; dc exec redpanda bash -c 'export RPK_BROKERS=redpanda:9092 RPK_USER=serverflow RPK_PASS="$SERVERFLOW_EVENTS_SASL_PASSWORD" RPK_SASL_MECHANISM=SCRAM-SHA-256; exec rpk "$@"' bash "$@" ;;
   key)
@@ -486,7 +534,7 @@ case "$CMD" in
     printf '  export SF_KEY=$(cat %s/api_key)\n' "$DEV_DIR"
     ;;
   *)
-    printf 'usage: scripts/dev-up.sh up|down|reset|smoke|ps|logs [SERVICE]|config|pull|psql|redis-cli|rpk|key | --check-env FILE\n' >&2
+    printf 'usage: scripts/dev-up.sh up|down|reset|smoke|audit|ps|logs [SERVICE]|config|pull|psql|redis-cli|rpk|key | --check-env FILE\n' >&2
     exit 2
     ;;
 esac

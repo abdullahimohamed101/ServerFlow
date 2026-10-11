@@ -14,7 +14,7 @@ import (
 // executable in git.
 func TestMakefileTargets(t *testing.T) {
 	mk := read(t, "Makefile")
-	for _, target := range []string{"dev-up", "dev-down", "dev-reset", "dev-smoke", "dev-ps", "dev-logs", "dev-config", "dev-pull", "dev-psql", "dev-redis-cli", "dev-rpk", "dev-key", "deploy-check"} {
+	for _, target := range []string{"dev-up", "dev-down", "dev-reset", "dev-smoke", "dev-audit", "dev-ps", "dev-logs", "dev-config", "dev-pull", "dev-psql", "dev-redis-cli", "dev-rpk", "dev-key", "deploy-check"} {
 		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(target) + `:`).MatchString(mk) {
 			t.Errorf("Makefile has no target %s", target)
 		}
@@ -154,7 +154,7 @@ var secretLiteral = regexp.MustCompile(`(?i)(password|passwd|secret|token|api[_-
 func deploymentFiles(t *testing.T) []string {
 	t.Helper()
 	var files []string
-	for _, pat := range []string{"deploy/*/*", "deploy/*/.env.example", "docker-compose*.yml", "scripts/dev-up.sh", "scripts/dev-smoke.sh", "scripts/dev-pull.sh", "observability/prometheus/prometheus.compose.yml", "observability/prometheus/targets/compose.yml", ".dockerignore"} {
+	for _, pat := range []string{"deploy/*/*", "deploy/*/.env.example", "docker-compose*.yml", "scripts/dev-up.sh", "scripts/dev-smoke.sh", "scripts/dev-pull.sh", "observability/prometheus/compose/prometheus.yml", "observability/prometheus/compose/targets.yml", ".dockerignore"} {
 		m, err := filepath.Glob(filepath.Join(root(t), pat))
 		if err != nil {
 			t.Fatal(err)

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -25,13 +26,13 @@ func scrapeJobs(t *testing.T, file string) map[string]map[string]any {
 // one only where documented (the bearer token, DNS discovery of the gateway replicas). Everything else (job names,
 // global settings, rule files, sample limits, intervals and the relabelling of the other jobs) must be identical.
 func TestPrometheusComposeMatchesLocal(t *testing.T) {
-	local, compose := readYAML(t, "observability/prometheus/prometheus.yml"), readYAML(t, "observability/prometheus/prometheus.compose.yml")
+	local, compose := readYAML(t, "observability/prometheus/prometheus.yml"), readYAML(t, "observability/prometheus/compose/prometheus.yml")
 	for _, key := range []string{"global", "rule_files"} {
 		if !reflect.DeepEqual(local[key], compose[key]) {
 			t.Errorf("%s differs between prometheus.yml and prometheus.compose.yml", key)
 		}
 	}
-	lj, cj := scrapeJobs(t, "observability/prometheus/prometheus.yml"), scrapeJobs(t, "observability/prometheus/prometheus.compose.yml")
+	lj, cj := scrapeJobs(t, "observability/prometheus/prometheus.yml"), scrapeJobs(t, "observability/prometheus/compose/prometheus.yml")
 	if strings.Join(sortedKeys(lj), ",") != strings.Join(sortedKeys(cj), ",") {
 		t.Fatalf("job names differ: %v vs %v", sortedKeys(lj), sortedKeys(cj))
 	}
@@ -78,7 +79,7 @@ func TestTargetsMatchComposeServices(t *testing.T) {
 		Targets []string          `yaml:"targets"`
 		Labels  map[string]string `yaml:"labels"`
 	}
-	if err := yaml.Unmarshal([]byte(read(t, "observability/prometheus/targets/compose.yml")), &targets); err != nil {
+	if err := yaml.Unmarshal([]byte(read(t, "observability/prometheus/compose/targets.yml")), &targets); err != nil {
 		t.Fatal(err)
 	}
 	if len(targets) != 4 {
@@ -124,7 +125,19 @@ func TestTargetsMatchComposeServices(t *testing.T) {
 	prom := svcs["prometheus"]
 	for _, v := range strList(prom["volumes"]) {
 		if strings.Contains(v, "targets/local.yml") || strings.HasPrefix(v, "./observability/prometheus:") {
-			t.Errorf("prometheus mounts %q; only targets/compose.yml and rules/ belong in the container stack", v)
+			t.Errorf("prometheus mounts %q; only compose/targets.yml and rules/ belong in the container stack", v)
 		}
+	}
+}
+
+// TestHostStackIgnoresContainerTargets: the host-process stack mounts all of observability/prometheus and loads every
+// targets/*.yml; the container stack's targets live elsewhere so they are never scraped (and reported down) there.
+func TestHostStackIgnoresContainerTargets(t *testing.T) {
+	m, err := filepath.Glob(filepath.Join(root(t), "observability/prometheus/targets/*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 || filepath.Base(m[0]) != "local.yml" {
+		t.Errorf("observability/prometheus/targets must hold only local.yml, found %v", m)
 	}
 }

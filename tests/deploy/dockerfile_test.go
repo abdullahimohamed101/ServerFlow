@@ -16,7 +16,11 @@ var (
 // TestDockerfile pins the properties ADR-021 promises: literal digest-pinned FROM lines on non-Docker-Hub hosts,
 // a non-root runtime, a static build, one target per shipped command, and nothing that bakes a secret in.
 func TestDockerfile(t *testing.T) {
-	df := stripComments(read(t, "deploy/docker/Dockerfile"))
+	raw := read(t, "deploy/docker/Dockerfile")
+	if strings.HasPrefix(strings.TrimSpace(raw), "# syntax") || strings.Contains(raw, "\n# syntax=") {
+		t.Error("a # syntax line would require BuildKit; the Dockerfile must build with the classic builder")
+	}
+	df := stripComments(raw)
 
 	froms := fromLine.FindAllStringSubmatch(df, -1)
 	if len(froms) < 7 {

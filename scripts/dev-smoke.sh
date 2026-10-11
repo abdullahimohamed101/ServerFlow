@@ -207,10 +207,20 @@ fi
 # ------------------------------------------------------------------------------------------------ S9
 if want S9; then
   if has_profile events; then
-    usage_seen() {
-      dc run --rm -T --no-deps admin usage summary --since 1h --tenant dev 2>/dev/null | grep -Eq '[1-9][0-9]*'
-    }
-    if poll 60 usage_seen; then pass "S9 usage rows for tenant dev appeared (Redpanda to PostgreSQL)"; else fail "S9 no usage rows for tenant dev within 60s"; fi
+    # Fresh evidence only: a throwaway tenant sends 3 requests and its own usage rows must appear (rows from earlier
+    # checks, or from before a broker outage, must not satisfy this check).
+    uname="smoke-usage-$$"
+    if make_tenant "$uname" 600; then
+      for i in 1 2 3; do gw_curl "$SCRATCH/$uname.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GW/v1/chat/completions"; done
+      usage_seen() {
+        local out
+        out="$(dc run --rm -T --no-deps admin usage summary --since 1h --tenant "$uname" 2>/dev/null)"
+        printf '%s' "$out" | grep -o 'requests=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{exit !(s>=3)}'
+      }
+      if poll 60 usage_seen; then pass "S9 usage rows for a fresh tenant appeared (gateway to Redpanda to PostgreSQL)"; else fail "S9 the usage consumer wrote no rows for 3 fresh requests within 60s (consumer lag or broker down)"; fi
+    else
+      fail "S9 could not create the throwaway tenant"
+    fi
   else
     skip "S9 usage pipeline (profile events is off)"
   fi
@@ -241,8 +251,9 @@ if want S11; then
     cp_worker() { # prints the state of worker mock-3
       printf 'header = "Authorization: Bearer %s"\n' "$(grep '^SERVERFLOW_CONTROL_PLANE_TOKEN=' "$DEV_DIR/controlplane.env" | cut -d= -f2-)" | curl -sS -K - --max-time 5 "http://127.0.0.1:$CP_PORT/v1/workers/mock-3"
     }
-    ready3() { cp_worker | grep -Eq '"state": *"READY"'; }
-    gone3() { ! cp_worker | grep -Eq '"state": *"READY"' || cp_worker | grep -Eq '"health": *"(UNHEALTHY|LOST|SUSPECT)"'; }
+    # "eligible" is the registry's verdict: READY and heard from recently. It is what the scheduler routes by.
+    ready3() { cp_worker | grep -q '"eligible":true'; }
+    gone3() { ! cp_worker | grep -q '"eligible":true'; }
     if ! poll 30 ready3; then
       fail "S11 failover: mock-3 was not READY before the test"
     else
