@@ -147,3 +147,20 @@ func TestARoutedRetryHasNoNextRouteResult(t *testing.T) {
 		}
 	}
 }
+
+// A shed request is admission, not scheduling: it must never reach scheduler_decisions_total or
+// scheduler_no_capacity_total, whatever its reason (Phase 15 D13).
+func TestAnOverloadRejectionIsNotASchedulingDecision(t *testing.T) {
+	m := registryMetrics("round-robin")
+	for _, reason := range []string{OverloadGlobalLimit, OverloadQueueFull, OverloadQueueTimeout, OverloadDraining} {
+		m.RequestRejected(context.Background(), Rejection{
+			RequestID: "r", Kind: RejectOverload, Reason: reason, Status: http.StatusServiceUnavailable, Model: "qwen-7b",
+			DecisionStart: time.Now(), DecisionDuration: time.Millisecond,
+		})
+	}
+	for _, name := range []string{"scheduler_decisions_total", "scheduler_no_capacity_total", "scheduler_decision_duration_seconds"} {
+		if n := sumSeries(t, m, name); n != 0 {
+			t.Fatalf("%s = %v after four shed requests", name, n)
+		}
+	}
+}
