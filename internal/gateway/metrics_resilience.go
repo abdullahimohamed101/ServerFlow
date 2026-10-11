@@ -21,9 +21,6 @@ type resilienceMetrics struct {
 	deadline    *prometheus.CounterVec // model
 }
 
-// Probe results (circuit_breaker_probes_total{result}).
-var probeResults = []string{VerdictOK, VerdictFault, VerdictNeutral}
-
 func (m *metrics) enableResilience(rs *resilienceState) {
 	rm := &resilienceMetrics{
 		transitions: prometheus.NewCounterVec(prometheus.CounterOpts{

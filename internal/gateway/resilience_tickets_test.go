@@ -79,8 +79,6 @@ func TestTheProbeTicketComesBackOnPanicCancelAndTimeout(t *testing.T) {
 		held := &workerFlag{}
 		held.set(func(w http.ResponseWriter, r *http.Request) { hold(r) })
 		e := halfOpenEnv(t, flag)
-		e.lister.mu.Lock()
-		e.lister.mu.Unlock()
 		// Swap the worker's behaviour: a-flaky now holds the request.
 		flag.set(func(w http.ResponseWriter, r *http.Request) { hold(r) })
 		defer flag.set(openAPI503("mock_failure"))

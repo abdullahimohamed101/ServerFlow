@@ -162,7 +162,7 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 				counts.Error = api.ErrNoCapacity(req.Model, none.Eligible)
 				if r.res != nil && broke > 0 && none.Eligible == 0 {
 					// Every worker the registry offers is ejected: tell the client when the first one is tried again.
-					counts.Error.RetryAfter = r.res.breakers.RetryAfter()
+					counts.RetryAfter = r.res.breakers.RetryAfter()
 				}
 			}
 			return nil, ticket, &counts
