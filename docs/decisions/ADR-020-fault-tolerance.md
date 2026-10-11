@@ -110,9 +110,11 @@ returns a `Reservation`; `Refund` takes it back from the bucket it was taken in 
 - A refresh wakes waiters with `Wake(model, n)`: they receive `Reroute`, stay in place, route through the normal path, and call `Done` (served) or `Park`
   (still full). A slot released while the head is routing cannot be handed over (`Handoff` declines and the caller frees it normally); it becomes one unit of
   **credit** on the model's queue. Credit is spent at once on the first waiter, in queue order, that is not routing (it receives `Reroute`); if every waiter is
-  routing it waits, and is spent when a routing waiter stops: `Park` returns true (route again), `Done` and `Leave` pass it on, a new waiter takes it at
-  `Enqueue`, and a waiter that leaves without having used its wake-up (timeout, cancel) gives that wake-up back as credit. Invariant: credit is outstanding only
-  while every waiter is routing, so a freed slot is never left unused while a waiter that could take it is idle. A unit of credit can be spurious (the routing
+  routing it waits, and is spent when a routing waiter stops: `Park` returns true (route again), `Done` and `Leave` pass it on, a waiter
+  that arrives meanwhile does not take it (it stays behind the earlier waiter that is still routing, whose `Park`, `Done` or `Leave` spends the credit on the first
+  idle waiter in queue order), and a waiter that leaves without having used its wake-up (timeout, cancel) gives that wake-up back as credit. Invariant: credit is outstanding only
+  while a waiter is routing and every waiter ahead of the first idle one is routing, so a freed slot is never left unused while an idle waiter has nobody
+  routing ahead of it. A unit of credit can be spurious (the routing
   waiter took the slot itself); the cost is one failed routing attempt, and every unit is spent once, so nothing loops or ping-pongs. Hand-offs stay strictly FIFO;
   the order in which concurrently woken waiters win slots is not guaranteed. `Flush` ends all waiters and settles nothing.
 - `Leave` removes a waiter at once and, if a hand-off had already been delivered, returns it so the slot is never dropped; `Wait` applies the same rule when the
