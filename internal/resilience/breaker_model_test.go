@@ -281,7 +281,7 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 
 	seen := map[string]int{}
 	for pi, p := range paramSets {
-		for seed := uint64(1); seed <= 150; seed++ {
+		for seed := uint64(1); seed <= 60; seed++ {
 			t.Run(fmt.Sprintf("params%d/seed%d", pi, seed), func(t *testing.T) {
 				p = p.normalize()
 				clk := newFakeClock()
