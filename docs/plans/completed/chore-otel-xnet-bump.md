@@ -36,8 +36,16 @@ otelgrpc/otelhttp, stdouttrace v1.46.0 to v1.47.0 as a graph-only entry, and oth
 
 ## Verification
 
-See the pull request description for exact commands and results (govulncheck source and binary output, gate, binary sizes, tracing overhead,
-Jaeger demo).
+- `govulncheck` v1.8.0 (the version pinned in `quality.sh`; no newer one was needed) with `GOTOOLCHAIN=go1.27.2`: source mode `./...` and binary mode on
+  gateway, usage-consumer, admin, control-plane and mock-worker all print "No vulnerabilities found" (no x/net, grpc or otel finding). DB updated 2026-10-08.
+  `GOTOOLCHAIN=go1.27.2 scripts/quality.sh vuln` exits 0 with no exception.
+- gofmt, `go vet`, golangci-lint (0 issues), `go mod tidy -diff` (empty), `GOTOOLCHAIN=go1.26.0 CGO_ENABLED=0 go build ./...` (floor builds).
+- Focused `-race -count=3`: internal/tracing/..., internal/gateway, internal/mockworker, internal/config, cmd/gateway, internal/gofloor: all pass, tests unmodified.
+- One gate with Postgres, Redis and Redpanda: `quality.sh full` (unit, race, integration, promtool, dashboards, builds, four cross-compiles, mod verify, tidy), `tracing`, `observability`: pass.
+- Binary size (`-trimpath -ldflags="-s -w"`): gateway 30 895 042 to 30 945 938 bytes (+0.2%); mock-worker 15 718 802 to 15 736 482 (+0.1%).
+- `TestTracingOverhead` once: off p95 956 us, unsampled added p95 -5 us, 100% sampled added p50 +18 us and p95 +75 us; same as the Phase 11 record, inside noise.
+- `scripts/trace-demo.sh` against Jaeger 2.22.0: a retried request is one trace; attempt 1 `worker.forward` is `retried` (status_503) with a worker `inference` span
+  `failed`, attempt 2 links to attempt 1; same shape as documented.
 
 ## What remains
 
