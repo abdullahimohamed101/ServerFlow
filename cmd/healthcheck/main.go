@@ -24,23 +24,23 @@ func main() {
 
 func run(args []string, timeout time.Duration, stderr io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: healthcheck URL (http://127.0.0.1:PORT/PATH)")
+		_, _ = fmt.Fprintln(stderr, "usage: healthcheck URL (http://127.0.0.1:PORT/PATH)")
 		return 2
 	}
 	u, err := url.Parse(args[0])
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil {
-		fmt.Fprintln(stderr, "healthcheck: the argument must be an http:// or https:// URL without credentials")
+		_, _ = fmt.Fprintln(stderr, "healthcheck: the argument must be an http:// or https:// URL without credentials")
 		return 2
 	}
 	if !loopback(u.Hostname()) {
-		fmt.Fprintln(stderr, "healthcheck: the host must be a loopback address")
+		_, _ = fmt.Fprintln(stderr, "healthcheck: the host must be a loopback address")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		fmt.Fprintln(stderr, "healthcheck: bad request")
+		_, _ = fmt.Fprintln(stderr, "healthcheck: bad request")
 		return 2
 	}
 	client := &http.Client{
@@ -50,13 +50,13 @@ func run(args []string, timeout time.Duration, stderr io.Writer) int {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintln(stderr, "healthcheck: request failed")
+		_, _ = fmt.Fprintln(stderr, "healthcheck: request failed")
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		fmt.Fprintf(stderr, "healthcheck: status %d\n", resp.StatusCode)
+		_, _ = fmt.Fprintf(stderr, "healthcheck: status %d\n", resp.StatusCode)
 		return 1
 	}
 	return 0

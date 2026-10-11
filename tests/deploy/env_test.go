@@ -34,8 +34,8 @@ func clearServerflowEnv(t *testing.T) {
 	for _, kv := range os.Environ() {
 		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "SERVERFLOW_") {
 			old := os.Getenv(k)
-			os.Unsetenv(k)
-			t.Cleanup(func() { os.Setenv(k, old) })
+			_ = os.Unsetenv(k)
+			t.Cleanup(func() { _ = os.Setenv(k, old) })
 		}
 	}
 }
