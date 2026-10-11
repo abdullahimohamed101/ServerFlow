@@ -38,7 +38,7 @@ is reported as the decision duration. With no usable snapshot nothing is known a
 whose workers are all lost is "served" and still charged. A model that vanishes between the check and routing 404s after the charge (rare, accepted).
 
 Consequences visible to operators: `rate_limit_decision_seconds` no longer observes unknown-model requests (no decision is made for them), and the
-`Admission` event of such a request has `RateLimitChecked=false` and `EstimatedCost=0`.
+`Admission` event of such a request has `RateLimitChecked=false` and `EstimatedCost=0`. The request log line of an unknown-model 404 no longer carries `est_cost` (about 4124 on the previous gateway), because the request is refused before the cost is estimated and the limiter is consulted.
 
 ### [PR A] A retry whose second routing fails is counted (debt 3)
 
