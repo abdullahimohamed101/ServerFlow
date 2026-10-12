@@ -5,6 +5,8 @@ Part of the seven-PR delivery of Phase 15 (plan `docs/plans/active/phase-15-faul
 92c5488). The queue, shedding, drain and the overload and drain-roll scenarios belong to PRs E and F; worker-crash is a registry-plus-retry baseline and was not repeated.
 Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback, mock workers); none is a capacity claim, and the plan defines no success target, so none is asserted.
 
+**Second batch (after the independent verification, F1 change: an ok is counted at the first byte and converted by a later abort).** All `on` groups were re-run with the new binary (`/tmp/p15d-runs3`); `off` groups are unchanged code paths and keep their numbers. `conn-reset` `on` could not be re-run validly (5 invalid runs: the wall clock moved 13-43 s against the monotonic clock, the machine kept sleeping or being stepped); its `on` group is the first batch's, whose code path (a pre-first-byte fault) the F1 change does not touch.
+
 **Harness caveat (from PR C):** before this PR `--resilience on` recorded `on` without any effect because the gateway did not read the section. Groups produced earlier than this PR with `on` must not be used; the
 `on` groups below were all produced by the binary built from this branch.
 
@@ -16,7 +18,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
   an effect is claimed only when the min-max ranges of two groups do not overlap.
 - The machine **slept during the first batch** (a network cut-off of the session): 9 runs were invalid under the validity gate ("no sleep or clock step") and were **never compared**; the affected groups were
   re-run cleanly in a second batch (`error-burst-unavailable-partial` on, `error-burst-500` off and on, `midstream` off). The `midstream` `on` group comes from the first batch (3 valid runs). Invalid runs: see the end.
-- The load average is the 1-minute value the harness prints at the start of each repeat; it was 1.3-7.7, mostly 2.5-5 (a laptop on battery with other work running). Groups ran in different load: a difference
+- The load average is the 1-minute value the harness prints at the start of each repeat; it was 1.3-7.7 in the first batches and up to 14.8 in the last one (after the F1 change; a laptop on battery with other work running), so the load column is part of every table. Groups ran in different load: a difference
   between groups is only read where ranges are disjoint and the cause is visible in the mechanism.
 - Primary measures (pre-registered): success rate in the fault window, attempts per request in it. Everything else is descriptive.
 
@@ -28,7 +30,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 93.45 / 93.45 / 93.45 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 2.69, 3.18, 3.43 |
 | off (branch) | 3 | 93.45 / 93.45 / 93.45 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 4.07, 3.52, 2.65 |
-| on (branch) | 3 | 99.44 / 99.44 / 99.44 | 1.000 / 1.000 / 1.000 | 12.0 / 12.0 / 14.0 | 1.0 / 1.0 / 1.0 | 164 / 164 / 164 | 3.39, 2.85, 2.52 |
+| on (branch) | 3 | 99.44 / 99.44 / 99.44 | 1.000 / 1.000 / 1.000 | 12.0 / 13.0 / 14.0 | 1.0 / 1.0 / 1.0 | 164 / 165 / 165 | 3.42, 3.92, 5.65 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: differs; baseline vs on: differs
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 
@@ -38,7 +40,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 96.15 / 96.15 / 96.15 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 164 / 164 / 165 | 2.87, 2.84, 3.43 |
 | off (branch) | 3 | 96.15 / 96.15 / 96.15 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 164 / 164 / 165 | 2.42, 2.46, 2.19 |
-| on (branch) | 3 | 99.59 / 99.59 / 99.59 | 1.000 / 1.000 / 1.000 | 12.0 / 12.0 / 14.0 | 1.0 / 1.0 / 1.0 | 164 / 164 / 164 | 3.34, 4.16, 4.83 |
+| on (branch) | 3 | 99.59 / 99.59 / 99.59 | 1.000 / 1.000 / 1.000 | 12.0 / 13.0 / 14.0 | 1.0 / 1.0 / 1.0 | 164 / 164 / 165 | 3.75, 4.35, 4.86 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: differs; baseline vs on: differs
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 
@@ -48,7 +50,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 167 / 167 / 167 | 3.35, 3.58, 3.02 |
 | off (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 167 / 167 / 167 | 4.93, 3.86, 3.93 |
-| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 167 / 167 / 167 | 4.66, 3.90, 4.11 |
+| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 167 / 167 / 167 | 10.49, 11.67, 14.83 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 
@@ -58,7 +60,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 100.00 / 100.00 / 100.00 | 1.333 / 1.333 / 1.333 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 3.59, 4.56, 4.21 |
 | off (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.333 / 1.333 / 1.333 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 4.60, 4.76, 5.00 |
-| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.005 / 1.005 / 1.005 | 1.0 / 1.0 / 1.0 | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 5.20, 4.61, 4.85 |
+| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.005 / 1.005 / 1.005 | 1.0 / 1.0 / 1.0 | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 10.05, 8.89, 5.49 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: differs; baseline vs on: differs
 
@@ -68,7 +70,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 100.00 / 100.00 / 100.00 | 1.143 / 1.143 / 1.143 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 4.83, 5.80, 6.19 |
 | off (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.143 / 1.143 / 1.143 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 5.26, 5.24, 5.79 |
-| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.081 / 1.081 / 1.082 | 12.0 / 12.0 / 12.0 | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 2.82, 2.17, 3.75 |
+| on (branch) | 3 | 100.00 / 100.00 / 100.00 | 1.019 / 1.019 / 1.056 | 12.0 / 14.0 / 14.0 | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 8.86, 9.50, 5.52 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 - attempts per request: baseline vs off: differs; off vs on: differs; baseline vs on: differs
 
@@ -78,7 +80,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 74.99 / 74.99 / 74.99 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 6.03, 5.99, 5.28 |
 | off (branch) | 3 | 74.99 / 74.99 / 74.99 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 3.80, 2.68, 2.96 |
-| on (branch) | 3 | 93.45 / 93.60 / 93.71 | 1.000 / 1.000 / 1.000 | 5.0 / 5.0 / 5.0 | 1.0 / 1.0 / 1.0 | 164 / 164 / 164 | 3.02, 3.03, 2.47 |
+| on (branch) | 3 | 93.40 / 93.49 / 93.78 | 1.000 / 1.000 / 1.000 | 4.0 / 5.0 / 5.0 | 1.0 / 1.0 / 1.0 | 164 / 165 / 165 | 12.01, 10.19, 6.91 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: differs; baseline vs on: differs
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 
@@ -88,7 +90,7 @@ Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback
 |---|---|---|---|---|---|---|---|
 | absent (master) | 3 | 87.57 / 87.58 / 87.60 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 5.09, 6.24, 5.15 |
 | off (branch) | 3 | 87.57 / 87.58 / 87.58 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 2.11, 1.41, 1.32 |
-| on (branch) | 3 | 94.49 / 94.49 / 94.49 | 1.000 / 1.000 / 1.000 | not reached | 1.0 / 1.0 / 1.0 | 165 / 165 / 165 | 7.65, 5.03, 4.55 |
+| on (branch) | 3 | 91.61 / 91.74 / 91.82 | 1.000 / 1.000 / 1.000 | 13.0 / 13.0 / 14.0 | 1.0 / 1.0 / 1.0 | 164 / 165 / 165 | 4.99, 4.13, 3.35 |
 - success rate: baseline vs off: no distinguishable difference; off vs on: differs; baseline vs on: differs
 - attempts per request: baseline vs off: no distinguishable difference; off vs on: no distinguishable difference; baseline vs on: no distinguishable difference
 
@@ -109,18 +111,20 @@ against 1.14286): the seeded fault makes the runs nearly identical and the gap i
 
 - **Off is master.** In all eight scenarios `mode: off` agrees with the baseline (resilience `absent`) on both primary measures within spread (apart from the 0.0001 above).
 - **Hard faults are isolated quickly and cost retries nothing.** Against a worker answering 503 `mock_failure` or resetting connections, `on` cuts the attempts per request in the fault window from 1.333 to 1.005
-  (the retries stop because the worker stops being chosen) with 100% success in both; the harness' time to isolate is 1.0 s. With half of the requests failing the attempts per request fall from 1.143 to 1.081 and the
-  worker is isolated at 12 s: the breaker trips on the ratio rule, which has to outweigh the worker's healthy history in the 10 s window (ADR-020, limits).
+  (the retries stop because the worker stops being chosen) with 100% success in both; the harness' time to isolate is 1.0 s. With half of the requests failing the attempts per request fall from 1.143 to 1.019-1.056 and the
+  worker is isolated at 12-14 s: the breaker trips on the ratio rule, which has to outweigh the worker's healthy history in the 10 s window (ADR-020, limits).
 - **Faults retries cannot absorb get better, not fixed.** A frozen worker (header timeout 2 s) raised the fault-window success rate from 93.45% to 99.44%, a slow worker beyond the timeout from 96.15% to 99.59%, an
-  always-500 worker from 74.99% to 93.45-93.71% (the 500s before the ratio trips are relayed, never retried) and mid-stream aborts from 87.58% to 94.49%. In each the remaining failures are those before ejection and one
+  always-500 worker from 74.99% to 93.40-93.78% (the 500s before the ratio trips are relayed, never retried) and mid-stream aborts from 87.58% to 91.61-91.82%. In each the remaining failures are those before ejection and one
   per probe; the plan sets no target and none is claimed beyond "the ranges do not overlap".
 - **Time to isolate is not the breaker's time for freeze and slow (12-14 s).** The harness counts selections from `scheduler_selections_total` (at the start of an attempt) and subtracts probes from
   `circuit_breaker_probes_total` (counted at the end of the attempt). A probe of a frozen worker lasts one header timeout, so its selection and its probe count land in different one-second buckets. The per-second
   series of run_001 (freeze, on) shows the frozen worker's selections stop after second 15 (the fault began at 13) with its failures at seconds 15 and 17, then a single probe selection at second 26 that is counted as a
   probe at second 28 (and cost one client a 504). The spec's bound of 10 s for freeze is therefore met by the breaker (about 2-4 s here) but not by the harness' descriptive figure; that figure is not asserted.
 - **Slow but successful is not ejected.** With the header timeout above the delay (`slow-worker-header-timeout-above-delay`) `on` and `off` and master are identical: 100%, 1.000, no isolation. The false-positive check passes.
-- **Mid-stream aborts are only partly handled.** Success rises (87.58% to 94.49%) but the breaker never reaches "isolated": a probe whose stream breaks after its first byte has already passed, the breaker closes and lets
-  five more through (ADR-020, limits). This is a measured property of verdicts taken at the first byte, reported as such.
+- **Mid-stream aborts are only partly handled, and less well than in the first cut of this PR.** Success rises (87.58% to 91.61-91.82%; the first cut, which counted a success only when a stream completed, reached 94.49% but ejected
+  mostly healthy workers on long streams, see ADR-020) and the harness' time to isolate is 13-14 s: an aborted stream is an ok converted to a fault, builds no consecutive streak, and the ratio rule opens the breaker once
+  the faults equal the worker's healthy outcomes in the window; a probe whose stream breaks after its first byte has already passed, the breaker closes with an empty window and lets `min_volume` more through (ADR-020, limits).
+  The cost of the symmetric accounting is therefore visible here, and it is reported as such.
 - **No scenario got worse** in the two primary measures. Latency of successes (p95 164-167 ms) is the same in every group.
 - **What this does not show:** crash (the registry is faster), overload and drain (PRs E and F), real networks, real GPUs, other fault rates, `max_attempts` above 2, more than one gateway, or the default cool-down
   against a fault window longer than 20 s.
@@ -138,5 +142,10 @@ against 1.14286): the seeded fault makes the runs nearly identical and the gap i
 | r1on/run_016 (on) | error-burst-error-100 | no sleep or clock step: the wall clock moved 59m57.084s against the monotonic clock during the ... |
 | r1on/run_017 (on) | error-burst-error-100 | no sleep or clock step: the wall clock moved 59m57.196s against the monotonic clock during the ... |
 | r1on/run_018 (on) | error-burst-error-100 | no sleep or clock step: the wall clock moved 59m57.078s against the monotonic clock during the ... |
+| r3on/run_023 (on) | conn-reset | no sleep or clock step: the wall clock moved 43.444s against the monotonic clock during the run... |
+| r3on/run_024 (on) | conn-reset | no sleep or clock step: the wall clock moved 13.124s against the monotonic clock during the run... |
+| r4on/run_001 (on) | conn-reset | no sleep or clock step: the wall clock moved 13.11s against the monotonic clock during the run ... |
+| r4on/run_002 (on) | conn-reset | no sleep or clock step: the wall clock moved 12.967s against the monotonic clock during the run... |
+| r4on/run_003 (on) | conn-reset | no sleep or clock step: the wall clock moved 25.327s against the monotonic clock during the run... |
 
 Raw results: `/tmp/p15d-runs*` (not committed); the aggregation is mechanical (valid runs only, min/median/max, disjoint ranges). The master baseline files are the ones committed in PR B.
