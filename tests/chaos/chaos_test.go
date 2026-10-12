@@ -308,8 +308,13 @@ func runScenario(t *testing.T, s scenario) {
 	}
 	r.eventually(15*time.Second, func() bool { return r.closes() >= 1 && r.openNow() == 0 }, "the breaker closes after the fault ends")
 	selClosed := r.selections()
-	if _, fails := r.window(800 * time.Millisecond); fails != 0 {
-		t.Errorf("%d failures after recovery", fails)
+	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
+	allowed := int64(0)
+	if s.leaky {
+		allowed = consecutive + 1
+	}
+	if _, fails := r.window(800 * time.Millisecond); fails > allowed {
+		t.Errorf("%d failures after recovery (allowed %d)", fails, allowed)
 	}
 	if r.selections()-selClosed < 3 {
 		t.Errorf("traffic did not return to the recovered worker (%v new attempts)", r.selections()-selClosed)
