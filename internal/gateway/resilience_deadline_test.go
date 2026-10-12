@@ -35,7 +35,7 @@ func TestTheFirstByteDeadlineCutsAWaitingAttempt(t *testing.T) {
 	}
 	e.settle(t, "a-1")
 	ends := e.rec.attemptEnds()
-	if len(ends) != 1 || ends[0].Class != classDeadline || ends[0].Verdict != VerdictNeutral || ends[0].WillRetry {
+	if len(ends) != 1 || ends[0].Class != classDeadline || ends[0].Verdict != VerdictNeutral || ends[0].WillRetry || ends[0].RetryDenied != "" {
 		t.Fatalf("%+v", ends)
 	}
 	if e.state("a-1") != resilience.Closed || len(e.rs.breakers.Snapshot()) != 0 {

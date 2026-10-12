@@ -199,8 +199,8 @@ func (s *Server) settleVerdict(r *http.Request, run *attemptRun, info *reqInfo, 
 // verdictOf applies the failure taxonomy of D4.
 func (s *Server) verdictOf(r *http.Request, run *attemptRun, info *reqInfo, retryPossible bool) (resilience.Verdict, string) {
 	switch {
-	case r.Context().Err() != nil, run.class == classDeadline, run.class == classPanic:
-		return resilience.Neutral, VerdictNeutral // the client left, the request ran out of time, a panic: nothing about the worker
+	case r.Context().Err() != nil, run.class == classDeadline:
+		return resilience.Neutral, VerdictNeutral // the client left or the request ran out of time: nothing about the worker (a panic never reaches a verdict: the cleanup returns the ticket)
 	case run.err != nil:
 		return resilience.Fault, VerdictFault // connect, reset, empty first chunk, header timeout, stall, anything unexpected
 	case run.resp == nil:

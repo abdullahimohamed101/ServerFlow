@@ -311,6 +311,12 @@ func (s *Server) startAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 // For a stream it reads the first chunk before returning, so nothing has reached the client by then.
 func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info *reqInfo) {
 	s.sendOnce(r, run, body, info)
+	s.endPhase(r, run, info)
+}
+
+// endPhase ends the retryable phase of the attempt. If the first-byte deadline fired before the response arrived
+// (and the client has not left) the attempt becomes the deadline's.
+func (s *Server) endPhase(r *http.Request, run *attemptRun, info *reqInfo) {
 	if run.guard != nil && run.guard.end() && r.Context().Err() == nil {
 		s.markDeadline(run, info)
 	}
