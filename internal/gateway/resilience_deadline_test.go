@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -218,5 +219,40 @@ func TestAttemptsTogetherNeverOutlastTheDeadline(t *testing.T) {
 	}
 	if h := resp.Header.Get(headerAttempts); h != "2" {
 		t.Fatalf("attempts %q, want 2", h)
+	}
+}
+
+// A response that has arrived before the deadline is not turned into a 504 by a deadline that fires in the moments
+// before the caller gets to the decision point: the guard decides at the arrival, under one lock.
+func TestAResponseThatArrivedBeforeTheDeadlineIsNeverTurnedInto504(t *testing.T) {
+	good := newScriptWorker(t, "a-1", sseEvents("a-1", 3))
+	e := newResEnv(t, []protocol.WorkerSnapshot{good.snapshot("qwen-7b")}, deadline(150*time.Millisecond))
+	afterArrivalHook = func() { time.Sleep(450 * time.Millisecond) } // three deadlines pass in the gap
+	defer func() { afterArrivalHook = nil }()
+	resp, body := e.post(t, true)
+	if resp.StatusCode != 200 || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("%d %q", resp.StatusCode, body)
+	}
+	e.settle(t, "a-1")
+	if ends := e.rec.attemptEnds(); len(ends) != 1 || ends[0].Outcome != AttemptOK || ends[0].Class != "" {
+		t.Fatalf("%+v", ends)
+	}
+}
+
+// The guard itself: whichever of the arrival and the timer takes the lock first wins, and the loser has no effect.
+func TestPhaseGuardArrivalAndDeadlineAreMutuallyExclusive(t *testing.T) {
+	var cancelled atomic.Int32
+	g := newPhaseGuard(func() { cancelled.Add(1) }, 40*time.Millisecond, 0)
+	if g.end() { // the arrival comes first
+		t.Fatal("the deadline cannot have fired yet")
+	}
+	time.Sleep(120 * time.Millisecond)
+	if cancelled.Load() != 0 || g.end() {
+		t.Fatalf("a timer that fired after the arrival must be inert: cancels %d", cancelled.Load())
+	}
+	g2 := newPhaseGuard(func() { cancelled.Add(1) }, 0, 0) // fires at once
+	eventually(t, 2*time.Second, func() bool { return cancelled.Load() == 1 }, "the deadline fired")
+	if !g2.end() {
+		t.Fatal("the deadline came first: the arrival must see it")
 	}
 }

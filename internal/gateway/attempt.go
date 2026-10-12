@@ -349,9 +349,11 @@ func (s *Server) sendOnce(r *http.Request, run *attemptRun, body []byte, info *r
 
 	if class, ok := s.retry.status(resp.StatusCode); ok {
 		run.class, run.retryable = class, true
+		s.arrived(run)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
+		s.arrived(run)
 		return
 	}
 
@@ -367,6 +369,7 @@ func (s *Server) sendOnce(r *http.Request, run *attemptRun, body []byte, info *r
 	}
 	if n > 0 {
 		run.src = io.MultiReader(bytes.NewReader(buf[:n]), resp.Body)
+		s.arrived(run)
 		return
 	}
 	run.err = rerr

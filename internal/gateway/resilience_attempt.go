@@ -110,6 +110,22 @@ func (g *phaseGuard) end() bool {
 
 func (g *phaseGuard) stop() { g.end() }
 
+// afterArrivalHook, when set by a test, runs right after a response has arrived and the deadline has been disarmed.
+var afterArrivalHook func()
+
+// arrived ends the retryable phase of the attempt at the moment its response (headers, and for a 200 the first
+// byte) is in hand. The guard decides under one lock whether the deadline or the arrival came first: if the arrival
+// did, the timer is inert from here on and can no longer cancel the attempt, however long the caller takes to get
+// back to the decision point; if the deadline did, the attempt is the deadline's (markDeadline).
+func (s *Server) arrived(run *attemptRun) {
+	if run.guard != nil {
+		run.guard.end()
+	}
+	if afterArrivalHook != nil {
+		afterArrivalHook()
+	}
+}
+
 // markDeadline turns an attempt cut by the first-byte deadline into a 504 that is not retried and not a fault.
 func (s *Server) markDeadline(run *attemptRun, info *reqInfo) {
 	if run.resp != nil {
