@@ -31,6 +31,7 @@ func TestQueuedTransitionsAreDeliveredAtShutdownAndDropsAreLogged(t *testing.T) 
 	if e.rs.dropped.Load() != 25 {
 		t.Fatalf("dropped %d, want 25", e.rs.dropped.Load())
 	}
+	e.gw.background = nil // no refresh loop: only the flush at shutdown can deliver what is queued
 	before := runtime.NumGoroutine()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
