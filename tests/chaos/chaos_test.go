@@ -245,8 +245,8 @@ type scenario struct {
 	// leaky: a probe can pass although the worker is still faulty -- a stream that breaks after its first byte has
 	// already passed (the verdict is taken at the first byte so that a long stream does not hold the probe slot), and
 	// with a partial fault rate a probe succeeds with the probability of the requests that are not failed. The breaker
-	// then closes, lets the next requests through and opens again, so each probe can cost up to
-	// consecutive_failures + 1 failures or attempts.
+	// then closes, lets the next requests through and opens again (the fresh window needs min_volume outcomes for the
+	// ratio rule), so each probe can cost up to min_volume + 1 failures or attempts.
 	leaky bool
 }
 
@@ -287,7 +287,7 @@ func runScenario(t *testing.T, s scenario) {
 	reachedAfter := r.selections() - selOpen
 	perProbe := 1.0
 	if s.leaky {
-		perProbe = consecutive + 1
+		perProbe = minVolume + 1 // a re-closed breaker has an empty window: the ratio needs min_volume outcomes to open again
 	}
 	if reachedAfter > perProbe*(probes+1) { // +1: a probe whose verdict is still pending when the window closes
 		t.Errorf("%v attempts reached the ejected worker in the window with only %v probes", reachedAfter, probes)
@@ -311,7 +311,7 @@ func runScenario(t *testing.T, s scenario) {
 	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
 	allowed := int64(0)
 	if s.leaky {
-		allowed = consecutive + 1
+		allowed = minVolume + 1
 	}
 	if _, fails := r.window(800 * time.Millisecond); fails > allowed {
 		t.Errorf("%d failures after recovery (allowed %d)", fails, allowed)
@@ -355,11 +355,12 @@ func TestConnectionResets(t *testing.T) {
 	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients})
 }
 
-// A stream that breaks after two tokens, on every request: the unavoidable failures happen before the breaker
-// opens (five aborts in a row), and after it only a probe can break.
+// A stream that breaks after two tokens, on every request: each request is an ok at its first byte turned into a fault
+// by the abort, so the ratio rule opens the breaker once the faults outweigh the worker's healthy history in the window;
+// after that only a probe can break.
 func TestMidstreamFailures(t *testing.T) {
 	apply, clear := rate(1, mockworker.ModeMidstream)
-	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients, leaky: true})
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true, leaky: true})
 }
 
 // A frozen worker (reads requests, never answers; /stats keeps answering so the agent says READY): only the gateway's
