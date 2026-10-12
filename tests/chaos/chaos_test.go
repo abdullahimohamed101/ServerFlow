@@ -242,10 +242,12 @@ type scenario struct {
 	// ratio is over the sliding window, which still holds the worker's healthy history, so the faults needed are
 	// that history (every attempt the worker had before the fault) plus min_volume.
 	ratioRule bool
-	// midstream: a probe whose stream breaks after its first byte has already passed (the verdict is taken at the
-	// first byte so that a long stream does not hold the probe slot), so the breaker closes, lets the next
-	// consecutive_failures requests through and opens again. Each probe can therefore cost that many failures.
-	midstream bool
+	// leaky: a probe can pass although the worker is still faulty -- a stream that breaks after its first byte has
+	// already passed (the verdict is taken at the first byte so that a long stream does not hold the probe slot), and
+	// with a partial fault rate a probe succeeds with the probability of the requests that are not failed. The breaker
+	// then closes, lets the next requests through and opens again, so each probe can cost up to
+	// consecutive_failures + 1 failures or attempts.
+	leaky bool
 }
 
 func runScenario(t *testing.T, s scenario) {
@@ -284,7 +286,7 @@ func runScenario(t *testing.T, s scenario) {
 	probes := r.probes() - probesOpen
 	reachedAfter := r.selections() - selOpen
 	perProbe := 1.0
-	if s.midstream {
+	if s.leaky {
 		perProbe = consecutive + 1
 	}
 	if reachedAfter > perProbe*(probes+1) { // +1: a probe whose verdict is still pending when the window closes
@@ -333,7 +335,7 @@ func TestErrorBurstUnavailableAllRequests(t *testing.T) {
 // and trips only by chance: that case is in the benchmark, not asserted here.)
 func TestErrorBurstUnavailablePartial(t *testing.T) {
 	apply, clear := rate(0.8, mockworker.ModeUnavailable)
-	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true})
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true, leaky: true})
 }
 
 // An always-500 worker is invisible to the consecutive rule (a 500 is not a retryable fault) but the ratio rule
@@ -352,7 +354,7 @@ func TestConnectionResets(t *testing.T) {
 // opens (five aborts in a row), and after it only a probe can break.
 func TestMidstreamFailures(t *testing.T) {
 	apply, clear := rate(1, mockworker.ModeMidstream)
-	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients, midstream: true})
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients, leaky: true})
 }
 
 // A frozen worker (reads requests, never answers; /stats keeps answering so the agent says READY): only the gateway's
