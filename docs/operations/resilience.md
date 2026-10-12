@@ -51,7 +51,7 @@ Every other key keeps its default. To go back, set `mode: off` (or unset the var
 
 How a failure is judged (the taxonomy): connect errors, resets before headers, an empty first chunk, 502, 504, header timeouts, stalls and a 503 with any other code are **faults**; a 503 with
 `queue_full`/`draining`/`not_ready`, a 4xx, a client that left, an expired deadline and a panic are **neutral**; a 500 (or any other 5xx) counts **only in the ratio rule** and is never retried.
-A stream that breaks after its first byte is a fault recorded without a retry. A 503 that is not peeked (no retry possible) counts as a fault.
+A stream that breaks after its first byte is not retried; its ok (counted at the first byte) is converted into a fault. A 503 that is not peeked (no retry possible) counts as a fault.
 
 Metrics (present only when the feature is effective; no new label names): `circuit_breaker_state{worker_id,model}` (1 half-open, 2 open; only non-closed breakers have a series),
 `circuit_breakers_open{model}`, `circuit_breaker_transitions_total{model,state}`, `circuit_breaker_probes_total{model,result}`, `retries_denied_total{model,reason}`,
@@ -148,7 +148,10 @@ behaviour changes the default brings (decision D25) land with PR G.
 - The ratio rule looks at a sliding window that still contains the worker's healthy history, so a worker that starts failing every request needs as many faults as it had successes in the window
   before the ratio trips; a hard failure (503s, resets, timeouts) is ejected by the consecutive rule within 5 faults. A worker that fails exactly `failure_ratio` of its requests is on the threshold and
   is ejected only by chance. An always-500 worker is visible to the ratio rule only.
-- A probe whose stream breaks after its first byte has passed (its verdict is taken at the first byte so a long stream does not hold the probe slot), so a worker that always breaks mid-stream can cost up
-  to `consecutive_failures` failed streams per cool-down cycle.
+- A probe whose stream breaks after its first byte has passed (its verdict is taken at the first byte so a long stream does not hold the probe slot); the re-closed breaker has an empty window, so a worker that
+  always breaks mid-stream can cost up to `min_volume` failed streams per cool-down cycle. A worker that aborts every stream builds no consecutive streak (each stream's first byte is an ok); the ratio rule ejects it
+  once its faults equal its healthy outcomes in the window.
+- The 503 peek also runs for a model with a single worker (up to 250 ms, usually the time to read a small body), because whether another worker exists is known only after the retry is routed.
+- A slow `BreakerTransition` observer delays the one request that delivers the transition; queued transitions are flushed at shutdown.
 - `Retry-After` for an all-ejected refusal is computed over all models' breakers.
 - A lying worker can answer `queue_full` to stay in rotation; registration is the trust boundary.

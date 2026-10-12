@@ -148,12 +148,24 @@ verdict. Connect error, reset or EOF before headers, an empty first chunk, 502, 
 first byte, 504 and any unexpected transport error are faults; a 503 with one of the three codes, a 4xx, a client that left, a first-byte deadline expiry and a panic are neutral;
 a 2xx is ok; an unlisted 5xx (500, 501, 505..) and a 3xx feed the ratio rule only (`RatioFault`: never extend or break a streak). Retry eligibility is unchanged from ADR-012.
 A 503 whose body is not peeked (no retry possible: attempts used up, deadline or budget denied) counts as a fault, the default row of the table.
-**Deviation (D7): the success of a closed breaker's attempt is counted when its response completes, not at the first byte.** A stream that aborts after its first byte
-would otherwise add an ok at the first byte (resetting the consecutive streak and diluting the ratio to exactly one half) and then a fault, so a worker that aborts every stream
-could not trip the consecutive rule and could trip the ratio rule only once its healthy history left the window. A closed breaker's ticket holds nothing, so there is nothing to
-return at the first byte; the probe's verdict is still taken at the first byte (its ticket must not be held for the length of a stream), a stream that aborts after the first byte
-is `RecordLate` with the attempt's own ticket (a fault, or a reopening for a probe), and a client that leaves proves nothing either way. `AttemptEnd.Verdict` reports `ok` for
-such an attempt until it fails late, then `fault`.
+**The ok is counted at the first byte and a later abort converts it (D7; refined after verification).** Every outcome is counted at the retry-decision point: faults and oks alike, for the streak and the
+ratio, so successes are never counted later than faults. A stream that breaks after its first byte is *converted*: `Breakers.RecordAbort(ticket, okAt)` takes the ok out of the sliding window (when its
+bucket is still in it) and counts a fault in its place, so each request counts once with its final outcome; for a probe ticket it is `RecordLate` (the breaker reopens). A client that leaves proves nothing
+either way. The library change is additive (`RecordAbort`; its model check and unit tests are in `internal/resilience`); epochs still ignore stale reports. An earlier cut of this PR counted a closed breaker's
+success only when the response completed. The verifier showed why that is wrong: while long streams are in flight, faults (which are known at once) pile up with no success to reset the streak or balance the ratio, and
+a mostly healthy worker is ejected. The permanent model test `TestSuccessLagDoesNotEjectAMostlyHealthyWorker` (one worker of two, 10 requests a second, a 1,200-request window, 200 seeded runs per cell) gives, as
+trips out of 200:
+
+| fault rate | success counted at completion: stream length 0 s / 10 s / 60 s | success counted at the first byte (shipped): 0 s / 10 s / 60 s |
+| --- | --- | --- |
+| 2% | 0 / 10 / 106 | 0 / 0 / 0 |
+| 5% | 0 / 119 / 200 | 0 / 0 / 0 |
+| 10% | 1 / 196 / 200 | 1 / 1 / 1 |
+
+Cost of the shipped design: a stream that aborts after its first byte is an ok (resetting the consecutive streak) and then its conversion (a fault), so a worker that aborts every stream does not build a consecutive
+streak (the next stream's first byte resets it); the **ratio rule** is what ejects it, once its faults equal its healthy outcomes in the window (with 20 healthy outcomes in the window, after 20 aborts). A re-closed
+breaker has an empty window, so after a probe that passed at its first byte, a worker that keeps aborting needs `min_volume` outcomes to open again. `AttemptEnd.Verdict` reports `ok` for such an attempt until it fails late,
+then `fault`.
 
 **The 503 peek (D4).** When a retry is possible (attempts left, `retry.min_remaining` and the budget allowing), the first 1 KiB of a held retryable 503's body is read for at most
 `min(250 ms, time left for the first byte)` on a separate goroutine, and `error.code` is extracted with a streaming JSON scan that tolerates a cut-off body. A read that times out,
@@ -169,7 +181,7 @@ and sets `AttemptEnd.RetryDenied` (`budget`, `deadline`) on the first attempt, w
 model with the metrics model cap (`other` beyond it); it is pruned with each snapshot.
 The first-byte deadline is a timer per attempt that cancels the attempt's context and is disarmed when the retryable phase ends (the first byte arrived, or a final response was
 received): a context deadline cannot be lifted, and the attempt's context also governs the body stream that follows, so "no effect after the first byte" needs a timer (deviation from
-"a context deadline"). Expiry before any byte is a 504 `UPSTREAM_TIMEOUT` with attempt class `deadline` (a new class value, neutral for the breaker). The derived default is
+"a context deadline"). The timer and the arrival of the response are decided under one lock when the response arrives (headers, and for a 200 the first byte): if the arrival came first the timer is inert from then on, however long the caller takes to reach the decision point (test with a hook that lets three deadlines pass in that gap). Expiry before any byte is a 504 `UPSTREAM_TIMEOUT` with attempt class `deadline` (a new class value, neutral for the breaker). The derived default is
 `upstream_header_timeout + upstream_idle_timeout + 5 s` (the dial timeout): the transport's header timeout starts after the connection is made, so without the dial allowance the
 derived deadline could cut an attempt the previous gateway served (deviation from "header + idle"; an explicit value is used as given). A probe attempt has its own header timeout
 (`breaker.probe_header_timeout`, applied only when below the gateway's) as a second timer that is disarmed when the headers arrive.
@@ -203,8 +215,14 @@ Kafka events are unchanged (schema v1): the attempt-level `failure_class` can no
 **Limits found while implementing (kept, reported).**
 - The ratio rule works over the sliding window, which still holds the worker's healthy history: a worker that fails every request needs as many faults as it had successes in the window
   (up to `window`) before the ratio trips. A fault rate equal to `failure_ratio` (50% of the default) sits on the threshold and trips by chance. The consecutive rule is what ejects a hard failure quickly.
-- A probe whose stream breaks after its first byte has already passed (the verdict is taken at the first byte): the breaker closes, lets the next requests through and opens again after
-  `consecutive_failures` further aborts, so each cool-down cycle can cost that many failed streams for a worker that always breaks mid-stream. Taking the probe's verdict at the end of the stream
+- A probe whose stream breaks after its first byte has already passed (the verdict is taken at the first byte): the breaker closes, lets the next requests through and, its window being empty, opens again
+  after `min_volume` further aborts, so each cool-down cycle can cost that many failed streams for a worker that always breaks mid-stream. A worker that aborts every stream builds no consecutive streak (the ratio rule
+  ejects it, after as many aborts as it had healthy outcomes in the window).
+- (F3) The 503 peek also runs when the model has only one worker: whether another worker exists is known only after the retry has been routed, and the peek decides the verdict before that, so a single-worker model's
+  retryable 503 pays up to 250 ms (usually the time to read a small body) for a verdict that cannot matter (a single-worker model never opens). Skipping it would need the routing result first and would make the verdict of a
+  retry whose routing fails a guess; the cost is bounded and tracked here as a known cost. Not changed.
+- (F6) Breaker transitions are delivered by the request goroutine that finds them queued, so a slow `BreakerTransition` observer delays that one request (other requests are not held: delivery is single-file and they leave their
+  changes to it). At shutdown the queue is flushed once more; a queue that overflowed (4096) drops the newest and logs the count. Taking the probe's verdict at the end of the stream
   would hold its ticket for the length of the stream, which the plan rules out.
 - `breakers.RetryAfter()` is computed over every model's breakers, so `Retry-After` can be shorter than the model's own earliest half-open.
 
