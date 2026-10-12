@@ -190,6 +190,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.log.Info("gateway shutting down", "component", "gateway", "timeout", s.cfg.ShutdownTimeout.String())
 	sctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
+	// Transitions still waiting for delivery go to the observers now: they are delivered by request goroutines and
+	// after refreshes, and the last request or refresh may have come before the last transition.
+	defer s.res.flush()
 	if err := srv.Shutdown(sctx); err != nil {
 		_ = srv.Close()
 		return err

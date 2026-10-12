@@ -155,6 +155,9 @@ func (rs *resilienceState) flush() {
 			}
 		}
 		rs.flushing.Store(false)
+		if n := rs.dropped.Swap(0); n > 0 {
+			rs.log.Warn("circuit breaker transitions were dropped because too many were waiting for delivery", "component", "gateway", "dropped", n)
+		}
 		rs.qmu.Lock()
 		more := len(rs.queue) > 0
 		rs.qmu.Unlock()
