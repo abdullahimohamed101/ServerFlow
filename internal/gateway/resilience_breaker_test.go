@@ -407,15 +407,19 @@ func TestAFailureAfterTheFirstByteIsOneAttemptAndAFaultWithoutRetry(t *testing.T
 			})
 			good := newScriptWorker(t, "b-good", okJSON("b-good"))
 			e := newResEnv(t, []protocol.WorkerSnapshot{bad.snapshot("qwen-7b"), good.snapshot("qwen-7b")},
-				func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 2 })
-			// Round-robin: a-bad then b-good then a-bad. The success of a stream is counted when it completes, so an
-			// abort is one fault and nothing else: two aborts in a row open the breaker by the streak rule.
-			for i := 0; i < 4; i++ {
+				func(c *config.Config) {
+					c.Resilience.Breaker.ConsecutiveFailures = 100000
+					c.Resilience.Breaker.MinVolume = 4
+				})
+			// Round-robin: a-bad then b-good then a-bad. The ok of a stream is counted at its first byte and an abort
+			// converts it into a fault, so each request counts once with its final outcome: after 4 aborted streams the
+			// worker has 4 outcomes, all faults, and the ratio rule opens the breaker.
+			for i := 0; i < 8; i++ {
 				e.postLoose(stream)
 			}
 			e.settle(t, "a-bad", "b-good")
 			if st := e.state("a-bad"); st != resilience.Open {
-				t.Fatalf("two aborted streams must open the breaker, got %v", st)
+				t.Fatalf("four aborted streams must open the breaker by the ratio rule, got %v", st)
 			}
 			for _, a := range e.rec.attemptEnds() {
 				if a.WorkerID == "a-bad" && (a.WillRetry || a.Outcome != AttemptFailed || a.Number != 1) {
@@ -425,8 +429,8 @@ func TestAFailureAfterTheFirstByteIsOneAttemptAndAFaultWithoutRetry(t *testing.T
 			if f, r := e.rs.budget.Usage("qwen-7b"); r != 0 || f == 0 {
 				t.Fatalf("budget usage %d first attempts, %d retries: the abort must not touch the retry budget", f, r)
 			}
-			if got := a2(e); got != 2 {
-				t.Fatalf("the bad worker saw %d requests, want 2", got)
+			if got := a2(e); got != 4 {
+				t.Fatalf("the bad worker saw %d requests, want 4", got)
 			}
 		})
 	}
@@ -458,22 +462,22 @@ func (e *resEnv) postLoose(stream bool) {
 	_ = resp.Body.Close()
 }
 
-// A worker with a long healthy history that starts aborting its streams is ejected after consecutive_failures aborts:
-// the success of a stream is counted when it completes, so an abort is one fault and not a success followed by a
-// fault, and history does not dilute it.
-func TestAbortingStreamsOpenTheBreakerAfterTheConfiguredNumberDespiteAHealthyHistory(t *testing.T) {
+// A worker with a healthy history that starts aborting its streams: each abort converts an ok into a fault, so
+// each request counts once and the ratio reaches one half after as many aborts as the worker had healthy outcomes in the window. That is the
+// inherent dilution of a ratio over a window, and it is the same whether the request is a stream or not.
+func TestAbortingStreamsOpenTheBreakerWhenFaultsReachHalfTheWindowedHistory(t *testing.T) {
 	flag := &workerFlag{}
 	flag.set(sseEvents("a-1", 2))
 	a := newScriptWorker(t, "a-1", flag.serve)
 	b := newScriptWorker(t, "b-2", sseEvents("b-2", 2))
 	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")},
-		func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 5 })
+		func(c *config.Config) { c.Resilience.Breaker.ConsecutiveFailures = 100000 })
 	for i := 0; i < 40; i++ {
-		e.postLoose(true) // healthy history on both workers
+		e.postLoose(true) // healthy history: 20 requests on each worker
 	}
 	e.settle(t, "a-1", "b-2")
-	if e.state("a-1") != resilience.Closed {
-		t.Fatal("setup")
+	if e.state("a-1") != resilience.Closed || a.hits.Load() != 20 {
+		t.Fatalf("setup: %v, %d hits", e.state("a-1"), a.hits.Load())
 	}
 	flag.set(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -483,15 +487,15 @@ func TestAbortingStreamsOpenTheBreakerAfterTheConfiguredNumberDespiteAHealthyHis
 		panic(http.ErrAbortHandler)
 	})
 	before := a.hits.Load()
-	for i := 0; i < 30 && e.state("a-1") != resilience.Open; i++ {
+	for i := 0; i < 60 && e.state("a-1") != resilience.Open; i++ {
 		e.postLoose(true)
 		e.settle(t, "a-1", "b-2")
 	}
 	if e.state("a-1") != resilience.Open {
 		t.Fatal("the aborting worker was not ejected")
 	}
-	if n := a.hits.Load() - before; n != 5 {
-		t.Fatalf("%d aborted streams before the breaker opened, want exactly the configured 5", n)
+	if n := a.hits.Load() - before; n != 20 {
+		t.Fatalf("%d aborted streams before the breaker opened, want 20 (as many faults as the 20 healthy outcomes)", n)
 	}
 }
 
@@ -580,22 +584,15 @@ func TestA500CountsInTheRatioRuleOnlyAndIsNeverRetried(t *testing.T) {
 	})
 }
 
-// The success of a stream is counted when it completes and it resets the consecutive streak: fault, fault, a
-// complete stream, fault, fault is not three in a row.
-func TestACompletedStreamResetsTheConsecutiveStreak(t *testing.T) {
-	var n atomic.Int64
-	var script atomic.Value
-	script.Store([]string{"abort", "abort", "ok", "abort", "abort"})
+// An aborted stream is an ok followed by its own conversion, so aborts do not build a consecutive streak (the next
+// stream's first byte resets it); the ratio rule is what ejects a worker that aborts its streams.
+func TestAbortedStreamsDoNotBuildAConsecutiveStreak(t *testing.T) {
 	a := newScriptWorker(t, "a-1", func(w http.ResponseWriter, r *http.Request) {
-		i := int(n.Add(1)) - 1
-		if sc := script.Load().([]string); i < len(sc) && sc[i] == "abort" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(200)
-			_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
-			w.(http.Flusher).Flush()
-			panic(http.ErrAbortHandler)
-		}
-		sseEvents("a-1", 2)(w, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
 	})
 	b := newScriptWorker(t, "b-2", sseEvents("b-2", 2))
 	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")},
@@ -603,24 +600,14 @@ func TestACompletedStreamResetsTheConsecutiveStreak(t *testing.T) {
 			c.Resilience.Breaker.ConsecutiveFailures = 3
 			c.Resilience.Breaker.MinVolume = 100000
 		})
-	for i := 0; i < 40 && n.Load() < 5; i++ {
+	for i := 0; i < 20; i++ {
 		e.postLoose(true)
-		e.settle(t, "a-1", "b-2")
 	}
-	if n.Load() < 5 {
-		t.Fatalf("a-1 saw %d requests", n.Load())
+	e.settle(t, "a-1", "b-2")
+	if a.hits.Load() < 10 {
+		t.Fatalf("setup: %d", a.hits.Load())
 	}
 	if st := e.state("a-1"); st != resilience.Closed {
-		t.Fatalf("%v: a completed stream between the faults must reset the streak", st)
-	}
-	// One more abort is the third in a row only if the success is not counted; script ended, so make it abort.
-	n.Store(0)
-	script.Store([]string{"abort", "abort", "abort"})
-	for i := 0; i < 40 && e.state("a-1") != resilience.Open; i++ {
-		e.postLoose(true)
-		e.settle(t, "a-1", "b-2")
-	}
-	if st := e.state("a-1"); st != resilience.Open {
-		t.Fatalf("three aborts in a row must open the breaker: %v", st)
+		t.Fatalf("%v: ten aborted streams must not trip the consecutive rule", st)
 	}
 }

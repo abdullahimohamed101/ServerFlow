@@ -85,8 +85,8 @@ type attemptRun struct {
 	ticketDone  bool
 	retryDenied string
 	peek        *peekRead
-	// okPending says a closed breaker's success verdict is held until the response completes (see settleVerdict).
-	okPending bool
+	// okAt is when the ok verdict was given (the first byte), so that a stream that breaks later can take it back.
+	okAt time.Time
 }
 
 // nextRouteResult names why a retry's routing failed, for AttemptEnd.NextRouteResult.

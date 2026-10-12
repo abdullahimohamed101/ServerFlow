@@ -172,16 +172,10 @@ func (s *Server) settleVerdict(r *http.Request, run *attemptRun, info *reqInfo, 
 	run.verdict = label
 	if !run.ticketDone {
 		run.ticketDone = true
-		if v == resilience.OK && !run.target.probe() {
-			// A closed breaker's ticket holds nothing, so there is nothing to return at the first byte. The
-			// success is counted when the response completes, so that a stream that aborts later counts as a fault
-			// and not as a success followed by a fault (which would dilute the ratio to exactly one half and reset
-			// the consecutive streak every time). A probe's verdict is taken now: its ticket must not be held for
-			// the length of a stream.
-			run.okPending = true
-		} else {
-			rs.breakers.Record(run.target.ticket, v)
+		if v == resilience.OK {
+			run.okAt = rs.now() // a stream that breaks later converts this ok (recordAfterRelay)
 		}
+		rs.breakers.Record(run.target.ticket, v)
 	}
 	rs.flush()
 }
@@ -336,27 +330,18 @@ func skip(dec *json.Decoder) error {
 	return dec.Decode(&raw)
 }
 
-// recordAfterRelay settles what the response's end says about the worker. A stream whose first byte had arrived and
-// that then failed is a fault, recorded with the attempt's own ticket (the client already has bytes, so nothing is
-// retried): for a closed breaker it is the only outcome counted for the request, for a probe it reopens the
-// breaker. A response that completed counts the success that was held back at the first byte. A client that left
-// proves nothing either way.
+// recordAfterRelay settles what the end of the response says about the worker. A stream whose first byte had arrived
+// (the ok was counted then, for the streak and the ratio alike, so successes are never counted later than faults)
+// and that then failed is converted: the ok becomes a fault, so each request counts once with its final outcome
+// (RecordAbort; for a probe, RecordLate reopens the breaker). The client already has bytes, so nothing is retried.
+// A client that left proves nothing either way.
 func (s *Server) recordAfterRelay(run *attemptRun, info *reqInfo) {
 	rs := s.res
-	if rs == nil || run.verdict != VerdictOK || run.resp == nil || info.clientClosed {
+	if rs == nil || run.verdict != VerdictOK || run.resp == nil || info.clientClosed || info.errCode != api.CodeInferenceFailed {
 		return
 	}
-	switch {
-	case info.errCode == api.CodeInferenceFailed:
-		run.verdict = VerdictFault
-		run.okPending = false
-		rs.breakers.RecordLate(run.target.ticket, resilience.Fault)
-	case run.okPending && info.errCode == "":
-		run.okPending = false
-		rs.breakers.Record(run.target.ticket, resilience.OK)
-	default:
-		return
-	}
+	run.verdict = VerdictFault
+	rs.breakers.RecordAbort(run.target.ticket, run.okAt)
 	rs.flush()
 }
 
