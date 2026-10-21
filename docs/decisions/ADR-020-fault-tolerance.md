@@ -164,7 +164,7 @@ trips out of 200:
 
 Cost of the shipped design: a stream that aborts after its first byte is an ok (resetting the consecutive streak) and then its conversion (a fault), so a worker that aborts every stream does not build a consecutive
 streak (the next stream's first byte resets it); the **ratio rule** is what ejects it, once its faults equal its healthy outcomes in the window (with 20 healthy outcomes in the window, after 20 aborts). A re-closed
-breaker has an empty window, so after a probe that passed at its first byte, a worker that keeps aborting needs `min_volume` outcomes to open again. `AttemptEnd.Verdict` reports `ok` for such an attempt until it fails late,
+breaker has an empty window, so after a probe that passed at its first byte, a worker that keeps aborting needs its faults to reach half of the window again, which costs as many streams as are in flight (see the limits below for the simulated scaling). `AttemptEnd.Verdict` reports `ok` for such an attempt until it fails late,
 then `fault`.
 
 **The 503 peek (D4).** When a retry is possible (attempts left, `retry.min_remaining` and the budget allowing), the first 1 KiB of a held retryable 503's body is read for at most
@@ -215,9 +215,10 @@ Kafka events are unchanged (schema v1): the attempt-level `failure_class` can no
 **Limits found while implementing (kept, reported).**
 - The ratio rule works over the sliding window, which still holds the worker's healthy history: a worker that fails every request needs as many faults as it had successes in the window
   (up to `window`) before the ratio trips. A fault rate equal to `failure_ratio` (50% of the default) sits on the threshold and trips by chance. The consecutive rule is what ejects a hard failure quickly.
-- A probe whose stream breaks after its first byte has already passed (the verdict is taken at the first byte): the breaker closes, lets the next requests through and, its window being empty, opens again
-  after `min_volume` further aborts, so each cool-down cycle can cost that many failed streams for a worker that always breaks mid-stream. A worker that aborts every stream builds no consecutive streak (the ratio rule
-  ejects it, after as many aborts as it had healthy outcomes in the window).
+- A probe whose stream breaks after its first byte has already passed (the verdict is taken at the first byte): the breaker closes, lets the next requests through and, its window being empty, needs the faults to reach half
+  of the window again before it opens. The window also holds the oks of the streams still in flight, so the cost of a cool-down cycle scales with the number of streams concurrently in flight on the worker (their
+  length times the request rate), not with `min_volume`; `min_volume` is only the floor. A worker that aborts every stream builds no consecutive streak (the ratio rule ejects it, after as many aborts as it had healthy
+  outcomes in the window). Simulation results, not production data (one worker aborting every stream, 10 requests/s per worker, 10 minutes, 50 seeds): about 38 / 186 / 690 aborted streams per cool-down cycle for streams of 2 s / 10 s / 60 s, and a median time to the first ejection of an always-aborting worker of 3.8 s / 19 s / 69 s (it never tripped in 0 of 50 runs). A worker that aborts 20-30% of its streams, or alternates ok and abort, is never ejected, consistent with the 50% ratio threshold.
 - (F3) The 503 peek also runs when the model has only one worker: whether another worker exists is known only after the retry has been routed, and the peek decides the verdict before that, so a single-worker model's
   retryable 503 pays up to 250 ms (usually the time to read a small body) for a verdict that cannot matter (a single-worker model never opens). Skipping it would need the routing result first and would make the verdict of a
   retry whose routing fails a guess; the cost is bounded and tracked here as a known cost. Not changed.

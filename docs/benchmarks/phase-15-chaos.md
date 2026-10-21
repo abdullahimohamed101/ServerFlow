@@ -123,7 +123,7 @@ against 1.14286): the seeded fault makes the runs nearly identical and the gap i
 - **Slow but successful is not ejected.** With the header timeout above the delay (`slow-worker-header-timeout-above-delay`) `on` and `off` and master are identical: 100%, 1.000, no isolation. The false-positive check passes.
 - **Mid-stream aborts are only partly handled, and less well than in the first cut of this PR.** Success rises (87.58% to 91.61-91.82%; the first cut, which counted a success only when a stream completed, reached 94.49% but ejected
   mostly healthy workers on long streams, see ADR-020) and the harness' time to isolate is 13-14 s: an aborted stream is an ok converted to a fault, builds no consecutive streak, and the ratio rule opens the breaker once
-  the faults equal the worker's healthy outcomes in the window; a probe whose stream breaks after its first byte has already passed, the breaker closes with an empty window and lets `min_volume` more through (ADR-020, limits).
+  the faults equal the worker's healthy outcomes in the window; a probe whose stream breaks after its first byte has already passed, the breaker closes with an empty window and lets more through, as many as the streams in flight plus what the ratio needs (ADR-020, limits, with the simulated scaling).
   The cost of the symmetric accounting is therefore visible here, and it is reported as such.
 - **No scenario got worse** in the two primary measures. Latency of successes (p95 164-167 ms) is the same in every group.
 - **What this does not show:** crash (the registry is faster), overload and drain (PRs E and F), real networks, real GPUs, other fault rates, `max_attempts` above 2, more than one gateway, or the default cool-down
