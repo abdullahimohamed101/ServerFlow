@@ -96,3 +96,25 @@ type countingObserver struct {
 }
 
 func (c *countingObserver) BreakerTransition(context.Context, BreakerChange) { c.n.Add(1) }
+
+// When the listener fails and Serve returns its error at once, the transitions still queued are delivered.
+func TestServeFlushesQueuedTransitionsWhenTheListenerFails(t *testing.T) {
+	good := newScriptWorker(t, "a-1", okJSON("a-1"))
+	e := newResEnv(t, []protocol.WorkerSnapshot{good.snapshot("qwen-7b")})
+	var seen atomic.Int64
+	WithObserver(&countingObserver{n: &seen})(e.gw)
+	e.rs.models.Store(&map[string]string{"a-1": "qwen-7b"})
+	e.rs.push(resilience.Change{Key: resilience.KeyOf("a-1", time.Time{}), From: resilience.Closed, To: resilience.Open, Reason: resilience.ReasonConsecutive})
+	e.gw.background = nil
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ln.Close() // http.Server.Serve fails at once
+	if err := e.gw.Serve(context.Background(), ln); err == nil {
+		t.Fatal("Serve on a closed listener must return its error")
+	}
+	if seen.Load() != 1 {
+		t.Fatalf("%d transitions delivered, want the 1 that was queued", seen.Load())
+	}
+}
