@@ -110,6 +110,11 @@ func (g *phaseGuard) end() bool {
 
 func (g *phaseGuard) stop() { g.end() }
 
+// beforeEndPhaseHook, when set by a test, runs when sendOnce has returned and before the decision point ends the
+// retryable phase. It sits outside arrived(), so a test that holds the caller here for longer than the deadline
+// shows whether every path of sendOnce disarmed the deadline itself.
+var beforeEndPhaseHook func()
+
 // afterArrivalHook, when set by a test, runs right after a response has arrived and the deadline has been disarmed.
 var afterArrivalHook func()
 

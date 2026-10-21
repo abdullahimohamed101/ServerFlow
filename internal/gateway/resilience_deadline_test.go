@@ -256,3 +256,42 @@ func TestPhaseGuardArrivalAndDeadlineAreMutuallyExclusive(t *testing.T) {
 		t.Fatal("the deadline came first: the arrival must see it")
 	}
 }
+
+// Once a response has arrived the first-byte deadline is disarmed by arrived(), on each of the three paths of
+// sendOnce that end the retryable phase: a 200 whose first byte is in hand, a status that is not retried, and a
+// retryable status. The hook holds the caller between sendOnce and the decision point for three deadlines; if
+// arrived() were missing from a path the timer would fire in that gap and the response would become a 504. (The
+// older afterArrivalHook sits inside arrived() and so cannot see a path that no longer calls it.)
+func TestEveryArrivalPathDisarmsTheDeadlineBeforeTheDecisionPoint(t *testing.T) {
+	cases := []struct {
+		name   string
+		h      func(http.ResponseWriter, *http.Request)
+		code   int
+		stream bool
+	}{
+		{"200 stream", sseEvents("a-1", 2), 200, true},
+		{"200 non-stream", okJSON("a-1"), 200, false},
+		{"non-retryable status", status(400, `{"error":{"message":"bad","type":"invalid_request_error","code":"bad"}}`), 400, false},
+		{"retryable status", openAPI503("mock_failure"), 503, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newScriptWorker(t, "a-1", c.h)
+			e := newResEnv(t, []protocol.WorkerSnapshot{w.snapshot("qwen-7b")}, noBreaker, deadline(150*time.Millisecond))
+			var held atomic.Int32
+			beforeEndPhaseHook = func() { held.Add(1); time.Sleep(450 * time.Millisecond) }
+			defer func() { beforeEndPhaseHook = nil }()
+			resp, body := e.post(t, c.stream)
+			if resp.StatusCode != c.code {
+				t.Fatalf("%d %q, want %d: a response that arrived before the deadline must not become a 504", resp.StatusCode, body, c.code)
+			}
+			if held.Load() == 0 {
+				t.Fatal("the hook never ran")
+			}
+			e.settle(t, "a-1")
+			if ends := e.rec.attemptEnds(); len(ends) != 1 || ends[0].Class == classDeadline {
+				t.Fatalf("%+v", ends)
+			}
+		})
+	}
+}
