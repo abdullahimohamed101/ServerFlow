@@ -241,6 +241,8 @@ type modelInst struct {
 	probes       counterCache
 	denied       counterCache
 	deadlineHits counterSlot
+	rejections   counterCache                // reason: admission refusals (overload)
+	queueWait    atomic.Pointer[observerRef] // inference_queue_duration_seconds child, resolved lazily
 	failures     counterCache
 	noCapacity   counterCache
 	selections   counterCache
@@ -254,6 +256,9 @@ func newModelInst(m *metrics, label string) *modelInst {
 		overhead: m.overhead.WithLabelValues(label),
 	}
 }
+
+// observerRef holds a lazily resolved histogram child.
+type observerRef struct{ o prometheus.Observer }
 
 // counterSlot is a lazily resolved counter: the first caller creates it, later callers load it. The create path
 // (vec.WithLabelValues) is idempotent, so two racing first callers get the same child.
@@ -421,7 +426,8 @@ func (m *metrics) RequestRejected(_ context.Context, e Rejection) {
 		}
 		m.schedulingRefused(e)
 	case RejectOverload:
-		// Shedding is admission, not scheduling: it never feeds scheduler_decisions_total (Phase 15 adds its own series).
+		// Shedding is admission, not scheduling: it never feeds scheduler_decisions_total. It has its own series.
+		m.overloadShed(e)
 	}
 }
 
@@ -453,7 +459,9 @@ func (m *metrics) schedulingRefused(e Rejection) {
 func (m *metrics) AttemptStarted(ctx context.Context, e AttemptStart) context.Context {
 	mi := m.model(e.Model)
 	if e.Number <= 1 {
-		mi.overhead.Observe(e.SinceRequestStart.Seconds())
+		// The gateway's own work: the time a request spent in the admission queue is not overhead (it has its own
+		// series), so a queue never makes ServerFlowGatewayOverheadHigh fire.
+		mi.overhead.Observe(max(e.SinceRequestStart-e.QueueWait, 0).Seconds())
 	}
 	if e.WorkerID == "" {
 		return ctx // static mode: no scheduler
@@ -521,9 +529,9 @@ func (m *metrics) retryRoutingRefused(mi *modelInst, result string) {
 	}
 }
 
-// QueueWaited has no series yet: the admission queue arrives in Phase 15 PR E. A breaker transition feeds the
+// QueueWaited feeds inference_queue_duration_seconds (present only with resilience on). A breaker transition feeds the
 // circuit breaker series (present only with resilience on).
-func (m *metrics) QueueWaited(context.Context, QueueWait) {}
+func (m *metrics) QueueWaited(_ context.Context, e QueueWait) { m.queueWaited(e) }
 func (m *metrics) BreakerTransition(_ context.Context, e BreakerChange) {
 	m.breakerChange(e)
 }

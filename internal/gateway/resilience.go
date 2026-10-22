@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,8 +56,14 @@ type resilienceState struct {
 	cfg      config.ResilienceConfig
 	breakers *resilience.Breakers
 	budget   *resilience.Budget
-	now      func() time.Time
-	log      *slog.Logger
+	// waitq holds the requests waiting for a worker slot (per model, strict FIFO with direct hand-off), admission
+	// the global request cap and maxWait the longest a request may wait (Phase 15 PR E, D11).
+	waitq     *resilience.Queue
+	admission *resilience.Admission
+	maxWait   time.Duration
+	shedLog   shedLimiter
+	now       func() time.Time
+	log       *slog.Logger
 
 	// firstByte is the deadline of the retryable phase, minRemaining the least time a retry may start with,
 	// probeHeader the header timeout of a probe attempt (0 = the transport's own) and peekWait the peek bound.
@@ -106,6 +113,10 @@ func newResilienceState(cfg config.Config, log *slog.Logger, d resilienceDeps) *
 	opts := resilience.Options{Now: d.now, Rand: d.rand, OnChange: rs.push}
 	rs.breakers = resilience.NewBreakers(resilience.BreakerParamsFrom(cfg), opts)
 	rs.budget = resilience.NewBudget(resilience.BudgetParamsFrom(cfg), d.now)
+	qp := resilience.QueueParamsFrom(cfg)
+	rs.maxWait = qp.MaxWait
+	rs.waitq = resilience.NewQueue(qp, nil) // waits are measured in real time: a timer decides them
+	rs.admission = resilience.AdmissionFrom(cfg)
 	return rs
 }
 
@@ -222,6 +233,7 @@ func (s *Server) enableResilience(cfg config.Config, d resilienceDeps) {
 	s.res = rs
 	s.router.res = rs
 	s.router.cache.onSync = rs.sync
+	s.router.cache.onRefreshed = s.router.wakeWaiters
 	s.metrics.enableResilience(rs)
 }
 
@@ -243,4 +255,46 @@ func (s *Server) deliverBreakerChange(ev BreakerChange) {
 		attrs = append(attrs, "cool_down_ms", ev.CoolDown.Milliseconds())
 	}
 	s.log.Log(context.Background(), level, "circuit breaker changed state", attrs...)
+}
+
+// shedLimiter rate-limits the log line of sheds to one per second per reason, counting what it held back (D14). A
+// shed storm must not become a log storm; the series count every one.
+type shedLimiter struct {
+	mu         sync.Mutex
+	last       map[string]time.Time
+	suppressed map[string]int
+}
+
+// allow reports whether a shed of the reason may be logged now, and how many were held back since the last line.
+func (l *shedLimiter) allow(reason string, now time.Time) (ok bool, suppressed int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last == nil {
+		l.last, l.suppressed = map[string]time.Time{}, map[string]int{}
+	}
+	if t, seen := l.last[reason]; seen && now.Sub(t) < time.Second && now.Sub(t) >= 0 {
+		l.suppressed[reason]++
+		return false, 0
+	}
+	l.last[reason] = now
+	n := l.suppressed[reason]
+	l.suppressed[reason] = 0
+	return true, n
+}
+
+// logShed writes the shed line (INFO, at most one per second per reason). It names no body, prompt, key or worker text.
+func (s *Server) logShed(r *http.Request, info *reqInfo, reason string, retryAfter int) {
+	ok, held := s.res.shedLog.allow(reason, s.res.now())
+	if !ok {
+		return
+	}
+	attrs := []any{"component", "gateway", "request_id", info.id, "reason", reason, "retry_after_s", retryAfter}
+	if info.model != "" {
+		attrs = append(attrs, "model", info.model)
+	}
+	if held > 0 {
+		attrs = append(attrs, "suppressed", held)
+	}
+	attrs = append(attrs, tenantAttrs(info)...)
+	s.log.Log(r.Context(), slog.LevelInfo, "request shed", attrs...)
 }

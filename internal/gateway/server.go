@@ -192,6 +192,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 
 	s.log.Info("gateway shutting down", "component", "gateway", "timeout", s.cfg.ShutdownTimeout.String())
+	if s.res != nil {
+		defer s.res.beginDrain(s.cfg.ShutdownTimeout)() // stop queueing; flush what cannot finish inside the budget
+	}
 	sctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {

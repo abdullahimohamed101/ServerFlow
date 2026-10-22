@@ -212,6 +212,23 @@ func (o *Observer) tenant(sp trace.Span, id string) {
 	}
 }
 
+// QueueWaited adds a queue.wait event to the root span of a request that waited in the admission queue: how long
+// (milliseconds) and how it ended. The wait itself is not a span, so a trace shows it as the gap before the first
+// scheduler.select / worker.forward span with the event at its end.
+func (o *Observer) QueueWaited(ctx context.Context, e gateway.QueueWait) {
+	st := stateFrom(ctx)
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.ended {
+		return
+	}
+	st.root.AddEvent(tracing.EventQueueWait, trace.WithTimestamp(time.Now()), trace.WithAttributes(
+		tracing.KeyQueueWaitMillis.Int64(e.Waited.Milliseconds()), tracing.KeyQueueResult.String(pick(e.Result, queueResults))))
+}
+
 // AttemptStarted starts the worker.forward span (and the scheduler.select span that chose its worker) and
 // returns a context whose TraceRef carries the traceparent for the worker call.
 func (o *Observer) AttemptStarted(ctx context.Context, e gateway.AttemptStart) context.Context {

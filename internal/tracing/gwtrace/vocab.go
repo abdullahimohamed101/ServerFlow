@@ -11,7 +11,7 @@ import (
 
 var (
 	rejectKinds = set(gateway.RejectAuth, gateway.RejectRateLimit, gateway.RejectValidation, gateway.RejectModel,
-		gateway.RejectCapacity, gateway.RejectInternal)
+		gateway.RejectCapacity, gateway.RejectInternal, gateway.RejectOverload)
 	// errorCodes are the gateway's API error codes (internal/api/errors.go); anything else becomes "other".
 	errorCodes = set(api.CodeInvalidRequest, api.CodeModelNotFound, api.CodeNoCapacity, api.CodeUpstreamTimeout, api.CodeWorkerUnavailable,
 		api.CodeInferenceFailed, api.CodeInternalError, api.CodeUnauthorized, api.CodeForbidden, api.CodeAuthUnavailable, api.CodeRateLimited,
@@ -21,6 +21,7 @@ var (
 	strategies      = set("random", "round-robin", "least-active", "least-queue", "least-work")
 	attemptOutcomes = set(gateway.AttemptOK, gateway.AttemptFailed, gateway.AttemptRetried, gateway.AttemptClientClosed)
 	retryDenials    = set(gateway.RetryDeniedBudget, gateway.RetryDeniedDeadline)
+	queueResults    = set(gateway.QueueServed, gateway.QueueTimeout, gateway.QueueClientGone, gateway.QueueDrained)
 )
 
 func set(vs ...string) map[string]struct{} {

@@ -73,6 +73,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.res != nil {
+		// The global request cap counts from here (authentication is behind us) until the request ends, the body
+		// read included, queued requests as well as running ones. Over the cap the arrival is refused at once.
+		slot, ok := s.acquireGlobal(w, r, info)
+		if !ok {
+			return
+		}
+		defer slot.Release()
+	}
+
 	// Bound how long the client may take to send the body. net/http resets the
 	// read deadline itself once the body is fully read, so it does not cut off
 	// a long streaming response (TestStreamsOutliveTheBodyReadTimeout guards
@@ -120,6 +130,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.router != nil && s.refuseUnknownModel(w, r, info, ireq) {
+		return
+	}
+
+	if s.res != nil && s.shedBeforeLimiter(w, r, info, ireq) {
 		return
 	}
 
