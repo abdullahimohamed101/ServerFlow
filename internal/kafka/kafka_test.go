@@ -437,7 +437,7 @@ func TestDereferencedWrappersAndNestedConfigsNeverPrintThePassword(t *testing.T)
 	}
 	for name, v := range shapes {
 		var out strings.Builder
-		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d"} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%t", "%e", "%b", "%o", "%c", "%U", "%10.3v", "%-20s"} {
 			fmt.Fprintf(&out, verb+"|", v)
 		}
 		js, _ := json.Marshal(v)
