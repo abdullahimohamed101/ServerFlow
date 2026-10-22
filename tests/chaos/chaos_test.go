@@ -21,6 +21,7 @@ import (
 	"serverflow/internal/bench/embedded"
 	"serverflow/internal/config"
 	"serverflow/internal/mockworker"
+	"serverflow/internal/registry/client"
 )
 
 const (
@@ -240,6 +241,26 @@ func (r *rig) closedAndSettled(d time.Duration) func() bool {
 	}
 }
 
+// afterNextHeartbeat waits until the control plane has received a heartbeat of the faulty worker that was sent after
+// now, and for the gateway to have refreshed its view since.
+func (r *rig) afterNextHeartbeat() {
+	r.t.Helper()
+	from := time.Now()
+	r.eventually(10*time.Second, func() bool {
+		ws, err := r.c.ControlPlane().Workers(context.Background(), client.Query{})
+		if err != nil {
+			return false
+		}
+		for _, w := range ws {
+			if w.WorkerID == r.faulty {
+				return w.LastHeartbeat.After(from)
+			}
+		}
+		return false
+	}, "a heartbeat of the recovered worker")
+	time.Sleep(3 * embedded.RegistryRefresh)
+}
+
 func (r *rig) statuses() map[int]int {
 	r.statusM.Lock()
 	defer r.statusM.Unlock()
@@ -339,6 +360,12 @@ func runScenario(t *testing.T, s scenario) {
 		quiet = settle
 	}
 	r.eventually(15*time.Second, r.closedAndSettled(quiet), "the breaker closes after the fault ends and stays closed")
+	// The least-active scheduler routes by the load the worker last reported, and a figure taken during the recovery
+	// burst can keep a closed breaker's worker last for up to a heartbeat (confirmed by sampling a failing run: selections
+	// flat while the worker reported 3 active, resuming with the next heartbeat). Judge the return of traffic from a
+	// heartbeat that post-dates the close, and require the breaker to still be closed after it.
+	r.afterNextHeartbeat()
+	r.eventually(15*time.Second, r.closedAndSettled(quiet), "the breaker is still closed after the worker's next heartbeat")
 	selClosed := r.selections()
 	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
 	allowed := int64(0)
