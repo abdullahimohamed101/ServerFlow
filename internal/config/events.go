@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -99,6 +100,16 @@ func (e EventsConfig) String() string {
 
 // GoString implements fmt.GoStringer.
 func (e EventsConfig) GoString() string { return "config.EventsConfig" + e.String() }
+
+// Format implements fmt.Formatter, so every verb (including %d, for which String is not consulted) prints the
+// redacted form. %#v keeps its GoString shape.
+func (e EventsConfig) Format(f fmt.State, verb rune) {
+	if verb == 'v' && f.Flag('#') {
+		_, _ = io.WriteString(f, e.GoString())
+		return
+	}
+	_, _ = io.WriteString(f, e.String())
+}
 
 // LogValue implements slog.LogValuer.
 func (e EventsConfig) LogValue() slog.Value { return slog.StringValue(e.String()) }

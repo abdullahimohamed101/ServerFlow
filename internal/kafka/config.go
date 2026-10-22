@@ -85,6 +85,16 @@ func (c Config) String() string {
 // GoString implements fmt.GoStringer.
 func (c Config) GoString() string { return "kafka.Config" + c.String() }
 
+// Format implements fmt.Formatter. String and GoString are not consulted for every verb (%d, for one, prints the
+// raw fields), so a Formatter is the only way to make every verb print the redacted form.
+func (c Config) Format(f fmt.State, verb rune) {
+	if verb == 'v' && f.Flag('#') {
+		_, _ = io.WriteString(f, c.GoString())
+		return
+	}
+	_, _ = io.WriteString(f, c.String())
+}
+
 // LogValue implements slog.LogValuer.
 func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
@@ -229,6 +239,16 @@ func (c Config) baseOpts(h *health) ([]kgo.Opt, error) {
 
 // redactedFormat prints a client wrapper as its redacted configuration under every fmt verb, so formatting the
 // producer, consumer or admin value (%v, %+v, %#v, %s, slog) cannot reach the SASL password held in its config.
-func redactedFormat(f fmt.State, kind string, cfg Config) {
+func redactedFormat(f fmt.State, kind string, cfg *Config) {
 	_, _ = io.WriteString(f, "kafka."+kind+cfg.String())
 }
+
+// sealedConfig keeps a client wrapper's Config out of reach of fmt's reflection. fmt calls no methods on unexported
+// fields and prints a struct (or a pointer to one, under a verb that does not fit it such as %s) field by field, so a
+// wrapper copied by dereferencing would print the SASL password even though the wrapper's own Format hides it. A func
+// value prints as an address under every verb.
+type sealedConfig struct{ get func() *Config }
+
+func seal(c Config) sealedConfig { return sealedConfig{get: func() *Config { return &c }} }
+
+func (s sealedConfig) c() *Config { return s.get() }
