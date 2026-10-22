@@ -36,7 +36,7 @@ scripts/quality.sh full
 The Kafka tests are named in `quality.sh integration` (`must_run kafka`), so a skipped one fails the gate. The broker is
 Redpanda; it is Kafka API compatible, not Apache Kafka (ADR-019).
 
-**Where the image comes from, honestly.** The Phase 16 container stack uses `mirror.gcr.io/redpandadata/redpanda` instead, pinned by the same digest
+**Where the image comes from, honestly.** The Phase 16 container stack uses `mirror.gcr.io/redpandadata/redpanda` instead: `docker-compose.yml` pins `v25.3.17` by digest, while `scripts/dev-kafka.sh` (the integration tests' broker) uses `v25.1.1`, whose digest is the same on Docker Hub
 (checked 2026-10-11: the manifest answers anonymously and the index lists linux/amd64 and linux/arm64); the survey below, which did not include
 `mirror.gcr.io`, is why the Docker Hub front (`docker.redpanda.com`) was first chosen. Today `scripts/dev-kafka.sh` pulls `mirror.gcr.io` first and falls back to the Docker Hub front (see the update below). `mirror.gcr.io` is a cache run by Google with no published
 availability or rate guarantee, so the compose job pulls with retries and caches the tarball; a full cold pull from a GitHub runner is not verified.
