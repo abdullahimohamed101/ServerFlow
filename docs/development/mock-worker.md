@@ -127,7 +127,9 @@ provisional: Phase 4 defines the real heartbeat contract.
 One `chat` line per request with `component`, `worker_id`, `outcome` (`ok`, `failed`,
 `cancelled`, `rejected`), token counts, `queue_ms`, `duration_ms`, `ttft_ms` for
 streams, and `request_id` when the caller (the gateway) sent `X-Request-ID`, so a
-request can be followed from gateway to worker. The startup line records the seed.
+request can be followed from gateway to worker. The startup line records the seed. With
+`--model-engine sim` one more line follows it (`simulator engine enabled ...`) naming the profile, its
+provenance and the SHA-256 of the parameters; without the flag the logs are unchanged.
 
 ## Simulator engine (`--model-engine sim`)
 
