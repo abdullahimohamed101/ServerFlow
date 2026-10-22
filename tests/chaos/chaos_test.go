@@ -381,8 +381,16 @@ func runScenario(t *testing.T, s scenario) {
 	if _, fails := r.window(800 * time.Millisecond); fails > allowed {
 		t.Errorf("%d failures after recovery (allowed %d)", fails, allowed)
 	}
+	// Traffic returns: at least 3 attempts reach the recovered worker. The scheduler routes by the load the worker last
+	// reported, up to a heartbeat (1 s) old, so a worker that reported a high load while recovering can wait a heartbeat
+	// or two behind its peers: the bound is 3 s from the close, not the 800 ms of the failure window above (a run of the
+	// full gate under load saw 2 attempts in 800 ms and more afterwards).
+	deadline := time.Now().Add(3*time.Second - 800*time.Millisecond)
+	for r.selections()-selClosed < 3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	if r.selections()-selClosed < 3 {
-		t.Errorf("traffic did not return to the recovered worker (%v new attempts)", r.selections()-selClosed)
+		t.Errorf("traffic did not return to the recovered worker (%v new attempts in 3s)", r.selections()-selClosed)
 	}
 	if r.val("scheduler_ineligible_selections_total") != 0 {
 		t.Error("scheduler_ineligible_selections_total must stay 0")
