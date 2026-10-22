@@ -1,3 +1,58 @@
+# Phase 15 — Chaos benchmark, PR E (admission queue, hand-off, load shedding, global cap): overload and Run A
+
+**Simulator results.** Embedded cluster on one Apple M5 Pro laptop (15 CPUs, battery, `caffeinate`, loopback), mock workers, no GPU. They show the shape of the queue's effect, not capacity, and the plan defines no success target, so none is asserted.
+Three groups per experiment, 3 repeats each, same seed: **absent** = master 16dda6b (PR A+B; `--resilience off` is a no-op there and the result records `absent`), **off** = this branch (PR E on PR D, f653c00 plus later test-only commits) with `resilience.mode: off`, **on** = this branch with `mode: on` (all queue defaults: depth 128, `max_wait` 3 s derived down to `min(3 s, first-byte deadline)`, share 0.5, global cap 1000).
+Binaries were built from `git archive` copies of the two trees (no VCS stamp, so chaos runs used `--allow-dirty`). Battery 96%, clock drift 0.0000 s over 5 s before the runs, all chaos runs valid under the gate; raw results are in `/tmp/p15e-runs` (not committed). Load average at the start of the runs was 1.4-3.3.
+
+## Overload (`benchmark chaos --scenario overload`): fault window, min / median / max of 3 valid runs
+
+4 workers x 8 slots = 32 slots; 19 base closed-loop clients, 29 more added for the 20 s fault window (48 clients, 1.5 x the slots); `uniform-short`, half streaming, round-robin.
+
+| group | fault-window success % (primary) | attempts per request (primary) | requests sent | failed | queued | shed | gateway no-capacity | deepest queue | mean wait ms | success p95 / p99 ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| absent (master) | 63.72 / 68.32 / 68.36 | 0.64 / 0.68 / 0.68 | 3768 / 4039 / 4043 | 1278 / 1281 / 1367 | 0 | 0 | 1278 / 1281 / 1367 | 0 | - | 163-164 / 168 |
+| off (branch) | 67.18 / 68.37 / 68.41 | 0.67 / 0.68 / 0.68 | 3958 / 4021 / 4027 | 1272 / 1272 / 1299 | 0 | 0 | 1272 / 1272 / 1299 | 0 | - | 163-164 / 168-169 |
+| on (branch) | 100 / 100 / 100 | 1.00 / 1.00 / 1.00 | 5413 / 5414 / 5414 | 0 | 5384 / 5384 / 5385 | 0 | 0 | 16 / 16 / 16 | 59.3 / 59.3 / 59.3 | 227 / 239 |
+
+- Primary measures by the spread rule: off agrees with master within spread (success 67.18-68.41 against 63.72-68.36: the ranges overlap, no distinguishable difference; attempts per request 0.67-0.68 against 0.64-0.68: overlap). **on differs from both on both primary measures** (ranges do not overlap): 100% against 64-68%.
+- What happened: the 48 clients keep 16 requests more than the 32 slots in flight; with the queue the surplus waits (5,384 requests queued in the fault window, mean wait 59 ms, the queue never deeper than 16, far under its bound of 128) and every request is served; without it the same surplus is answered 503 at once (1,278-1,367 failures). The price is latency: success p95 rises from 164 to 227 ms (the wait).
+- **Caveats, stated:** closed-loop clients back off after a 503, so the master/off groups offered *less* load than the on group (3,768-4,043 against 5,413 requests): the comparison is of what the clients experienced, not of equal offered load. Nothing was shed in the on group because 48 closed-loop clients can never fill a 128-deep queue: the shed path is exercised by `tests/chaos/overload_test.go` (depth 6, 16 clients on 4 slots) and the unit tests, not by this table. An open-loop crowd and real GPU contention are not modelled. The hand-off's contribution is not separable here from the refresh wake-up.
+
+## Run A reproduction (decision D21): 3 workers x concurrency 4 (12 slots), 12 closed-loop clients, least-active, 30 s window
+
+`benchmark run --workers 3 --mock-concurrency 4 --mock-queue 32 --concurrency 12 --allow-overload --scheduler least-active --workload uniform-short --duration 30s --repeat 3 --seed 1` (master and off groups with `--allow-errors` so the three repeats run; they are marked invalid by the harness' 5% rule, as Phase 10 run A was). The second block adds `--worker-profile heterogeneous` (fast, medium and slow in turn).
+
+| profile | group | valid runs | error rate % (min / median / max) | requests/s | latency p95 ms |
+|---|---|---|---|---|---|
+| identical | absent (master) | 0 of 3 | 18.14 / 19.34 / 19.38 | 49.9 / 50.2 / 51.7 | 164.3 / 164.5 / 164.6 |
+| identical | off (branch) | 0 of 3 | 18.86 / 18.87 / 19.39 | 49.9 / 50.3 / 50.5 | 164.4 / 164.6 / 165.2 |
+| identical | on (branch) | 3 of 3 | 0 / 0 / 0 | 89.3 / 90.0 / 90.4 | 182.6 / 184.5 / 187.1 |
+| heterogeneous | absent (master) | 0 of 3 | 27.88 / 28.11 / 29.10 | 28.9 / 29.7 / 29.8 | 625 / 635 / 636 |
+| heterogeneous | off (branch) | 0 of 3 | 27.90 / 28.03 / 28.17 | 29.3 / 29.7 / 29.8 | 621 / 626 / 641 |
+| heterogeneous | on (branch) | 3 of 3 | 0 / 0 / 0 | 54.4 / 54.6 / 54.9 | 619 / 635 / 647 |
+
+- `mode: off` reproduces the Phase 10 run A failure (about 19% `NO_CAPACITY` with the identical profile; the Phase 10 number was 19.44% with 8 clients and the real workers), and agrees with master within spread.
+- With the default on, the same load produces no failures: the stale-count shortage that made workers look full right after their requests finished is absorbed by the hand-off (a freed slot goes straight to the head waiter) and by the wake-up at each refresh. The throughput difference (50 against 90 requests/s) is mostly the closed-loop clients that no longer back off after a 503. In the heterogeneous profile the p95 is unchanged within spread (619-647 against 621-641 ms), the failures are gone.
+- This does not "fix" Phase 14's estimator problem (the scheduler still trusts a stale reported count); it makes a request wait for a slot instead of failing while the count is wrong.
+
+## Differential: `mode: off` is master
+
+39 request shapes (registry: success JSON/stream, unknown model, bad JSON, missing fields, retry on reset/502/503/503 `queue_full`/empty stream, single and both workers 503, all workers reported full, draining only, 500, 504, 400, 404/429, mid-stream failure (stream and JSON), header timeout, first-byte stall, client disconnect, redirect, `/v1/models`, `/healthz`, `/readyz`, 405/404, body too large, no snapshot, no workers, `max_attempts` 1 and 3, mixed models, one worker reported full, a failed worker; static: success, 503, unknown model, mid-stream) against a fake control plane and fake workers, one gateway per shape; status, headers (minus date and request ID), bodies, normalised logs and `/metrics` series (names, labels, counter and gauge values, histogram counts; Go and process collectors excluded) compared between the master build and the branch build:
+
+| comparison | shapes that differ |
+|---|---|
+| master against branch, default configuration | 0 of 39 |
+| master against branch, `resilience.mode: off` set explicitly | 0 of 39 |
+| master against branch, `resilience.mode: on` (the harness is sensitive) | 33 of 39 (new series and the `verdict` log field; responses differ only in the all-workers-full shape: a 3 s wait, then `503 NO_CAPACITY` with `Retry-After: 3` and the queue-timeout message, instead of an immediate 503 with `Retry-After: 1`) |
+
+The golden series files for static and registry mode are unchanged by this PR.
+
+## What this does not show
+
+Open-loop overload, the shed path under a realistic crowd, several gateways each with their own queue, real GPU queueing, and the default cap of 1000 (no run reached it). Drain is PR F. The numbers above are the machine's on this day; a range that overlaps another is not a difference.
+
+---
+
 # Phase 15 — Chaos benchmark, PR D (circuit breakers, retry budget, first-byte deadline, failure taxonomy)
 
 Part of the seven-PR delivery of Phase 15 (plan `docs/plans/active/phase-15-fault-tolerance.md`, decisions D18 to D20). This section is **PR D**: the breaker, budget, deadline and taxonomy are wired

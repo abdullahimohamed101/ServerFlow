@@ -29,7 +29,7 @@ plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
 tracks their state and health. A request that fails before any output is retried on a different
 worker, up to `gateway.max_attempts` (default 2; ADR-012). With `auth.mode: required` /v1 needs an API key whose hash lives in
-PostgreSQL (ADR-014). With `rate_limit.mode: required` each tenant's request, token and concurrency quotas, and optional per-model caps, are enforced across gateways with Redis (ADR-015). There is no circuit breaker yet. A benchmark harness drives reproducible load against it (below).
+PostgreSQL (ADR-014). With `rate_limit.mode: required` each tenant's request, token and concurrency quotas, and optional per-model caps, are enforced across gateways with Redis (ADR-015). With `resilience.mode: on` in registry mode (off by default until the last Phase 15 PR) the gateway also ejects failing workers with per-worker circuit breakers, bounds retries with a budget, holds requests for a full model in a bounded FIFO admission queue with direct hand-off and sheds overload with `503 NO_CAPACITY` and a global request cap (ADR-020, `docs/operations/resilience.md`). A benchmark harness drives reproducible load against it (below).
 
 ## Major Components
 
@@ -53,7 +53,7 @@ live in `internal/api`; the vendor-neutral `InferenceRequest` lives in
 a small value struct (no bodies, prompts or keys), and `RequestStarted`/`AttemptStarted` return a context so a tracing observer can hold a span.
 A `multiObserver` built at construction fans events out in order and contains panics. Prometheus metrics are the first observer
 (registered first); `gateway.WithObserver` adds more, so tracing and event publishing (Phases 11-12) do not touch the request path.
-Observers must be fast, because they run on the request goroutine. Every started attempt ends exactly once, even when the request panics (ADR-020). Two further methods, `QueueWaited` and `BreakerTransition`, exist for Phase 15 and are not fired yet. See ADR-016, ADR-020 and `docs/development/observers.md`.
+Observers must be fast, because they run on the request goroutine. Every started attempt ends exactly once, even when the request panics (ADR-020). Two further methods, `QueueWaited` and `BreakerTransition`, are fired by the Phase 15 features (admission queue, circuit breakers) when `resilience.mode` is on. See ADR-016, ADR-020 and `docs/development/observers.md`.
 Configuration is likewise one file per feature under `internal/config`.
 
 **Metrics (Phase 10).** `/metrics` is not on the data port: the gateway and the control plane serve it on a listener of their own (`internal/telemetry/metricsserver`,

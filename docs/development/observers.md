@@ -18,7 +18,7 @@ ADR-016.
 | `FirstToken(ctx, FirstToken)` | the first streamed chunk was written to the client |
 | `AttemptEnded(ctx, AttemptEnd)` | an attempt finished (outcome ok, failed, retried or client_closed) |
 | `RequestCompleted(ctx, Completion)` | the final status is decided; exactly once, last |
-| `QueueWaited(ctx, QueueWait)` | a request waited in the admission queue (Phase 15; **not fired yet**) |
+| `QueueWaited(ctx, QueueWait)` | a request waited in the admission queue (Phase 15 PR E, with `resilience.mode: on`). Fired once, for a request that actually waited, with the wait and how it ended (`served`, `timeout`, `client_gone`, `drained`), before anything that follows from the outcome: `AttemptStarted` (served), `RequestRejected(overload, queue_timeout or draining)`, or the completion of a client that left (499). Never fired for a request that did not wait |
 | `BreakerTransition(ctx, BreakerChange)` | a worker's circuit breaker changed state, on a background context, outside any request (Phase 15 PR D, with `resilience.mode: on`). It is delivered by whichever request goroutine next finds it queued (after a routing, a verdict or a registry refresh), never under a gateway lock. A trip the ejection cap held back arrives as `To "closed"`, `Reason "suppressed"` |
 
 Guarantee (ADR-016 amendment, ADR-020): every `AttemptStarted` is followed by exactly one `AttemptEnded`, even when the request panics (the attempt
@@ -27,11 +27,15 @@ ends `failed` with class `panic` and the panic still becomes a 500), and an `Att
 Phase 15 fields. **Fired with `resilience.mode: on` (PR D):** `AttemptStart.Probe` (a circuit breaker's trial request), `AttemptEnd.RetryDenied` (`budget`, `deadline`: a wanted retry was refused;
 the denied retry has no `AttemptStarted`), `AttemptEnd.Probe` and `AttemptEnd.Verdict` (`ok`, `fault`, `neutral`: what the breaker was told; empty without resilience; a probe that ended before a verdict
 reads `neutral`; a stream that fails after its first byte ends with `fault`), and the attempt class `deadline` (the first-byte deadline cut the attempt; the request is a 504 `UPSTREAM_TIMEOUT`).
-**Reserved, zero until PR E:** `AttemptStart.QueueWait` (time spent in the admission queue), `QueueWaited`, and `Rejection` kind `overload` (reasons `global_limit`, `queue_full`, `queue_timeout`,
-`draining`; shedding is admission, not scheduling, so metrics must not count it as a scheduling decision).
+**Fired with `resilience.mode: on` (PR E):** `AttemptStart.QueueWait` (time spent in the admission queue, on the first attempt only; the gateway overhead measurement subtracts it), `QueueWaited`, and `Rejection` kind `overload`
+(reasons `global_limit`, `queue_full`, `queue_timeout`, `draining`, HTTP status 503; shedding is admission, not scheduling, so metrics do not count it as a scheduling decision). A request refused by the
+global cap is rejected before it is admitted (`RequestStarted`, `RequestRejected`, `RequestCompleted`, with no model); a queue shed before the rate limiter has `RequestAdmitted` first, like the model pre-check.
 `AttemptEnd.NextRouteResult` (`no_capacity`, `worker_unavailable`, `error`) is live: it says why a wanted retry found no worker and feeds the scheduler series. With a denied retry it stays empty
 (the retry was never routed).
 An observer that embeds `NopObserver` needs no change for any of this; one that implements `Observer` from scratch must add the two new methods.
+
+Queue sequences (PR E): served after waiting is started, admitted, `QueueWaited(served)`, attempt started, attempt ended, completed; a wait that ran out is started, admitted, `QueueWaited(timeout)`, rejected (`overload`,
+`queue_timeout`), completed 503; a shed without waiting is started, admitted, rejected (`overload`, `queue_full`), completed 503; a client that left while queued is started, admitted, `QueueWaited(client_gone)`, completed 499.
 
 Typical sequences: success is started, admitted, attempt started, (first token), attempt ended, completed. A refusal is started,
 rejected, completed (with admitted before the rejection for the registry-mode model and capacity refusals). A retry starts the second

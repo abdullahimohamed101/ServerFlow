@@ -52,8 +52,7 @@ Every existing series keeps its name, labels and buckets (the golden series test
 - Unprefixed names stay; the `job` label from the scrape configuration identifies the binary. Only `serverflow_build_info` carries a prefix.
 - The 99.9% availability SLO counts 5xx only; 429 (rate limited) and 499 (client left) are not errors.
 
-**Deferred, with the reason:** `inference_queue_duration_seconds` and `admission_rejections_total` wait for Phase 15 (backpressure); there is
-no queue or admission machinery to measure. `scheduler_worker_score` waits for Phase 14 (no scores exist). `gpu_memory_total_bytes` waits for
+**Deferred, with the reason:** `inference_queue_duration_seconds` and `admission_rejections_total` waited for Phase 15 (backpressure; added in Phase 15 PR E, only with `resilience.mode: on`, see below). `scheduler_worker_score` waits for Phase 14 (no scores exist). `gpu_memory_total_bytes` waits for
 Phase 13 (the protocol carries no total). `event_publish_*` and `consumer_lag` belong to Phase 12. Tokens per second on dashboards comes from
 the workers' counters and the heartbeat gauge, not from parsing response bodies in the gateway (hot path).
 
@@ -78,6 +77,7 @@ the workers' counters and the heartbeat gauge, not from parsing response bodies 
   gauges. The 20,000 `sample_limit` of the scrape jobs, which drops a whole scrape, is therefore crossed at about 2,200 workers with GPU gauges (about 2,500
   without); raise `max_workers` and `sample_limit` together. `sample_limit: 20000` stays as the last line of defence.
 - Phase 15 PR D (ADR-020) adds seven families that exist **only** with `resilience.mode: on` in registry mode (nothing changes otherwise): `circuit_breaker_transitions_total{model,state}`, `circuit_breaker_probes_total{model,result}`, `retries_denied_total{model,reason}`, `breaker_trips_suppressed_total{model}`, `inference_deadline_exceeded_total{model}` and, read at scrape, `circuit_breaker_state{worker_id,model}` (only breakers that are not closed) and `circuit_breakers_open{model}`. No new label name. Added ceiling, enforced by `TestResilienceSeriesCeilingWithAThousandWorkersAndModels`: **1,500 series** for these families on top of the 4,500 (1,000 models x 1,000 workers, every breaker open and every event kind: 1,009 series; the state gauge folds workers beyond the label cap into `other` with the highest state).
+- Phase 15 PR E (ADR-020) adds three more families under the same condition: `admission_rejections_total{model,reason}` (reason `global_limit`, `queue_full`, `queue_timeout` or `draining`), `inference_queue_duration_seconds{model}` (a histogram, 5 ms to 60 s, of the requests that waited) and, read at scrape, `admission_queue_depth{model}` (every served model, 0 when empty). No new label name; the ceiling above covers them (`TestResilienceSeriesCeilingWithAThousandWorkersAndModels` feeds every reason and a wait for 1,000 models). `inference_gateway_overhead_seconds` now excludes the time a request spent in the admission queue (with the feature off there is no queue, so nothing changes).
 - Series with bounded label sets (`auth_rejections_total{status}`, `rate_limit_rejections_total{limit}`, the strategy's decision histogram, the
   registry heartbeat results, `redis_errors_total{kind}`) exist from the first scrape, so `rate()` and alerts work from a cold start. Series
   labelled by `model` or `worker_id` appear with traffic by nature.

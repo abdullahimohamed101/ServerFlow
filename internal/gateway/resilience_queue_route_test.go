@@ -436,3 +436,92 @@ func TestAShedBodyLeavesOutAnUnknownWorkerCount(t *testing.T) {
 	awaitResult(t, held)
 	awaitResult(t, q1)
 }
+
+// panicSched wraps the scheduler and panics when armed.
+type panicSched struct {
+	inner interface {
+		SelectWorker(context.Context, *protocol.InferenceRequest, []protocol.WorkerSnapshot) (*protocol.WorkerSnapshot, error)
+	}
+	armed bool
+	mu    sync.Mutex
+}
+
+func (p *panicSched) SelectWorker(ctx context.Context, req *protocol.InferenceRequest, ws []protocol.WorkerSnapshot) (*protocol.WorkerSnapshot, error) {
+	p.mu.Lock()
+	armed := p.armed
+	p.mu.Unlock()
+	if armed {
+		panic("scheduler blew up")
+	}
+	return p.inner.SelectWorker(ctx, req, ws)
+}
+
+// A waiter whose re-route panics (here the scheduler, when a refresh wakes it) leaves the queue: nothing is left
+// behind to be handed a slot nobody will take.
+func TestAWaiterWhoseRerouteIsUnwoundLeavesTheQueue(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g)
+	ps := &panicSched{inner: e.gw.router.sched}
+	e.gw.router.sched = ps
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	doomed := e.chatAsync(context.Background(), "doomed")
+	e.awaitDepth(t, 1)
+
+	ps.mu.Lock()
+	ps.armed = true
+	ps.mu.Unlock()
+	spare := g.snap(2) // a refresh sees a free slot and wakes the waiter, whose routing then panics
+	e.lister.set([]protocol.WorkerSnapshot{spare}, nil)
+	e.refresh(t)
+	if r := awaitResult(t, doomed); r.resp.StatusCode != 500 {
+		t.Fatalf("a panic is a 500: %d", r.resp.StatusCode)
+	}
+	if d := e.rs.waitq.Depth("qwen-7b"); d != 0 {
+		t.Fatalf("the unwound waiter is still queued: depth %d", d)
+	}
+	ps.mu.Lock()
+	ps.armed = false
+	ps.mu.Unlock()
+	g.release(t, 1)
+	awaitResult(t, held)
+	e.settle(t, "w1")
+	if e.rs.admission.Active() != 0 {
+		t.Fatal("a global place was kept")
+	}
+}
+
+// A slot is handed over only to the registration it was taken on: if the worker has registered again, the slot is
+// released normally and a waiter is asked to route.
+func TestAHandOffChecksTheRegistrationOfTheWorker(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	old := g.snap(1)
+	old.RegisteredAt = time.Unix(1_700_000_000, 0)
+	e := newResEnv(t, []protocol.WorkerSnapshot{old}, noBreaker)
+	stand, err := e.rs.waitq.Enqueue("qwen-7b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.rs.waitq.Leave(stand)
+
+	renewed := old
+	renewed.RegisteredAt = old.RegisteredAt.Add(time.Minute)
+	e.lister.set([]protocol.WorkerSnapshot{renewed}, nil)
+	e.refresh(t)
+	e.rs.waitq.Park(stand) // the refresh saw a free slot and woke the stand-in; put it back to waiting
+	e.gw.router.mu.Lock()
+	handed, wake := e.gw.router.handoffLocked(&old)
+	e.gw.router.mu.Unlock()
+	if handed || !wake {
+		t.Fatalf("handed %v wake %v: a slot of the old registration must not be handed over", handed, wake)
+	}
+	e.gw.router.mu.Lock()
+	handed, wake = e.gw.router.handoffLocked(&renewed)
+	e.gw.router.mu.Unlock()
+	if !handed || wake {
+		t.Fatalf("handed %v wake %v: the current registration takes it", handed, wake)
+	}
+	if g := e.rs.waitq.Depth("qwen-7b"); g != 0 {
+		t.Fatalf("the stand-in waiter received the slot and left: depth %d", g)
+	}
+}

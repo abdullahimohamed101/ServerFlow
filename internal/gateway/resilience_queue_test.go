@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -821,4 +822,35 @@ func TestServeFlushesTheQueueNearTheEndOfTheShutdownBudget(t *testing.T) {
 		t.Fatal("Serve did not return")
 	}
 	<-held
+}
+
+// Many waiters that all give up leave nothing behind: no waiter, no slot, no global place, and the goroutines of the
+// requests are gone.
+func TestManyCancelledWaitersLeaveNothingBehind(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	const n = 120
+	e := queueEnv(t, g, queueCfg(n+10, 30*time.Second), func(c *config.Config) { c.Resilience.Queue.MaxTenantShare = 0 })
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	base := runtime.NumGoroutine()
+	ctx, cancel := context.WithCancel(context.Background())
+	var all []<-chan chatResult
+	for i := 0; i < n; i++ {
+		all = append(all, e.chatAsync(ctx, fmt.Sprintf("c%d", i)))
+	}
+	e.awaitDepth(t, n)
+	cancel()
+	for _, c := range all {
+		<-c
+	}
+	e.awaitDepth(t, 0)
+	g.release(t, 1)
+	awaitResult(t, held)
+	e.settle(t, "w1")
+	eventually(t, 5*time.Second, func() bool { return e.rs.admission.Active() == 0 }, "global places")
+	e.client.CloseIdleConnections()
+	eventually(t, 10*time.Second, func() bool { return runtime.NumGoroutine() <= base+30 }, fmt.Sprintf("goroutines back near %d", base))
+	if got := g.arrivals(); len(got) != 1 {
+		t.Fatalf("a cancelled waiter reached the worker: %v", got)
+	}
 }
