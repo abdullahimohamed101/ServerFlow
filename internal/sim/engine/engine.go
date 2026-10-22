@@ -35,6 +35,8 @@ var (
 	ErrQueueFull = errors.New("engine: queue full")
 	// ErrTooLarge means the prompt can never fit in the KV budget.
 	ErrTooLarge = errors.New("engine: prompt does not fit in the KV cache")
+	// ErrInvalidRequest means the request is malformed (no input tokens, or a negative max_tokens).
+	ErrInvalidRequest = errors.New("engine: invalid request")
 	// ErrTimeRegression means a call carried a time earlier than the engine's clock.
 	ErrTimeRegression = errors.New("engine: time went backwards")
 )
@@ -57,6 +59,11 @@ const (
 	maxOutputCap = 1 << 20
 	// minIteration keeps every iteration strictly positive so virtual time always advances.
 	minIteration = time.Microsecond
+	// maxIteration bounds one iteration (a day); iteration end times saturate at the largest Duration
+	// instead of wrapping, so event times never go backwards however extreme the time or parameters.
+	maxIteration = 24 * time.Hour
+	// maxOutput bounds a request's planned output length, so no float-to-int conversion can overflow.
+	maxOutput = 1 << 30
 	// noiseClamp bounds the lognormal multiplier so one draw cannot stall the engine for hours.
 	noiseClamp = 20.0
 )
@@ -207,9 +214,9 @@ func (e *Engine) Submit(now time.Duration, r Request) (Info, []Event, error) {
 		return Info{}, nil, err
 	}
 	if r.InputTokens < 1 || r.MaxTokens < 0 {
-		return Info{}, evs, fmt.Errorf("engine: invalid request (input %d, max_tokens %d)", r.InputTokens, r.MaxTokens)
+		return Info{}, evs, fmt.Errorf("%w (input %d, max_tokens %d)", ErrInvalidRequest, r.InputTokens, r.MaxTokens)
 	}
-	if r.InputTokens+1 > e.p.KVBudgetTokens {
+	if r.InputTokens > e.p.KVBudgetTokens-1 { // not InputTokens+1 > budget: that overflows near MaxInt
 		e.rejected++
 		return Info{}, evs, ErrTooLarge
 	}
@@ -362,11 +369,20 @@ func (e *Engine) drawOutput(id int64, maxTokens int) (target int, finish string)
 	} else {
 		natural = float64(e.cfg.OutputMeanTokens) * f
 	}
-	n := max(int(math.Round(natural)), 1)
+	n := int(math.Round(math.Min(natural, maxOutput)))
+	n = max(n, 1)
 	if maxTokens > 0 && maxTokens <= n {
 		return maxTokens, "length"
 	}
 	return n, "stop"
+}
+
+// addDuration returns t+d, saturating at the largest Duration.
+func addDuration(t, d time.Duration) time.Duration {
+	if t > math.MaxInt64-d {
+		return math.MaxInt64
+	}
+	return t + d
 }
 
 func splitmix(x uint64) uint64 {
@@ -389,7 +405,7 @@ func lognormal(r *rand.Rand, cv float64) float64 {
 
 func (e *Engine) decodeDuration(b int) time.Duration {
 	d := ms((e.p.StepBaseMs + e.p.StepPerSeqMs*float64(b)) * lognormal(e.rng, e.p.StepNoiseCV))
-	return max(d, minIteration)
+	return min(max(d, minIteration), maxIteration)
 }
 
 func (e *Engine) prefillDuration(chunk int, first bool) time.Duration {
@@ -397,7 +413,7 @@ func (e *Engine) prefillDuration(chunk int, first bool) time.Duration {
 	if first {
 		v += e.p.PrefillFixedMs
 	}
-	return max(ms(v*lognormal(e.rng, e.p.PrefillNoiseCV)), minIteration)
+	return min(max(ms(v*lognormal(e.rng, e.p.PrefillNoiseCV)), minIteration), maxIteration)
 }
 
 // startIteration admits waiting requests and launches the next iteration at time t, or goes idle.
@@ -438,7 +454,7 @@ func (e *Engine) startIteration(t time.Duration, evs *[]Event) {
 			e.kvUsed++
 		}
 	}
-	e.iter, e.busy, e.iterEnd = it, true, t+dur
+	e.iter, e.busy, e.iterEnd = it, true, addDuration(t, dur)
 }
 
 // admit moves requests from the head of the wait queue into prefilling while a slot and KV are free.

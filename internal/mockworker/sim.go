@@ -61,6 +61,8 @@ func (d *simDriver) dispatchLocked(evs []engine.Event) {
 	for _, ev := range evs {
 		if st := d.streams[ev.ID]; st != nil {
 			st.evs = append(st.evs, ev)
+			// The wake-up is only a latency optimisation: a handler that misses it still wakes at its
+			// own timer for the engine's next event. The channel holds one pending signal.
 			select {
 			case st.notify <- struct{}{}:
 			default:

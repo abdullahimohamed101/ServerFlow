@@ -190,10 +190,15 @@ queue bound (`--queue-size`, 503 `queue_full`), drain, tracing, metrics, respons
 ### Profiles and parameter files
 
 A profile is a `Params` value (`internal/sim/engine/params.go`); a parameter file is the same as JSON with
-`"version": 1`. Files are parsed strictly (unknown fields, a wrong version, trailing data and out-of-range
-values are errors). `Params.Hash()` is the SHA-256 of the canonical JSON, logged at startup and served in
-`/stats`, so a result can say which world it came from; changing any field changes it (a test checks every
-field). The built-in profiles are all **assumed**, not fitted: round numbers of the order of a 7-8 B model on
+`"version": 1`. Files are parsed strictly. These are errors: a key that is not exactly one of the field
+names (case matters), a duplicate key, a missing key (every field must be given, there are no defaults),
+a `null` value, a value of the wrong type, a wrong or missing `version`, data after the object, an empty
+`name` or `provenance`, either longer than 256 characters or containing control characters (both are echoed
+into `/stats` and the startup log), and any out-of-range number. `Params.Hash()` is the SHA-256 of the
+compact JSON of the version and the parameters in struct order, with negative zero folded into zero, logged
+at startup and served in `/stats`, so a result can say which world it came from. Two parameter sets have the
+same hash exactly when every field is equal (whitespace and key order in a file do not matter), and
+changing any one field changes it (a test checks every field). The built-in profiles are all **assumed**, not fitted: round numbers of the order of a 7-8 B model on
 one datacenter GPU, chosen to give the shapes below, with `fast`, `medium` and `slow` as three hardware
 generations for a heterogeneous fleet. `provenance` says so in every file and in `/stats`; only a calibration
 against a real engine (Phase 14 PR H) may claim more, and nothing here has been calibrated.
@@ -211,7 +216,7 @@ Added, only in this mode:
 
 | Field | Meaning |
 | --- | --- |
-| `gpu_utilization` | Batch fill, `active / max_concurrency` in percent. A modelled quantity: it says nothing about how real GPU utilisation counters behave (they typically saturate well before the batch is full) |
+| `gpu_utilization` | Batch fill, `active / max_concurrency` in percent. A modelled quantity: it is not a measurement and is not claimed to behave like any real GPU utilisation counter |
 | `gpu_memory_used_mb` | `weights_mb` plus KV tokens in use times `kv_bytes_per_token` |
 | `sim` | `engine`, `profile`, `provenance`, `params_hash`, `prefilling`, `running`, `kv_used_tokens`, `kv_budget_tokens`, `preemptions`, `kv_exhausted` |
 
@@ -277,6 +282,12 @@ KV budget: the most requests holding a slot at once (the rest wait in the queue)
 - The network, the tokenizer and the HTTP server: those are the real ones, running on the same laptop as
   the load generator and the gateway, so wall-clock results carry that machine's scheduling noise
   (ADR-013). Only the engine itself is deterministic.
+- Cost at scale: every waiting handler wakes on each engine event and takes the driver lock, so the work per
+  decode step grows with the number of waiting requests (O(N); about a thousand at the 1024 concurrency
+  cap). It is fine for tens of concurrent requests and will distort timing at the cap.
+- Independence between workers: the embedded cluster gives every simulated worker `Seed` 1, so their
+  output-length and noise streams are identical, not independent. Use distinct `--seed` values when
+  independent workers matter.
 - Anything about CUDA, vLLM, Metal or llama.cpp. Results measured against it say nothing about them.
 
 ## What it is not

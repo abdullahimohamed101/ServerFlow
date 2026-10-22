@@ -47,11 +47,17 @@ func main() {
 		os.Exit(1)
 	}
 	cfg.Addr = ln.Addr().String() // the real address, so ":0" still yields a unique worker ID
-	logger.Info("mock-worker starting", "component", "mock-worker", "worker_id", cfg.EffectiveWorkerID(),
-		"addr", ln.Addr().String(), "model", cfg.Model, "ttft", cfg.TTFT.String(), "tokens_per_second", cfg.TokensPerSecond,
-		"output_tokens", cfg.OutputTokens, "max_concurrency", cfg.MaxConcurrency, "queue_size", cfg.QueueSize,
+	// The constant-speed model's ttft and tokens_per_second are meaningless with the simulator engine and
+	// are left out of its startup line; the default line is unchanged.
+	start := []any{"component", "mock-worker", "worker_id", cfg.EffectiveWorkerID(),
+		"addr", ln.Addr().String(), "model", cfg.Model}
+	if !cfg.UsesSim() {
+		start = append(start, "ttft", cfg.TTFT.String(), "tokens_per_second", cfg.TokensPerSecond)
+	}
+	start = append(start, "output_tokens", cfg.OutputTokens, "max_concurrency", cfg.MaxConcurrency, "queue_size", cfg.QueueSize,
 		"failure_rate", cfg.FailureRate, "failure_mode", string(cfg.FailureMode), "seed", cfg.Seed,
 		"startup_delay", cfg.StartupDelay.String(), "drain_announce", cfg.DrainAnnounce.String())
+	logger.Info("mock-worker starting", start...)
 
 	if cfg.UsesSim() {
 		p := cfg.SimParams()

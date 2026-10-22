@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -113,6 +114,80 @@ func TestParseParamsRejectsBadFiles(t *testing.T) {
 	}
 	if _, err := ParseParams(strings.NewReader(ok)); err != nil {
 		t.Errorf("the good file was rejected: %v", err)
+	}
+}
+
+func TestParamsValidateBounds(t *testing.T) {
+	base, _ := Profile("default")
+	for name, mut := range map[string]func(*Params){
+		"negative step base":     func(p *Params) { p.StepBaseMs = -1; p.StepPerSeqMs = 5 },
+		"negative step per seq":  func(p *Params) { p.StepPerSeqMs = -1; p.StepBaseMs = 5 },
+		"negative prefill fixed": func(p *Params) { p.PrefillFixedMs = -1 },
+		"negative prefill token": func(p *Params) { p.PrefillPerTokenMs = -0.001 },
+		"kv budget 1":            func(p *Params) { p.KVBudgetTokens = 1 },
+		"kv budget 0":            func(p *Params) { p.KVBudgetTokens = 0 },
+		"negative chunk":         func(p *Params) { p.PrefillChunkTokens = -1 },
+		"negative bytes":         func(p *Params) { p.KVBytesPerToken = -1 },
+		"negative weights":       func(p *Params) { p.WeightsMB = -1 },
+		"negative cv":            func(p *Params) { p.OutputCV = -0.1 },
+		"empty name":             func(p *Params) { p.Name = "" },
+		"empty provenance":       func(p *Params) { p.Provenance = "" },
+		"long name":              func(p *Params) { p.Name = strings.Repeat("n", 257) },
+		"long provenance":        func(p *Params) { p.Provenance = strings.Repeat("p", 257) },
+		"control char":           func(p *Params) { p.Name = "a\nb" },
+	} {
+		p := base
+		mut(&p)
+		if p.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	edge := base
+	edge.KVBudgetTokens, edge.Name, edge.Provenance = 2, strings.Repeat("n", 256), strings.Repeat("p", 256)
+	if err := edge.Validate(); err != nil {
+		t.Errorf("boundary values rejected: %v", err)
+	}
+}
+
+func TestParseParamsIsStrict(t *testing.T) {
+	good, _ := Profile("default")
+	b, _ := good.MarshalFile()
+	ok := string(b)
+	cases := map[string]string{
+		"unknown extra key":   strings.Replace(ok, `"name"`, `"bogus": 1, "name"`, 1),
+		"case-variant key":    strings.Replace(ok, `"step_base_ms"`, `"Step_Base_Ms"`, 1),
+		"duplicate key":       strings.Replace(ok, `"name"`, `"step_base_ms": 5, "name"`, 1),
+		"null value":          strings.Replace(ok, `"step_noise_cv": 0`, `"step_noise_cv": null`, 1),
+		"null provenance":     strings.Replace(ok, `"provenance": "assumed`, `"provenance": null, "x": "assumed`, 1),
+		"missing field":       strings.Replace(ok, `"output_cv": 0,`, ``, 1),
+		"missing version":     strings.Replace(ok, `"version": 1,`, ``, 1),
+		"empty provenance":    strings.NewReplacer(good.Provenance, "").Replace(ok),
+		"string for a number": strings.Replace(ok, `"weights_mb": 14000`, `"weights_mb": "14000"`, 1),
+		"array not object":    `[]`,
+		"huge name":           strings.Replace(ok, `"default"`, `"`+strings.Repeat("a", 300)+`"`, 1),
+	}
+	for name, in := range cases {
+		if _, err := ParseParams(strings.NewReader(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestNegativeZeroHashesLikeZeroAndIsNormalised(t *testing.T) {
+	a, _ := Profile("default")
+	b := a
+	b.StepNoiseCV = math.Copysign(0, -1)
+	if a.Hash() != b.Hash() {
+		t.Error("-0 and 0 hash differently")
+	}
+	b2, _ := a.MarshalFile()
+	in := strings.Replace(string(b2), `"step_noise_cv": 0`, `"step_noise_cv": -0`, 1)
+	p, err := ParseParams(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Signbit(p.StepNoiseCV) || p.Hash() != a.Hash() {
+		t.Errorf("parsed -0 kept its sign or changed the hash")
 	}
 }
 

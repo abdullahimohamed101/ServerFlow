@@ -34,11 +34,17 @@ func newEngineMean(t testing.TB, p Params, seqs, queue, mean int) *Engine {
 	return e
 }
 
+// maxTestSteps bounds every drain loop in the tests, so a livelocked engine fails fast instead of spinning.
+const maxTestSteps = 200000
+
 // runUntil advances the engine event by event until the given time (or idle) and returns all events.
 func runUntil(t testing.TB, e *Engine, until time.Duration) []Event {
 	t.Helper()
 	var all []Event
-	for {
+	for steps := 0; ; steps++ {
+		if steps > maxTestSteps {
+			t.Fatalf("no progress after %d engine steps (livelock?)", maxTestSteps)
+		}
 		at, ok := e.NextEvent()
 		if !ok || at > until {
 			break
@@ -371,6 +377,12 @@ func TestOutputFractionMakesMaxTokensAKnownOverestimate(t *testing.T) {
 	if info.OutputTokens != 10 {
 		t.Errorf("no max_tokens: %d tokens, want the mean 10", info.OutputTokens)
 	}
+	// 0.3 * 1005 = 301.5 rounds to 302 (a floor would give 301); 0.3 * 5 = 1.5 rounds to 2.
+	for max, want := range map[int]int{1005: 302, 5: 2} {
+		if info, _ = mustSubmit(t, e, 0, Request{InputTokens: 1, MaxTokens: max}); info.OutputTokens != want {
+			t.Errorf("max_tokens %d: %d tokens, want %d (rounded, not floored)", max, info.OutputTokens, want)
+		}
+	}
 }
 
 func TestFinishReasonLengthWhenMaxTokensEndsTheOutput(t *testing.T) {
@@ -500,7 +512,10 @@ func play(t testing.TB, cfg Config, steps []step) ([]Event, *Engine, []int64) {
 	}
 	for i, s := range steps {
 		// Interleave engine events with the scripted calls in time order.
-		for {
+		for guard := 0; ; guard++ {
+			if guard > maxTestSteps {
+				t.Fatalf("step %d: no progress (livelock?)", i)
+			}
 			at, ok := e.NextEvent()
 			if !ok || at > s.at {
 				break
@@ -525,7 +540,7 @@ func play(t testing.TB, cfg Config, steps []step) ([]Event, *Engine, []int64) {
 		switch {
 		case err == nil:
 			ids = append(ids, info.ID)
-		case errors.Is(err, ErrQueueFull) || errors.Is(err, ErrTooLarge):
+		case errors.Is(err, ErrQueueFull) || errors.Is(err, ErrTooLarge) || errors.Is(err, ErrInvalidRequest):
 			ids = append(ids, 0)
 		default:
 			t.Fatalf("step %d: %v", i, err)
@@ -704,7 +719,11 @@ func TestAdmissionAndDecodeGrowthAcceptAnExactFit(t *testing.T) {
 	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
 	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
 	// Run to the point where both have been admitted (the second at the end of the first's prefill).
-	for at, ok := e.NextEvent(); ok && e.Stats().Active < 2; at, ok = e.NextEvent() {
+	for n, at, ok := 0, time.Duration(0), true; ok && e.Stats().Active < 2 && n < maxTestSteps; n++ {
+		at, ok = e.NextEvent()
+		if !ok {
+			break
+		}
 		if _, err := e.Advance(at); err != nil {
 			t.Fatal(err)
 		}

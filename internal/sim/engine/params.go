@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // SchemaVersion is the parameter-file format version. It is part of the hashed bytes.
@@ -71,8 +74,10 @@ func okMs(v float64) bool { return !math.IsNaN(v) && v >= 0 && v <= maxStepMs }
 // Validate returns an error describing the first invalid value.
 func (p Params) Validate() error {
 	switch {
-	case p.Name == "":
-		return errors.New("name must not be empty")
+	case !okText(p.Name, false):
+		return fmt.Errorf("name must be 1-%d printable characters", maxTextLen)
+	case !okText(p.Provenance, false):
+		return fmt.Errorf("provenance must be 1-%d printable characters (say where the numbers come from, or \"assumed\")", maxTextLen)
 	case !okMs(p.StepBaseMs) || !okMs(p.StepPerSeqMs):
 		return fmt.Errorf("step_base_ms and step_per_seq_ms must be in [0, %v], got %v and %v", maxStepMs, p.StepBaseMs, p.StepPerSeqMs)
 	case p.StepBaseMs+p.StepPerSeqMs <= 0:
@@ -93,6 +98,21 @@ func (p Params) Validate() error {
 		return fmt.Errorf("output_fraction must be in [0,1], got %v", p.OutputFraction)
 	}
 	return nil
+}
+
+// maxTextLen bounds name and provenance, which are echoed into every /stats response and log line.
+const maxTextLen = 256
+
+func okText(s string, allowEmpty bool) bool {
+	if (s == "" && !allowEmpty) || len(s) > maxTextLen {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r == utf8.RuneError {
+			return false
+		}
+	}
+	return true
 }
 
 func okCV(v float64) bool { return !math.IsNaN(v) && v >= 0 && v <= maxCV }
@@ -116,12 +136,76 @@ func (p Params) MarshalFile() ([]byte, error) {
 // version. Two parameter sets have the same hash exactly when every field is equal, whatever the
 // whitespace or key order of the file they came from.
 func (p Params) Hash() string {
-	b, err := json.Marshal(paramsFile{Version: SchemaVersion, Params: p})
+	b, err := json.Marshal(paramsFile{Version: SchemaVersion, Params: p.normalized()})
 	if err != nil { // unreachable: only numbers and strings
 		return ""
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// normalized folds negative zero into zero, the one case where two equal numbers marshal differently.
+func (p Params) normalized() Params {
+	for _, f := range []*float64{&p.StepBaseMs, &p.StepPerSeqMs, &p.StepNoiseCV, &p.PrefillFixedMs, &p.PrefillPerTokenMs,
+		&p.PrefillNoiseCV, &p.OutputCV, &p.OutputFraction} {
+		*f += 0 // -0 + +0 is +0
+	}
+	return p
+}
+
+// fileKeys are the exact keys a parameter file must contain, no more and no fewer.
+var fileKeys = func() map[string]bool {
+	keys := map[string]bool{}
+	t := reflect.TypeOf(paramsFile{})
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if f.Anonymous {
+			for j := range f.Type.NumField() {
+				keys[strings.Split(f.Type.Field(j).Tag.Get("json"), ",")[0]] = true
+			}
+			continue
+		}
+		keys[strings.Split(f.Tag.Get("json"), ",")[0]] = true
+	}
+	return keys
+}()
+
+// checkKeys walks the top-level object and rejects what encoding/json would let through: duplicate
+// keys (last wins), keys that match a field only case-insensitively, unknown keys, null values and
+// missing keys.
+func checkKeys(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return errors.New("must be a JSON object")
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := tok.(string)
+		switch {
+		case !fileKeys[key]:
+			return fmt.Errorf("unknown key %q (keys are exact and case-sensitive)", key)
+		case seen[key]:
+			return fmt.Errorf("duplicate key %q", key)
+		}
+		seen[key] = true
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return err
+		}
+		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			return fmt.Errorf("key %q is null", key)
+		}
+	}
+	for k := range fileKeys {
+		if !seen[k] {
+			return fmt.Errorf("missing key %q (every field must be given)", k)
+		}
+	}
+	return nil
 }
 
 // ParseParams decodes and validates a parameter file. Unknown fields, a wrong version, trailing data and
@@ -133,6 +217,9 @@ func ParseParams(r io.Reader) (Params, error) {
 	}
 	if len(raw) > maxParamsFileBytes {
 		return Params{}, fmt.Errorf("parameter file is larger than %d bytes", maxParamsFileBytes)
+	}
+	if err := checkKeys(raw); err != nil {
+		return Params{}, fmt.Errorf("parameter file: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -149,7 +236,7 @@ func ParseParams(r io.Reader) (Params, error) {
 	if err := f.Validate(); err != nil {
 		return Params{}, fmt.Errorf("parameter file: %w", err)
 	}
-	return f.Params, nil
+	return f.Params.normalized(), nil
 }
 
 const assumed = "assumed: order-of-magnitude shape of a 7-8B model on one datacenter GPU; not fitted to any measurement"
@@ -214,4 +301,11 @@ func ProfileNames() []string {
 	return names
 }
 
-func ms(v float64) time.Duration { return time.Duration(math.Round(v * float64(time.Millisecond))) }
+// ms converts milliseconds to a Duration, saturating instead of overflowing.
+func ms(v float64) time.Duration {
+	ns := math.Round(v * float64(time.Millisecond))
+	if ns >= float64(maxIteration) {
+		return maxIteration
+	}
+	return time.Duration(ns)
+}

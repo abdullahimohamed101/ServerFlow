@@ -326,11 +326,22 @@ func TestParseFlagsSimProfileAndParamsFile(t *testing.T) {
 	}
 }
 
+func validParamsFile(t *testing.T) string {
+	t.Helper()
+	p, _ := engine.Profile("fast")
+	b, _ := p.MarshalFile()
+	path := filepath.Join(t.TempDir(), "ok.json")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestParseFlagsSimRejectsConflicts(t *testing.T) {
 	for name, args := range map[string][]string{
 		"ttft with sim":         {"--model-engine=sim", "--ttft=1s"},
 		"tps with sim":          {"--model-engine=sim", "--tokens-per-second=5"},
-		"profile and file":      {"--model-engine=sim", "--profile=slow", "--sim-params=x"},
+		"profile and file":      {"--model-engine=sim", "--profile=slow", "--sim-params=" + validParamsFile(t)},
 		"unknown profile":       {"--model-engine=sim", "--profile=nope"},
 		"missing file":          {"--model-engine=sim", "--sim-params=/nonexistent/p.json"},
 		"profile without sim":   {"--profile=slow"},
@@ -359,5 +370,67 @@ func TestSimMidstreamFailureOnAOneTokenOutput(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Errorf("%d events before the abort, want none", len(events))
+	}
+}
+
+// --- leaks, advancing, token counters ----------------------------------------------------------------
+
+func (e *env) simStreams() int {
+	e.srv.sim.mu.Lock()
+	defer e.srv.sim.mu.Unlock()
+	return len(e.srv.sim.streams)
+}
+
+func TestSimDoesNotLeakStreams(t *testing.T) {
+	e := simEnv(t, func(c *Config) { c.OutputTokens = 30; c.FailureRate, c.FailureMode = 0.3, ModeMidstream })
+	var wg sync.WaitGroup
+	for i := range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(20+i*15)*time.Millisecond)
+			defer cancel()
+			if resp, err := e.post(ctx, chatBody(i%2 == 0, "hi", "")); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	eventually(t, 5*time.Second, func() bool { return e.simStreams() == 0 }, "every request's stream forgotten (completed, cancelled or aborted)")
+}
+
+// /stats must advance the engine itself: while the only handler is held in an injected delay nobody else
+// drives it, yet the request (a few milliseconds of work) must show as finished.
+func TestSimStatsAdvanceTheEngine(t *testing.T) {
+	e := simEnv(t, func(c *Config) { c.OutputTokens = 3 })
+	e.srv.Faults().SetExtraDelay(600 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { defer close(done); timeOne(t, e, "hi", "") }()
+	eventually(t, 2*time.Second, func() bool { // read without advancing: the point is that /stats does it
+		e.srv.sim.mu.Lock()
+		defer e.srv.sim.mu.Unlock()
+		return e.srv.sim.eng.Stats().Submitted == 1
+	}, "request submitted")
+	time.Sleep(200 * time.Millisecond)
+	if s := e.stats(t); s.ActiveRequests != 0 || s.Sim.Running != 0 {
+		t.Errorf("stats show the request still active (%+v): /stats did not advance the engine", s)
+	}
+	<-done
+}
+
+func TestSimCountsGeneratedTokensAndReportsARate(t *testing.T) {
+	e := simEnv(t, func(c *Config) { c.OutputTokens = 400 })
+	done := make(chan struct{})
+	go func() { defer close(done); timeOne(t, e, "hi", "") }()
+	// 400 tokens at ~2.5ms each takes about a second; the 5 s window needs complete 100ms buckets.
+	eventually(t, 3*time.Second, func() bool { return e.stats(t).RecentTokensPerSecond > 100 }, "a positive recent rate")
+	<-done
+	if s := e.stats(t); s.TokensGenerated != 400 {
+		t.Errorf("tokens_generated = %d, want 400", s.TokensGenerated)
+	}
+	_, body := e.get(t, "/metrics")
+	if !strings.Contains(body, "worker_output_tokens_total 400") {
+		t.Errorf("worker_output_tokens_total is not 400 in sim mode")
 	}
 }
