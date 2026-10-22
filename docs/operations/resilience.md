@@ -8,7 +8,7 @@ and its reasons are in ADR-020 and `docs/plans/completed/phase-15-fault-toleranc
 
 **Everything is wired, and since the last pull request (G) `resilience.mode` defaults to `on`.** The feature takes effect only with `gateway.worker_source: registry`; with static workers
 `mode: on` is a valid no-op. **This is a behaviour change for every existing registry-mode deployment that sets nothing**, listed below. `resilience.mode: off` is the kill switch: with it (and with static workers) requests, headers, bodies, logs and `/metrics`
-are byte-identical to the gateway before Phase 15 (a committed differential against master checks 39 request shapes).
+are identical to the gateway after PR A's three unconditional fixes (panic-safe attempts, unknown-model pre-check, second-routing metric; master 16dda6b already contains them). A committed differential against master checks 39 request shapes.
 
 | PR | Content | State |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ With the default (on, registry mode), no fault, free capacity: nothing changes e
 2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
 3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
 4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
-5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+5. The first-byte deadline defaults to header + idle timeouts plus the 5 s dial timeout (185 s with the defaults), so no single attempt the old gateway served is cut — **excluded** per attempt; a request that spends a slow header phase, a retry and a late first byte beyond that total (about 250 s) was served before and now gets 504 `UPSTREAM_TIMEOUT` — documented; an explicit value below the header timeout is refused.
 6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
 7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
 8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.
@@ -41,6 +41,10 @@ The list is repeated verbatim in ADR-020, the operations guide, the README note 
 **Additional visible details** (not in the list above; found by the differential): attempt log lines gain `verdict` (`ok`, `fault`, `neutral`) and, when they apply, `probe` and `retry_denied`; the refusal of a full model is the usual
 `NO_CAPACITY` body with another message and no `eligible_workers` field, and it is not counted as a scheduling decision (`scheduler_decisions_total{result="no_capacity"}` no longer rises for it, `admission_rejections_total` does); the registry refresh, key-usage writes and
 lease renewal keep running through the readiness grace and the drain; the ejection cap is per model.
+
+Also visible with the default on: responses carry `Connection: close` while the gateway is draining (item 8); traces gain the span events `queue.wait` and `retry.denied` and the attributes `serverflow.queue.wait_ms`, `serverflow.queue.result`, `serverflow.retry.denied` and `serverflow.breaker.probe`; Kafka events can carry attempt `failure_class` values `panic` and `deadline` and a shed is a `failed` event with `failure_class=no_capacity`. **The differential does not cover traces or events.**
+
+**How far the D25 evidence goes.** `TestEveryD25ItemNamesATestThatExists` only checks that the tests named for each item still exist; it does not prove they test the item. Items 5, 6, 9 and 10 have no evidence tests of their own: 5 and 6 are exclusion items (the deadline default and the overhead histogram are covered by `TestTheDerivedDeadlineNeverCutsASlowButServedAttempt` and `TestTheOverheadHistogramExcludesTheQueueWait`, not named in the table) and 9 and 10 are documentation items. `ServerFlowCircuitOpen` can fire for a worker that is already ejected for another reason (an ejected worker whose breaker takes no room under the cap); this is harmless.
 
 **Kill switch.** `resilience.mode: off` in the configuration file, `SERVERFLOW_RESILIENCE_MODE=off` in the environment, or `SF_RESILIENCE_MODE=off` in the compose `.env` (then `make dev-up` again); restart the gateway. A misspelled value (`of`) is refused at start-up rather than ignored,
 so a mistyped kill switch cannot silently leave the feature on.

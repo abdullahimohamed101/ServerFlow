@@ -165,9 +165,9 @@ From request accepted to first dispatch the p95 is above 25 ms (authentication, 
 ### Worker not serving or silent (`ServerFlowWorkerNotServing`, `ServerFlowWorkerHeartbeatStale`)
 
 `NotServing`: the worker's agent reports it FAILED, UNHEALTHY or LOST (its backend is down); the gateway already routes around it. `HeartbeatLate` (warning) fires when the heartbeat is more than 5 s
-old, which is `worker.suspect_timeout`: from that age the gateway no longer routes to the worker, so this is the moment of isolation. `HeartbeatStale` (critical) needs more than 10 s (`worker.unhealthy_timeout`, the registry marks the worker UNHEALTHY),
+old, which is `worker.suspect_timeout`: from that age the gateway no longer routes to the worker, so isolation happens at that age (about 4.1-4.2 s after a kill in the measured experiment); the alert itself comes later. `HeartbeatStale` (critical) needs more than 10 s (`worker.unhealthy_timeout`, the registry marks the worker UNHEALTHY),
 so one late heartbeat warns and never pages critical; above 10 s both fire. Silent-agent detection is defined as "the gateway stops routing to a worker whose agent went silent" (Phase 15, D23): about 5 s plus one registry refresh, which the
-repeated kill experiment confirmed (`docs/benchmarks/phase-15-chaos.md`); the time to the critical alert is still about 16 s (10 s of age plus a 5 s scrape and a 5 s evaluation), which is slower than the 10 s failed-worker target of spec section 31, while the
+repeated kill experiment confirmed (`docs/benchmarks/phase-15-chaos.md`); measured on the compose stack, the warning fired 15.4 and 15.8 s after the kill (about 11 s after isolation) and the critical alert 20.5 and 20.9 s after it; each alert lags the age it tests by about 10.4-10.5 s, the worst case of the 5 s scrape plus the 5 s rule evaluation, which is slower than the 10 s failed-worker target of spec section 31, while the
 warning and the backend-failure path (`NotServing`, about 5 s) meet it. Look at the agent's and the backend's logs for that `worker_id`; the registry removes a lost worker after `worker.retention`.
 
 <a id="runbook-ineligible-selection"></a>

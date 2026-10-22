@@ -16,6 +16,7 @@ alert ServerFlowWorkerNotServing:firing first seen at 20.5 s
   cp t=29.1 health=lost state=LOST eligible=False age=30.3
 
 --- run 2: the same again
+(raw data of this run was not retained; the figures below were copied from its console output)
 mode agent, requests after the fault: 158 failed: 0 with 2 attempts: 0
 control plane: first not eligible at 4.1 s after the fault
 alert ServerFlowWorkerHeartbeatLate:firing first seen at 15.8 s

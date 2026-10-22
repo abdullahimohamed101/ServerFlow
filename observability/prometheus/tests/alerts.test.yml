@@ -269,6 +269,19 @@ tests:
               summary: "Worker w1 has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
               runbook: "docs/operations/observability.md#runbook-worker-down"
       - {eval_time: 30s, alertname: ServerFlowWorkerHeartbeatStale, exp_alerts: []} # age 7: not critical
+  - name: "the warning threshold is exactly 5 s, so an age of 5.5 s fires it and 4.5 s does not"
+    interval: 5s
+    input_series:
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w1",model="m"}', values: '4.5x12'}
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w2",model="m"}', values: '5.5x12'}
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: ServerFlowWorkerHeartbeatLate
+        exp_alerts:
+          - exp_labels: {severity: warning, worker_id: w2, model: m}
+            exp_annotations:
+              summary: "Worker w2 has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
   - name: one late heartbeat (age 7 s, then back to normal) warns for one evaluation and never pages critical
     interval: 5s
     input_series:

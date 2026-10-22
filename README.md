@@ -140,7 +140,7 @@ On Windows (no `make`), use the existing quality gate:
 ## Behaviour changes in Phase 15 (resilience is on by default)
 
 From Phase 15 `resilience.mode` defaults to **`on`** (circuit breakers, retry budget, bounded admission queue with load shedding, gateway drain; ADR-020). It takes effect only with `gateway.worker_source: registry`; static-worker deployments are not affected.
-An existing registry-mode deployment that sets nothing changes behaviour as listed here. `resilience.mode: off` (or `SERVERFLOW_RESILIENCE_MODE=off`, or `SF_RESILIENCE_MODE=off` in the compose `.env`) is the kill switch and restores the previous behaviour exactly.
+An existing registry-mode deployment that sets nothing changes behaviour as listed here. `resilience.mode: off` (or `SERVERFLOW_RESILIENCE_MODE=off`, or `SF_RESILIENCE_MODE=off` in the compose `.env`) is the kill switch and restores the gateway as it was after Phase 15 PR A's three unconditional fixes (panic-safe attempts, unknown-model pre-check, second-routing metric).
 Details, configuration, metrics and runbooks: `docs/operations/resilience.md`.
 
 With the default (on, registry mode), no fault, free capacity: nothing changes except the items below. *Excluded* = made not to change; *asserted* = changes, pinned by a named test; *documented* = changes, stated in README/ADR-020/operations guide/PR text with the kill switch.
@@ -149,7 +149,7 @@ With the default (on, registry mode), no fault, free capacity: nothing changes e
 2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
 3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
 4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
-5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+5. The first-byte deadline defaults to header + idle timeouts plus the 5 s dial timeout (185 s with the defaults), so no single attempt the old gateway served is cut — **excluded** per attempt; a request that spends a slow header phase, a retry and a late first byte beyond that total (about 250 s) was served before and now gets 504 `UPSTREAM_TIMEOUT` — documented; an explicit value below the header timeout is refused.
 6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
 7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
 8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.

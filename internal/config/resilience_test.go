@@ -61,6 +61,13 @@ func TestResilienceDefaults(t *testing.T) {
 	}
 }
 
+// The global cap becomes live with the default flip (D25 item 4): its default is part of the contract the documents state.
+func TestDefaultGlobalRequestCapIs1000(t *testing.T) {
+	if got := Default().Admission.MaxGlobalRequests; got != 1000 {
+		t.Errorf("admission.max_global_requests default = %d, want 1000 (README, ADR-020 and the operations guide say so)", got)
+	}
+}
+
 func TestResilienceEffective(t *testing.T) {
 	for _, tc := range []struct {
 		mode, source string

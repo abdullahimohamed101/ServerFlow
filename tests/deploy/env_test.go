@@ -148,3 +148,16 @@ func TestControlPlaneClientsOptIntoPlainHTTP(t *testing.T) {
 		}
 	}
 }
+
+// The compose gateway's kill-switch variable defaults to on: flipping the default to off would silently turn the Phase 15
+// feature off in the container stack while the configuration default (on) is what the documents promise.
+func TestComposeResilienceDefaultIsOn(t *testing.T) {
+	gw := services(t, "docker-compose.yml")["gateway"]
+	env, _ := gw["environment"].(map[string]any)
+	if got := fmt.Sprint(env["SERVERFLOW_RESILIENCE_MODE"]); got != "${SF_RESILIENCE_MODE:-on}" {
+		t.Errorf("gateway SERVERFLOW_RESILIENCE_MODE = %q, want ${SF_RESILIENCE_MODE:-on}", got)
+	}
+	if got := expand(fmt.Sprint(env["SERVERFLOW_RESILIENCE_MODE"])); got != "on" {
+		t.Errorf("the expanded default is %q, want on", got)
+	}
+}
