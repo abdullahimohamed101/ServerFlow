@@ -323,8 +323,14 @@ func runScenario(t *testing.T, s scenario) {
 	}
 
 	// Let what was in flight at the open finish, then watch: only probes may reach the worker and only
-	// probes may cost a client a failure.
-	time.Sleep(150 * time.Millisecond)
+	// probes may cost a client a failure. A request in flight at the open to a worker that stalls ends only when the
+	// header timeout cuts it (found as a failure of TestFrozenWorker in 1 of 15 runs: 3 failures with 1 probe), so
+	// the wait covers that.
+	inflight := 150 * time.Millisecond
+	if s.header > 0 {
+		inflight += s.header
+	}
+	time.Sleep(inflight)
 	selOpen, probesOpen := r.selections(), r.probes()
 	reqs, fails := r.window(1200 * time.Millisecond)
 	probes := r.probes() - probesOpen
