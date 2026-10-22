@@ -219,7 +219,8 @@ func (r *rig) eventually(d time.Duration, cond func() bool, what string) {
 
 // settle is how long the breaker must stay closed, with no new open, before recovery is judged: a stream that was
 // already in flight when the fault ended has ended or aborted by then. It is kept short on purpose: the recovered
-// worker is not always routed for long after it recovers in this rig (see the chaos note), and the window that follows
+// worker is often not selected from about 400 ms after its breaker closed in this rig (the least-active scheduler reads
+// the load the worker last reported in a heartbeat, one second old), and the window that follows
 // has to start soon after the close.
 const settle = 150 * time.Millisecond
 
@@ -333,7 +334,11 @@ func runScenario(t *testing.T, s scenario) {
 	// cleared and be opened again by a stream that was already in flight (found by instrumenting a failing run: it
 	// was closed at the clear, the wait passed at once, a late abort reopened it and no traffic came back in the
 	// window). So the wait counts closes after the clear (or accepts a breaker that is already closed) and requires a short quiet period with no new open.
-	r.eventually(15*time.Second, r.closedAndSettled(settle), "the breaker closes after the fault ends and stays closed")
+	quiet := time.Duration(0) // only a leaky scenario has a late abort that can reopen the breaker after a close
+	if s.leaky {
+		quiet = settle
+	}
+	r.eventually(15*time.Second, r.closedAndSettled(quiet), "the breaker closes after the fault ends and stays closed")
 	selClosed := r.selections()
 	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
 	allowed := int64(0)
