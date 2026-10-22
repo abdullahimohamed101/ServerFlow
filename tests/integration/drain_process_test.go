@@ -549,9 +549,10 @@ func newTestBalancer(t *testing.T) *testBalancer {
 	}
 	b := &testBalancer{addr: ln.Addr().String(), stop: make(chan struct{})}
 	rp := &httputil.ReverseProxy{
-		Director: func(r *http.Request) {
-			r.URL.Scheme = "http"
-			r.URL.Host = b.pick()
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.Out.URL.Scheme = "http"
+			r.Out.URL.Host = b.pick()
+			r.Out.Host = r.Out.URL.Host
 		},
 		Transport:     &http.Transport{DisableKeepAlives: true},
 		FlushInterval: -1,
