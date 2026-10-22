@@ -53,6 +53,8 @@ type rigOpts struct {
 	header  time.Duration // gateway.upstream_header_timeout (0: 30s)
 	mutate  func(*config.Config)
 	workers int
+	// announce is the drain announce period of the mock workers (embedded.Config.MockDrainAnnounce).
+	announce time.Duration
 }
 
 func newRig(t *testing.T, o rigOpts) *rig {
@@ -68,7 +70,7 @@ func newRig(t *testing.T, o rigOpts) *rig {
 	defer cancel()
 	cl, err := embedded.Start(ctx, embedded.Config{
 		Scheduler: "least-active", Workers: workers, Models: []string{"mock-model"}, MaxConcurrency: 8, TTFT: 5 * time.Millisecond,
-		Resilience: "on",
+		Resilience: "on", MockDrainAnnounce: o.announce, MockDrainTimeout: 3 * time.Second,
 		GatewayMutate: func(c *config.Config) {
 			if o.header > 0 {
 				c.Gateway.UpstreamHeaderTimeout = o.header

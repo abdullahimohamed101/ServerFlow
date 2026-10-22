@@ -401,7 +401,7 @@ func TestProcessWorkerRollUnderLoad(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cpAddr := freePort(t)
 			startControlPlaneProc(t, cpAddr, clusterToken)
-					var mocks [2]*proc
+			var mocks [2]*proc
 			var addrs [2]string
 			start := func(i int, id string) {
 				addrs[i] = freePort(t)
@@ -566,7 +566,11 @@ func newTestBalancer(t *testing.T) *testBalancer {
 	return b
 }
 
-func (b *testBalancer) set(i int, addr string) { b.mu.Lock(); b.back[i], b.up[i] = addr, false; b.mu.Unlock() }
+func (b *testBalancer) set(i int, addr string) {
+	b.mu.Lock()
+	b.back[i], b.up[i] = addr, false
+	b.mu.Unlock()
+}
 
 func (b *testBalancer) readyCount() int {
 	b.mu.Lock()
