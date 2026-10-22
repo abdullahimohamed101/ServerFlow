@@ -354,3 +354,67 @@ func TestRecordLateIgnoresOKAndNeutral(t *testing.T) {
 	r.bs.RecordLate(probe, OK)
 	r.want("w1", HalfOpen)
 }
+
+// The cap is per model (plan D9: "a single-worker model never opens"): a gateway that serves a model with one worker
+// and another with three must not eject the sole worker just because the fleet as a whole has room.
+func TestEjectionCapIsPerModel(t *testing.T) {
+	r := newRig(t, capParams())
+	r.members = []Member{
+		{Key: key("solo"), Model: "single", Eligible: true},
+		{Key: key("a1"), Model: "triple", Eligible: true},
+		{Key: key("a2"), Model: "triple", Eligible: true},
+		{Key: key("a3"), Model: "triple", Eligible: true},
+	}
+	r.bs.Sync(r.members)
+	for _, id := range []string{"solo", "a1", "a2", "a3"} {
+		r.sendN(id, Fault, 5)
+	}
+	r.want("solo", Closed) // the sole worker of its model stays in service
+	if !r.bs.Admissible(key("solo")) {
+		t.Fatal("the sole worker of a model must stay admissible")
+	}
+	open := 0
+	for _, id := range []string{"a1", "a2", "a3"} {
+		if r.bs.State(key(id)) != Closed {
+			open++
+		}
+	}
+	if open != 1 { // floor(0.5 x 3)
+		t.Fatalf("%d of the three workers of one model are open, want 1", open)
+	}
+	if got := r.bs.Suppressed(); got != 3 { // solo and two of the triple were held back
+		t.Errorf("suppressed = %d, want 3", got)
+	}
+}
+
+// Another model's workers becoming eligible or open does not change this model's cap on a view change.
+func TestEjectionCapIsPerModelWhenTheViewChanges(t *testing.T) {
+	r := newRig(t, capParams())
+	r.members = []Member{
+		{Key: key("a1"), Model: "a", Eligible: true}, {Key: key("a2"), Model: "a", Eligible: true},
+		{Key: key("b1"), Model: "b", Eligible: false}, {Key: key("b2"), Model: "b", Eligible: false},
+	}
+	r.bs.Sync(r.members)
+	r.sendN("b1", Fault, 5) // ineligible: outside the cap, its trip takes no room
+	r.sendN("b2", Fault, 5)
+	r.want("b1", Open)
+	r.want("b2", Open)
+	for i := range r.members { // both b workers turn eligible again: only one may stay open
+		r.members[i].Eligible = true
+	}
+	r.bs.Sync(r.members)
+	open := 0
+	for _, id := range []string{"b1", "b2"} {
+		if r.bs.State(key(id)) != Closed {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("%d of model b's two workers stay open, want 1", open)
+	}
+	r.sendN("a1", Fault, 5)
+	r.sendN("a2", Fault, 5)
+	if a1, a2 := r.bs.State(key("a1")), r.bs.State(key("a2")); (a1 == Closed) == (a2 == Closed) {
+		t.Fatalf("model a: exactly one of two workers may be ejected, got a1=%v a2=%v", a1, a2)
+	}
+}
