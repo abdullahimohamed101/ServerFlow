@@ -1,3 +1,38 @@
+# Phase 15 — Chaos benchmark, PR F (drain): drain-roll and process-level rolls
+
+**Simulator results.** Embedded cluster on one Apple M5 Pro laptop (loopback, `caffeinate`, mock workers, no GPU), plus process tests on the same machine with real binaries and a test balancer. They show the shape of the drain, not production behaviour; the plan defines no success target. Battery 88% and charging, clock drift 0.0000 s over 5 s before the runs, all runs valid under the gate, load average 2.4-3.5. Raw results are in the scratchpad (not committed).
+
+## drain-roll (`benchmark chaos --scenario drain-roll --repeat 3`): fault window, min / median / max of 3 valid runs
+
+4 workers x 8 slots, 14 closed-loop clients, round-robin, seed 1, half streaming; every worker is drained and replaced in turn (mock announces draining and keeps serving 1.5 s, then refuses; the agent deregisters; a fresh worker starts). **absent** = master 16dda6b (no resilience section, no drain), **off** / **on** = this branch (`resilience.mode` off / on; the embedded gateway has no readiness grace), **on, no announce** = on with `--no-drain-announce` (the mock refuses at the moment it drains).
+
+| group | fault-window success % (primary) | attempts per request (primary) | time to recover s | success p95 / p99 ms |
+|---|---|---|---|---|
+| absent (master) | 100 / 100 / 100 | 1.000 / 1.000 / 1.000 | 1.0 | 165 / 165-169 |
+| off (branch) | 100 / 100 / 100 | 1.000 / 1.000 / 1.000 | 1.0 | 165 / 168-169 |
+| on (branch), announce 1.5 s | 100 / 100 / 100 | 1.000 / 1.000 / 1.000 | 1.0 | 165 / 168-169 |
+| on (branch), no announce | 100 / 100 / 100 | 1.002 / 1.003 / 1.003 | 1.0 | 165 / 168 |
+
+- With an announce above the heartbeat plus the registry refresh the roll costs no failure and no retry (attempts per request 1.000 in every group). Without the announce no client failed either, but about 0.2-0.3% more attempts were made: the retries covering the requests routed to a worker that had begun refusing. The ranges of the announce groups and of the no-announce group do not overlap on attempts per request (1.000 against 1.002-1.003): that is the one distinguishable effect, and it is the cost the announce avoids. Success is 100% everywhere, so there is nothing to compare there. off agrees with absent within spread.
+- Not shown: the benchmark drains workers in process (the registry is told at once), so it cannot show the heartbeat-propagation window of a real SIGTERM; the process tests below do.
+
+## Process-level rolls (`tests/integration/drain_process_test.go`, real binaries, one run each from the 30-run loop; counts vary by run)
+
+| test | setup | result |
+|---|---|---|
+| worker roll, announce 1 s | 2 mock workers + agents, gateway (off), 2 closed-loop clients, both mocks SIGTERMed in turn and replaced | 110 requests, 0 failed, 0 retries |
+| worker roll, announce 0 | same | 42 requests, 0 failed, 3 retries (the cost of no announce) |
+| gateway roll, grace 1 s | two gateways (on) behind a test balancer that polls `/readyz` every 50 ms and does not retry; both SIGTERMed in turn and replaced | 108-216 requests, 0 failed; a stream in flight at the first SIGTERM completed |
+| gateway roll, grace 0 | same, `drain.readiness_grace: 0` | 1-5 failed requests per roll (`connection refused` from the balancer's detection gap) of 47-100: reported, not asserted |
+
+The grace-0 failures are what the readiness grace is for: the balancer needs a poll to notice. Repeatability: the whole process-test set passed 30 times in a row (`-count=30`, 1,843 s), and the in-process tests `-race -count=30` (gateway) and `-count=10` (chaos).
+
+## What this does not show
+
+Real load balancers, Kubernetes preStop and termination periods, vLLM's own drain, several gateways each with a different poll cadence, signals on Linux, and drains longer than the shutdown timeout. The numbers are this machine on this day; a range that overlaps another is not a difference.
+
+---
+
 # Phase 15 — Chaos benchmark, PR E (admission queue, hand-off, load shedding, global cap): overload and Run A
 
 **Simulator results.** Embedded cluster on one Apple M5 Pro laptop (15 CPUs, battery, `caffeinate`, loopback), mock workers, no GPU. They show the shape of the queue's effect, not capacity, and the plan defines no success target, so none is asserted.

@@ -27,6 +27,13 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.draining() {
+		// A draining gateway is not ready, at once: the probe cache (up to 2 s) is bypassed so a load balancer
+		// that polls at the cadence of the grace sees the change in its next poll (D16).
+		infoFrom(r.Context()).errCode = api.CodeNoCapacity
+		api.WriteError(w, api.ErrOverloaded(api.OverloadDraining, "", -1, 1))
+		return
+	}
 	if err := s.ready.check(r.Context()); err != nil {
 		infoFrom(r.Context()).errCode = api.CodeWorkerUnavailable
 		api.WriteError(w, api.ErrWorkerUnavailable())

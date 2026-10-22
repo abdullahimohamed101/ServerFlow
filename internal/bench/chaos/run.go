@@ -72,6 +72,9 @@ const (
 // validity gate passes; an invalid result is returned (not an error) so that it can be recorded.
 func RunOnce(ctx context.Context, o Options, sc Scenario, d Deps, id string, rep report.Repeat) (report.Result, []collect.Record, error) {
 	p := sc.Params(o.Workers, o.Scale)
+	if o.NoDrainAnnounce && sc.Rolling {
+		p.DrainAnnounce = 0
+	}
 	wl, err := workload.New(workload.Spec{Name: o.Workload, Seed: o.Seed, Models: workload.Models{Primary: o.Model}, StreamRatio: o.StreamRatio})
 	if err != nil {
 		return report.Result{}, nil, err
@@ -230,7 +233,7 @@ func RunOnce(ctx context.Context, o Options, sc Scenario, d Deps, id string, rep
 	if p.Mode != "" {
 		params["error_rate"], params["failure_mode"] = fmt.Sprint(p.Rate), string(p.Mode)
 	}
-	if p.DrainAnnounce > 0 {
+	if p.DrainAnnounce > 0 || sc.Rolling {
 		params["drain_announce"] = p.DrainAnnounce.String()
 	}
 	chaos := &report.Chaos{

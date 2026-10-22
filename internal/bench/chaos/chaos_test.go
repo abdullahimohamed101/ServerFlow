@@ -1084,3 +1084,45 @@ func TestQueueSeriesAreSummarizedPerWindow(t *testing.T) {
 		t.Fatal("no failure, no refusal and no queueing is no overload")
 	}
 }
+
+// --no-drain-announce (Phase 15 PR F) drains a roll's workers with no announce period, so the run shows what the announce
+// saves; it changes nothing for any other scenario, and the parameter is recorded either way.
+func TestNoDrainAnnounceZeroesTheAnnounceOfARollOnly(t *testing.T) {
+	if o, _, err := ParseFlags([]string{"--scenario", "drain-roll", "--no-drain-announce"}); err != nil || !o.NoDrainAnnounce {
+		t.Fatalf("flag: %+v %v", o, err)
+	}
+	if o, _, err := ParseFlags([]string{"--scenario", "drain-roll"}); err != nil || o.NoDrainAnnounce {
+		t.Fatalf("default must keep the announce: %+v %v", o, err)
+	}
+	for _, tc := range []struct {
+		scenario string
+		no       bool
+		announce bool // the mock is given an announce period
+		param    string
+	}{
+		{"drain-roll", false, true, "1.5s"},
+		{"drain-roll", true, false, "0s"},
+		{"worker-crash", true, false, ""},
+	} {
+		d, _, _ := fakeDeps(t, 4, nil)
+		var got time.Duration
+		boot := d.Boot
+		d.Boot = func(ctx context.Context, cfg embedded.Config) (Cluster, error) {
+			got = cfg.MockDrainAnnounce
+			return boot(ctx, cfg)
+		}
+		o := testOptions(t, tc.scenario)
+		o.NoDrainAnnounce = tc.no
+		sc, _ := Lookup(tc.scenario)
+		res, _, err := RunOnce(context.Background(), o, sc, d, "run_001", report.Repeat{Index: 1, Of: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (got > 0) != tc.announce {
+			t.Errorf("%s no=%v: the mock got announce %v", tc.scenario, tc.no, got)
+		}
+		if p := res.Chaos.Params["drain_announce"]; p != tc.param {
+			t.Errorf("%s no=%v: recorded drain_announce %q, want %q", tc.scenario, tc.no, p, tc.param)
+		}
+	}
+}

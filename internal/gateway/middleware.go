@@ -109,6 +109,9 @@ func (s *Server) withRequest(next http.Handler) http.Handler {
 		start := time.Now()
 		info := &reqInfo{id: protocol.NewRequestID(), start: start}
 		w.Header().Set(protocol.HeaderRequestID, info.id)
+		if s.draining() {
+			w.Header().Set("Connection", "close") // a draining gateway ends keep-alive connections after the response
+		}
 		rec := &statusRecorder{ResponseWriter: w}
 		ctx := context.WithValue(r.Context(), ctxKey{}, info)
 		observed := isInferenceRequest(r)

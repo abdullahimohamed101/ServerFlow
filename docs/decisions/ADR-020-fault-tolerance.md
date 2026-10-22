@@ -1,7 +1,7 @@
 # ADR-020: Fault Tolerance (Circuit Breakers, Retry Budget, Bounded Admission, Drain)
 
 Status: Accepted in part. Phase 15 is delivered as seven pull requests (plan: `docs/plans/active/phase-15-fault-tolerance.md`, decisions D1 to D27). This record
-is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired), **[PR E]** (admission queue, hand-off, shedding and the global cap wired) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
+is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired), **[PR E]** (admission queue, hand-off, shedding and the global cap wired), **[PR F]** (gateway and worker drain) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
 the pull request that implements it).
 Date: 2026-10-11
 
@@ -321,13 +321,67 @@ after parsing the body (costs a body read per refused request at the moment the 
 - A `global_limit` refusal sets `Connection: close` with the request body unread. A client that is still uploading a large body can see a connection reset or a broken pipe instead of the 503 and its `Retry-After`; clients should treat
   a reset on upload as retryable.
 
-### [later PR] Drain contract (PR F)
+### [PR F] Drain contract (D15, D16)
 
-Decisions D15 and D16. Text lands with PR F.
+**Worker drain (D15).** *Announce, then refuse, then finish.* A mock worker given `--drain-announce` reports `draining` on SIGTERM but keeps serving for the announce period, then refuses new work
+(`503 draining`, a neutral answer) and finishes what is in flight up to `--drain-timeout`; its agent sees the draining state in the next probe and reports `DRAINING`, so the registry stops offering the worker; the agent
+deregisters when the backend has exited. A SIGTERM to the agent itself reports `DRAINING` and deregisters at once (the agent is not in the data path; the backend keeps serving what it has). The announce must exceed the heartbeat
+interval plus the gateway's registry refresh; without it the requests routed from a view that has not caught up reach a refusing worker and are retried on another (the retry costs nothing the client sees, but the retry budget
+is spent). **The agent was not changed**: PR B (announce, `embedded.DrainWorker`, the `drain-roll` scenario) already provided the worker half; PR F proves it with real processes and measures it.
+
+**Gateway drain (D16),** when the feature is effective (`resilience.mode: on`, registry workers). On the first SIGTERM or SIGINT, in this order:
+
+1. The drain flag is set. `/readyz` answers `503` at once, **bypassing the 2 s probe cache** (the body is the usual `NO_CAPACITY` shed body, message "the gateway is shutting down; retry on another instance", `Retry-After: 1`; no
+   new error code), every response to a request that starts after the signal carries `Connection: close` (a request already in flight keeps its keep-alive header, which is harmless because `Shutdown` closes idle connections), and `gateway_draining` is 1. `/healthz` (liveness) stays `200`, and the metrics listener keeps answering until the process is about to exit.
+2. For `resilience.drain.readiness_grace` (default `min(5s, shutdown_timeout/2)`) the listener stays open and requests are served normally, including queueing: a load balancer that has not yet noticed loses nothing.
+3. At the end of the grace the queue is closed (arrivals that would have to wait are shed `draining`; waiters already queued finish, are served or time out by `max_wait`), the listener is closed and `http.Server.Shutdown` waits for in-flight requests.
+   Whoever is still queued 250 ms before the end of the shutdown budget is flushed with a `draining` shed.
+4. **One budget:** `gateway.shutdown_timeout` is measured from the first signal and covers the grace and the drain (hence `readiness_grace < shutdown_timeout`). A drain that does not finish in the budget closes the remaining connections and exits non-zero, as before.
+5. A **second signal** ends the process at once, in the grace and in the drain (the default signal disposition is restored after the first signal, `cmd/gateway/main.go`; the queue is dropped silently). No code was added: process tests pin it.
+
+Background work (registry refresh, key usage writer, rate-limit lease renewal, request recorder) used to stop at the signal. With the feature effective it runs until `Serve` returns, because the grace and the drain serve
+requests from the registry view, which would otherwise go stale (and fail closed after `registry_max_staleness`) in the middle of a drain, and leases of requests still running would not be renewed. With the feature off it still stops at the signal.
+
+**With `mode: off` or static workers nothing changes:** `Serve` takes the old path (no drain flag, no grace, `/readyz` unchanged, no `Connection: close` of our own, background work stops at the signal), the series are absent,
+`/metrics` is byte-identical and the existing signal process tests (static mode) pass unchanged. The embedded benchmark cluster sets `drain.readiness_grace: 0` (its gateway is stopped by cancelling a context, with nobody to notice a failing probe).
+
+*Why a flag and a timer and not a goroutine per phase:* `Serve` already owns the shutdown sequence; the new state is one atomic flag read by the readiness handler and the request wrapper, and one timer.
+*Why `Connection: close` and not only a failing `/readyz`:* keep-alive clients that do not go through a balancer would otherwise stay on this process until the listener closes; the header moves them at their next request.
+*Why not stop accepting at the first signal:* the grace exists so that a balancer that polls every few seconds still has somewhere to send the requests it routes before its next poll.
+
+**Operator contract** (what Phase 17-18 will rely on): `readiness_grace` must be longer than the balancer's detection time (probe period times failure threshold, plus propagation); `shutdown_timeout` must be at least the grace plus your longest
+stream; the orchestrator's termination period must be at least `shutdown_timeout` plus a margin; send SIGTERM, not SIGKILL. Real preStop and load balancer behaviour are Phase 17-18 and are not verified here.
+
+**Deviations and decisions made while implementing PR F** (numbered for the plan's progress notes):
+1. The shutdown timeout covers the grace (one budget from the first signal); the queue flush timer is set to what remains.
+2. Background work keeps running through the grace and the drain when the feature is effective (above); unchanged when off.
+3. `/readyz` while draining reuses the overload shed body (`NO_CAPACITY`, "shutting down") instead of a new error code; the status is what balancers read.
+4. The agent and the mock worker were not changed (PR B had them). Given SIGTERM, the agent reports `DRAINING` and deregisters at once (also when the backend gets the signal at the same moment, which then only shortens the window); with
+   the backend alone it reports `DRAINING` until the backend exits. The agent-alone and backend-alone cases are process-tested (both signalled together is the first case and is not a separate test).
+5. The queue stays open through the grace (D16 step 3 is "at the end of the grace"); PR E closed it at the signal. With grace 0 the two are the same.
+6. New series `gateway_draining` (gauge) appears with the other Phase 15 series, only when the feature is effective; the registry-mode golden additions file gains one line.
+7. Harness: `benchmark chaos --scenario drain-roll --no-drain-announce` drains with no announce period (the comparison of acceptance 18); `drain_announce` is recorded for every roll, including `0s`.
+8. The `drain-roll` scenario is the embedded harness's in-process drain (mock drain plus `agent.Shutdown`, the registry told at once); process-level rolls (worker and gateway behind a test balancer) are in `tests/integration/drain_process_test.go`.
+
+**Limits found (kept, reported).**
+- A request that arrives at the very end of the grace, or after a balancer routes it from a stale poll, can still reach a closed listener (`connection refused`); the grace makes this unlikely, not impossible. With grace 0 the gateway roll behind the test balancer
+  failed 1-5 requests per roll (see the benchmark note); with a 1 s grace and a 50 ms poll it failed none.
+- A second signal drops queued waiters and in-flight requests without an answer. Observation from the verification, not a PR F change: two SIGTERMs sent with zero gap were swallowed in 5 of 15 trials (probably the kernel coalescing identical pending signals); gaps of 10-20 ms always worked.
+- Streams longer than `shutdown_timeout` minus the grace are cut at the end of the budget, as before.
+- Only mock workers: a real vLLM sidecar's drain vocabulary and a real orchestrator's sequence are not verified (Phase 13, 17).
 
 ### [later PR] Defaults, the default-on consequences and the D25 list (PR G)
 
 Text lands with PR G, with `docs/operations/resilience.md`.
+
+## Consequences (PR F)
+
+- With `resilience.mode: on` (registry mode) a SIGTERM or SIGINT makes the gateway fail `/readyz` at once, answer with `Connection: close`, keep serving for `drain.readiness_grace` (default `min(5s, shutdown_timeout/2)`), and then drain
+  in the rest of `gateway.shutdown_timeout`. A developer's Ctrl-C therefore waits for the grace; a second Ctrl-C exits at once. A rolling replacement of workers with a suitable announce costs the clients no failure and no retry.
+- With `mode: off` and with static workers nothing changes (process tests; the signal tests of `signals_process_test.go` pass unchanged).
+- Security review items: none that touch authentication, tokens or the data plane. The readiness and shed bodies carry no worker, key or tenant text. The drain flag is process-local. The one behaviour to read twice is that background
+  work (key usage writes, lease renewal) now outlives the signal when the feature is on, so a drain can still write to PostgreSQL and Redis until `Serve` returns (bounded by the shutdown budget).
+- Risk: a grace shorter than the balancer's detection time loses requests; a shutdown timeout shorter than the grace plus the longest stream cuts streams; both are configuration the operator owns (operator contract above).
 
 ## Consequences (PR E)
 

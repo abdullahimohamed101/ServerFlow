@@ -60,8 +60,17 @@ func (m *metrics) enableResilience(rs *resilienceState) {
 		}, []string{"model"}),
 	}
 	m.res = rm
+	draining := prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "gateway_draining",
+		Help: "1 from the first shutdown signal (the gateway fails /readyz, serves for the readiness grace, then drains), else 0. Present only with resilience.mode on.",
+	}, func() float64 {
+		if rs.draining.Load() {
+			return 1
+		}
+		return 0
+	})
 	m.reg.MustRegister(rm.transitions, rm.probes, rm.denied, rm.suppressed, rm.deadline, rm.rejections, rm.queueWait,
-		newBreakerCollector(m, rs), newQueueCollector(m, rs))
+		newBreakerCollector(m, rs), newQueueCollector(m, rs), draining)
 }
 
 // overloadShed counts a request shed by admission control.
