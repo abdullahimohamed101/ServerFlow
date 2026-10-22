@@ -48,7 +48,7 @@
   "scheduler_ineligible_selections_total{} counter 0",
   "scheduler_selections_total{model=qwen-7b,worker_id=a-1} counter 1",
   "scheduler_selections_total{model=qwen-7b,worker_id=b-2} counter 1",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"attempt\":1,\"attempt_id\":\"\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\",\"worker_id\":\"a-1\"}",

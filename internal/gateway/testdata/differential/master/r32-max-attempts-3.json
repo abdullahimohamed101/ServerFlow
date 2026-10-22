@@ -63,7 +63,7 @@
   "scheduler_selections_total{model=qwen-7b,worker_id=a-1} counter 3",
   "scheduler_selections_total{model=qwen-7b,worker_id=b-2} counter 3",
   "scheduler_selections_total{model=qwen-7b,worker_id=c-3} counter 3",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"attempt\":1,\"attempt_id\":\"\",\"class\":\"status_503\",\"level\":\"INFO\",\"msg\":\"attempt finished\",\"outcome\":\"retried\",\"request_id\":\"\",\"worker_id\":\"a-1\",\"worker_status\":503}",

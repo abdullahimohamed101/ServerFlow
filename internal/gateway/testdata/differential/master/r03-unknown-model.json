@@ -33,7 +33,7 @@
   "scheduler_decision_duration_seconds{strategy=round-robin} histogram count=1",
   "scheduler_decisions_total{model=unknown,result=no_model,strategy=round-robin} counter 1",
   "scheduler_ineligible_selections_total{} counter 0",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"attempt_id\":\"\",\"error_code\":\"MODEL_NOT_FOUND\",\"level\":\"DEBUG\",\"msg\":\"no worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\"}",

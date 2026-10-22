@@ -36,7 +36,7 @@
   "rate_limit_rejections_total{limit=unavailable} counter 0",
   "scheduler_decision_duration_seconds{strategy=round-robin} histogram count=0",
   "scheduler_ineligible_selections_total{} counter 0",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"component\":\"gateway\",\"level\":\"INFO\",\"msg\":\"gateway.worker_networks is empty: workers may name any loopback or private address; set it to the networks your workers live on\"}",

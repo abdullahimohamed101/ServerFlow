@@ -38,7 +38,7 @@
   "rate_limit_rejections_total{limit=tokens} counter 0",
   "rate_limit_rejections_total{limit=unavailable} counter 0",
   "scheduler_ineligible_selections_total{} counter 0",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"attempt_id\":\"\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":200,\"stream\":false}",

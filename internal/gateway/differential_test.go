@@ -240,8 +240,12 @@ var (
 func diffNorm(s string) string {
 	s = diffReID.ReplaceAllString(s, "$1_ID")
 	s = diffRePort.ReplaceAllString(s, "127.0.0.1:PORT")
+	s = diffReGoVersion.ReplaceAllString(s, "GOVERSION")
 	return diffReTime.ReplaceAllString(s, "TIME")
 }
+
+// The toolchain version is build information, not gateway behaviour: CI builds with several Go versions.
+var diffReGoVersion = regexp.MustCompile(`go1\.[0-9]+(\.[0-9]+)?`)
 
 type diffBuf struct {
 	mu sync.Mutex

@@ -43,7 +43,7 @@
   "scheduler_decisions_total{model=unknown,result=error,strategy=round-robin} counter 1",
   "scheduler_ineligible_selections_total{} counter 0",
   "scheduler_no_capacity_total{model=unknown,reason=worker_unavailable} counter 1",
-  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
  ],
  "logs": [
   "{\"attempt_id\":\"\",\"error_code\":\"WORKER_UNAVAILABLE\",\"level\":\"INFO\",\"msg\":\"no worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\"}",
