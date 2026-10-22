@@ -1,6 +1,6 @@
 # Phase 15 — Fault Tolerance: Circuit Breakers, Retry Budgets, Bounded Admission, Drain, and a Chaos Benchmark
 
-Status: Proposed. The user's answers are recorded (shipped default **on**, observability in scope, 503 `NO_CAPACITY` for overload, 10 s initial cool-down, 50% ejection cap) and an independent design review is folded in (section "Review fold-in"). Everything else is at the stated defaults D1-D27.
+Status: Completed (2026-10-22), delivered as seven pull requests A-G; see the implementation progress below. The user's answers are recorded (shipped default **on**, observability in scope, 503 `NO_CAPACITY` for overload, 10 s initial cool-down, 50% ejection cap) and an independent design review is folded in (section "Review fold-in"). Everything else is at the stated defaults D1-D27.
 Owner: coding agent
 Depends on: Phases 4-12 merged (master 4b9fd32): the registry and agents (4), the scheduler (5), retries and attempts (6), the benchmark harness (7), rate limits (8), the observer seam (prep, ADR-016), metrics (10), tracing (11) and events (12). Uses Phase 7 (`cmd/benchmark`) for the acceptance runs.
 Spec: `docs/architecture/serverflow-spec.md` §6, §7, §11-12, §15-16, §24-27, §31, §36, §40, §58 Phase 15, §63
@@ -442,3 +442,28 @@ Three mutants had survived; each is now killed by a test, shown on a scratch cop
 
 The first gate of this round failed once in `TestProcessGatewayRollBehindALoadBalancer/grace_1s`: the replacement gateway could not bind its port (`address already in use` four times: the port from `freePort` stayed held by another process, probably a load client's ephemeral port, and `startProc` retries the same port). Not a product failure; the test now takes a fresh port per launch attempt (`launchProc`, up to 5) and passed `-count=15` afterwards. The gate was then re-run from the start.
 
+### PR G (default flip, D25 differential, observability, final benchmark note): done
+
+Branch `feature/p15g-default-on`, on top of master after PR E and PR F were merged (88954f1). Nothing is pushed. Documents: ADR-020 (PR G section and consequences), `docs/operations/resilience.md` (status, the D25 list, kill switch, runbooks), README note, `docs/operations/observability.md` (dashboard, alerts, runbooks), `docs/benchmarks/phase-15-chaos.md` (final note), `ARCHITECTURE.md`. This plan moved from `docs/plans/active/` to `docs/plans/completed/`.
+
+**Behaviour change for explicit review:** `defaultResilience().Mode = on` changes every registry-mode deployment that sets nothing (D25 list, repeated verbatim in ADR-020, the operations guide and the README; a test compares them with this plan). Static workers and `mode: off` are byte-identical to master.
+
+Acceptance subset, with the evidence:
+
+| # | Criterion | Evidence |
+| --- | --- | --- |
+| 4(a) | Off means off | `TestDifferentialModeOffAndStaticAreIdenticalToMaster`: 39 shapes against the committed recordings of master 16dda6b, identical (status, headers, bodies, logs, every series and value); also static in the default mode |
+| 4(b) | Default on differs only as documented | `TestDifferentialDefaultOnDiffersFromMasterExactlyByTheD25List`: 38 of 39 identical apart from the new series and attempt-line fields; the full-model shape differs as item 1; a table names the allowed shapes and fails when an entry does not differ. Items 2-4, 7, 8, 11 pinned by named tests checked by `TestEveryD25ItemNamesATestThatExists` |
+| 4(c) | `on` with static starts | unchanged tests (config, gateway process tests) green with the flip |
+| 21 | Silent agent and alerts | `ServerFlowWorkerHeartbeatLate` (warning, above 5 s), critical stays at 10 s, `ServerFlowCircuitOpen`, `ServerFlowShedding`, each with firing and quiet promtool cases (a heartbeat late by one interval never fires the critical alert); kill experiment repeated and reported in the benchmark note (alerts at about 15 s and 20 s: still above 10 s); `scripts/quality.sh observability` |
+| 22 | Benchmark deliverable | final note: defaults on against off against master, 3 repeats, freeze, midstream, overload, drain-roll, Run A, spread verdicts, what is not shown |
+| 24 | Default-on documentation | `TestD25ListIsRepeatedVerbatimInTheDocuments`; `mode: off` reproduces Run A (19% errors) |
+| 23 | Quality gate | see the report of the final gate in the pull request |
+
+Deviations and decisions: see "Deviations and decisions made while implementing PR G" in ADR-020 (five items). The two that matter: (1) **the ejection cap was gateway-wide and is now per model** (plan D9: a single-worker model never opens), a defect of PR C/D found while building the dashboard test, fixed with tests red on the old code; (2) the plan's D23 asks for a *new* warning at 5 s and the critical alert unchanged, which is what was built. Also: the compose stack gained `SF_RESILIENCE_MODE`; tests that assumed the default off were changed only to state the mode they need (no assertion loosened; list in ADR-020); the dashboard has no deadline panel; the spec file was not edited (it carries no status table; the README phase table is the status list).
+
+Hand mutation (committed first, mutated on scratch copies, focused tests): 37 mutants over the default, the effective rule, the env overlay, the differential and its table, the log-field normaliser, the master recordings, the D25 verbatim and evidence checks, the per-model cap (six), the three new alerts (eleven expressions and holds), the dashboard (metric, label, panel, datasource), the compose variable and its validation, and the exported-series cluster. All killed after three first survived (Prune not recounting, a shedding threshold the test series hid, the cap relaxation ignoring the model); each now has a test.
+
+## Completion
+
+All acceptance criteria 1-24 have evidence in the progress notes above (A-F) and G. Known risks, as carried into the default-on release: N gateways decide alone; the global cap (1000) is live; the vLLM 503 vocabulary is unverified (Phase 13); streams aborting after the first byte are ejected slowly by design; only mock workers and loopback were measured; Linux behaviour is verified by CI only. Rollback: `resilience.mode: off` (configuration) or revert the flip commit.
