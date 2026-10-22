@@ -236,7 +236,7 @@ func ParseParams(r io.Reader) (Params, error) {
 	if err := f.Validate(); err != nil {
 		return Params{}, fmt.Errorf("parameter file: %w", err)
 	}
-	return f.Params.normalized(), nil
+	return f.normalized(), nil
 }
 
 const assumed = "assumed: order-of-magnitude shape of a 7-8B model on one datacenter GPU; not fitted to any measurement"
