@@ -90,7 +90,7 @@ Open-loop overload, the shed path under a realistic crowd, several gateways each
 
 # Phase 15 — Chaos benchmark, PR D (circuit breakers, retry budget, first-byte deadline, failure taxonomy)
 
-Part of the seven-PR delivery of Phase 15 (plan `docs/plans/active/phase-15-fault-tolerance.md`, decisions D18 to D20). This section is **PR D**: the breaker, budget, deadline and taxonomy are wired
+Part of the seven-PR delivery of Phase 15 (plan `docs/plans/completed/phase-15-fault-tolerance.md`, decisions D18 to D20). This section is **PR D**: the breaker, budget, deadline and taxonomy are wired
 (ADR-020), and the PR B chaos harness is run on the branch with `resilience.mode` **off** and **on** against the PR B baseline of master (`docs/benchmarks/phase-15-baseline/`, resilience `absent`, commit
 92c5488). The queue, shedding, drain and the overload and drain-roll scenarios belong to PRs E and F; worker-crash is a registry-plus-retry baseline and was not repeated.
 Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback, mock workers); none is a capacity claim, and the plan defines no success target, so none is asserted.

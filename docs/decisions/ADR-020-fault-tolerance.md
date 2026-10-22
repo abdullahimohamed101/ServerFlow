@@ -1,8 +1,7 @@
 # ADR-020: Fault Tolerance (Circuit Breakers, Retry Budget, Bounded Admission, Drain)
 
-Status: Accepted in part. Phase 15 is delivered as seven pull requests (plan: `docs/plans/active/phase-15-fault-tolerance.md`, decisions D1 to D27). This record
-is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired), **[PR E]** (admission queue, hand-off, shedding and the global cap wired), **[PR F]** (gateway and worker drain) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
-the pull request that implements it).
+Status: Accepted. Phase 15 was delivered as seven pull requests (plan: `docs/plans/completed/phase-15-fault-tolerance.md`, decisions D1 to D27). This record
+was extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired), **[PR E]** (admission queue, hand-off, shedding and the global cap wired), **[PR F]** (gateway and worker drain) or **[PR G]** (the default flip, the D25 list, observability and the benchmark note).
 Date: 2026-10-11
 
 ## Context
@@ -71,7 +70,7 @@ and body code. No 529. The body shape (`error.message/type/code` plus `model` an
 
 `internal/resilience` holds the building blocks as a pure library: standard library plus `internal/config`, no gateway import (a test enforces both),
 no goroutines or timers, an injectable clock and jitter source, every state change evaluated lazily when a method is called. `resilience.mode` is added to
-the configuration and **defaults to `off` in code until PR G**; the section is validated only when the feature is effective (`mode: on` and registry
+the configuration and **defaulted to `off` in code until PR G, which flipped it to `on`**; the section is validated only when the feature is effective (`mode: on` and registry
 workers), so `on` with static workers is a valid no-op. Nothing in the gateway reads either yet.
 
 **Breakers** (`Breakers`: `Sync`, `Admissible`, `Acquire`, `Record`, `RecordLate`, `Release`, `Prune`, `Snapshot`, `Counts`, `RetryAfter`).
@@ -138,7 +137,7 @@ stress (400 concurrent requests: capacity never exceeded, no waiter lost, no dou
 
 ### [PR D] Circuit breakers, retry budget, first-byte deadline and failure taxonomy, wired (D4-D10, D13, D14)
 
-With `resilience.mode: on` in registry mode the gateway now uses the library of PR C. With `mode: off` (the code default until PR G) or with static workers
+With `resilience.mode: on` in registry mode the gateway now uses the library of PR C. With `mode: off` (the code default until PR G; now the kill switch) or with static workers
 `Server.res` is nil, every call site returns before touching it, the series are not registered, and requests, headers, bodies, logs and `/metrics` are byte-identical
 to the previous gateway (master-versus-branch differential on 40 request shapes, below). Files: `internal/gateway/resilience.go` (state, breaker-change dispatch),
 `resilience_attempt.go` (taxonomy, peek, budget and deadline checks, tickets), `metrics_resilience.go`, and small edits to `attempt.go`, `router.go`, `snapshot.go`.
@@ -317,7 +316,7 @@ after parsing the body (costs a body read per refused request at the moment the 
 - Unauthenticated deployments have no tenant share: one client can fill the queue (the depth bound and the global cap still hold).
 - The global cap is taken before the body is read and the body read deadline is 30 s (`defaultBodyReadTimeout`). A client that authenticates and then dribbles its body can hold a place for up to 30 s, so enough slow
   connections keep `global_limit` firing for everyone; with authentication off anyone can do it. Before this PR the gateway had no cap, so this is a new availability trade (the price of refusing a flood without reading its
-  bodies). The cap is off until PR G flips the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
+  bodies). The cap became live when PR G flipped the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
 - A `global_limit` refusal sets `Connection: close` with the request body unread. A client that is still uploading a large body can see a connection reset or a broken pipe instead of the 503 and its `Retry-After`; clients should treat
   a reset on upload as retryable.
 
@@ -370,9 +369,69 @@ stream; the orchestrator's termination period must be at least `shutdown_timeout
 - Streams longer than `shutdown_timeout` minus the grace are cut at the end of the budget, as before.
 - Only mock workers: a real vLLM sidecar's drain vocabulary and a real orchestrator's sequence are not verified (Phase 13, 17).
 
-### [later PR] Defaults, the default-on consequences and the D25 list (PR G)
+### [PR G] The default flip, the D25 list, observability and the benchmark note (D1, D14, D23-D26)
 
-Text lands with PR G, with `docs/operations/resilience.md`.
+**Decision (D1, user decision): `resilience.mode` ships defaulting to `on`.** The change is one line, `defaultResilience().Mode = on` in `internal/config/resilience.go`, made in the last pull request after every part
+existed and had been measured. The feature takes effect only when `gateway.worker_source` is `registry`: static workers are never affected and `mode: on` with them starts and serves. `resilience.mode: off` (or
+`SERVERFLOW_RESILIENCE_MODE=off`, or `SF_RESILIENCE_MODE=off` in the Phase 16 compose `.env`) is the kill switch; with it requests, headers, bodies, logs and `/metrics` are byte-identical to the gateway before Phase 15
+(differential below). **This is a behaviour change for every existing registry-mode deployment that sets nothing**: an upgraded gateway ejects failing workers, holds a request for a full model, can refuse with a live global cap, and drains on
+SIGTERM, with no configuration change. The list of what changes is decision D25, repeated verbatim here, in `docs/operations/resilience.md`, in the README note and in the pull request text
+(a test, `TestD25ListIsRepeatedVerbatimInTheDocuments`, compares them with the plan):
+
+- **D25 Default-on behaviour changes: each item decided.** With the default (on, registry mode), no fault, free capacity: nothing changes except the items below. *Excluded* = made not to change; *asserted* = changes, pinned by a named test; *documented* = changes, stated in README/ADR-020/operations guide/PR text with the kill switch.
+  1. A request that finds every eligible worker full waits up to 3 s (bounded FIFO) before the 503; `Retry-After` reflects recent waits — asserted + documented.
+  2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
+  3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
+  4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
+  5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+  6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
+  7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
+  8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.
+  9. Log volume: one WARN per breaker open (at most one per worker per cool-down), shed INFO rate-limited to 1/s per reason — documented.
+  10. Tail drop is tenant-blind except for the per-tenant queue share (0.5 of depth); a shed after the quota charge is not refunded — documented.
+  11. New series, dashboard and alerts appear; a probe of a frozen worker can cost one client a 504 — documented.
+  The list is repeated verbatim in ADR-020, the operations guide, the README note and the PR text.
+
+**Additional visible details (not in the plan's D25 list; found by the differential and documented rather than hidden).**
+- (a) Attempt log lines gain `verdict` (`ok`, `fault`, `neutral`) and, when they apply, `probe` and `retry_denied` fields (PR D). Log parsers that reject unknown fields need the new ones.
+- (b) The body of a refusal because the model is full is the usual `NO_CAPACITY` body with another message ("... within the queue wait limit") and without the `eligible_workers` field, and its `Retry-After` is the recent queue wait (item 1); a shed is not a scheduling
+  decision, so `scheduler_decisions_total{result="no_capacity"}`, `scheduler_no_capacity_total` and the decision-duration histogram no longer count a refusal of a full model (the `admission_rejections_total` series does) (PR E).
+- (c) The ejection cap is per model (see the correction below); a model with one worker keeps it however many workers other models have.
+- (d) The registry refresh, key-usage writes and lease renewal keep running through the readiness grace and the drain (PR F). With the feature off they stop at the signal as before.
+
+**Differential (acceptance 4, 24).** `internal/gateway/differential_test.go` drives 39 request shapes (35 registry, 4 static: success, stream, unknown model, bad input, retry on reset/502/503/empty stream, `queue_full`, both workers 503, a single 503, a full
+cluster, draining, 500, 504, 4xx, mid-stream failures, header timeout, first-byte stall, client disconnect, redirect, `/v1/models`, `/healthz`, `/readyz`, wrong method and path, oversize body, no snapshot, no workers, `max_attempts` 1 and 3, mixed models, a reported-full
+worker, a lost model) through a gateway in process against a fake control plane and fake workers, recording every status, header and body, the normalised log lines and every `/metrics` series with its value. The outputs of master (16dda6b, which contains
+Phase 15 PR A) are committed under `internal/gateway/testdata/differential/master` and were produced by the same file run on that tree (recording command in the file header; two recordings were identical after one shape, a body just over the limit, was
+made deterministic). Results: **`mode: off`: 39 of 39 identical to master**; static workers with the default (on): identical; **default on, registry workers: 38 of 39 identical to master apart from the new series (D25 item 11, the names of the
+resilience golden file) and the attempt-line fields (a)**, and the one shape that differs is the full model (item 1). A table in the test names the shapes allowed to differ; an entry that does not differ fails the test (the list cannot go stale), and a shape not in the
+table that differs fails it. Items 2-4, 7, 8 and 11 are not visible in fault-free shapes; each is pinned by a named test, and `TestEveryD25ItemNamesATestThatExists` fails when one of them is renamed or removed.
+
+**Observability (D14, D23, D24).** One dashboard, *ServerFlow Resilience* (`sf-resilience`, `observability/grafana/dashboards/resilience.json`, 11 panels): breakers open and the state of each ejected worker, transitions, probes and trips held back by the cap, retries made and denied,
+admission queue depth and wait, requests shed per second by reason, gateways and workers draining, requests shed while draining. A test starts a gateway with the shipped defaults in front of mock workers, makes every event happen (a breaker opens, probes fail, a second trip is held back, a retry is
+denied, a request waits and is shed) and requires every series the dashboard and the new alerts name to be exported by it, with the label names they use (the Phase 10 exported-by-a-running-server check, extended). Alerts: `ServerFlowCircuitOpen` (`circuit_breakers_open > 0` for 2 minutes, warning),
+`ServerFlowShedding` (more than one `NO_CAPACITY` refusal per 20 s for 2 minutes, `draining` excluded, warning) and, for D23, `ServerFlowWorkerHeartbeatLate` (warning at a heartbeat age above 5 s, the suspect threshold at which the gateway stops routing to the worker); `ServerFlowWorkerHeartbeatStale`
+stays critical above 10 s, so one late heartbeat never pages. The plan (D23) asks for a **new warning at 5 s with the critical alert staying at 10 s**, and that is what was implemented (the critical threshold did not move). Each alert has a firing and a non-firing promtool case and
+a runbook section. D23's repeated kill experiment and its numbers are in `docs/benchmarks/phase-15-chaos.md`: the gateway stops routing to a silent worker about 4 s after its agent dies (control-plane eligibility at the suspect age), the warning alert fires about 15 s after the kill and the critical one about 20 s after
+(Prometheus scrape plus rule evaluation on top of the age), which is still above 10 s; the plan said to report it as it is.
+
+**Deviations and decisions made while implementing PR G.**
+1. **The ejection cap is per model (a correction to PR C/D, plan D9).** The library divided by every eligible worker of the gateway, so in a fleet with several models the sole worker of one model could be ejected (and the model refused until the cool-down ended) while other models had room. The plan's table
+   says a single-worker model never opens. `resilience.Member` gains `Model`; the cap's denominator, numerator and the relaxation on a view change are counted per model (`TestEjectionCapIsPerModel*` in the library, `TestTheEjectionCapIsPerModel` in the gateway, both red on the previous code). The randomized model check still uses one group (it leaves `Model` empty).
+2. **The default flip changes tests that assumed the default off, and only those:** the config defaults test (now asserts on), the env-overlay case for `MODE` (now `off`, the value that changes something), the harness tests that record the build's default (`on`), the chaos `TestRealScenarios` (asks for `off` explicitly, because its
+   expectations describe a gateway without the feature), and `TestProcessGatewayRetriesAroundAFlakyWorker` (asks for `off`: its distribution is the old retry behaviour; a new test, `TestProcessGatewayEjectsAFlakyWorkerByDefault`, asserts the default's behaviour). No assertion was loosened.
+3. **The compose stack** gets `SF_RESILIENCE_MODE` (default `on`, validated `on|off`, passed as `SERVERFLOW_RESILIENCE_MODE`) so the kill switch is visible in `.env`. `make dev-up` and `make dev-smoke` pass with the flipped default (12 of 13 checks, the scale check skipped with one gateway); smoke S8 now checks the five dashboards.
+4. The dashboard has no panel for `inference_deadline_exceeded_total` (the series stays documented): triggering a first-byte deadline in the test cluster is racy against the header timeout, and the dashboard test requires every series it names to be produced by a running cluster.
+5. The ADR-017 ceilings are unchanged by PR G (no series added).
+
+## Consequences (PR G)
+
+- Every registry-mode deployment now runs with the resilience feature unless it sets `mode: off`. The D25 list above is the complete statement of what changes; the first thing an operator may notice is a request for a full model waiting up to 3 s before the 503, a worker missing from routing after
+  repeated failures (`circuit breaker changed state` WARN), and a 5 s wait after Ctrl-C or SIGTERM. The kill switch needs a restart.
+- Static-worker deployments and `mode: off` are unchanged (differential: 39 of 39 byte-identical to master).
+- Risk: the global cap (1000) is live. A gateway that holds more than 1000 concurrent streams starts refusing with `global_limit`; raise `admission.max_global_requests` before upgrading if that is ordinary.
+- Risk: N gateways each decide alone (N times the budget, N times the cap, breakers that disagree); accepted in the plan.
+- Risk: only mock workers and loopback were measured (`docs/benchmarks/phase-15-chaos.md` states what was not).
 
 ## Consequences (PR F)
 
@@ -402,14 +461,14 @@ Text lands with PR G, with `docs/operations/resilience.md`.
   worker's response is relayed (the client sees the worker's 502/503 instead of a retried success); a retried 503 first waits at most 250 ms for its body; a request that sees no output within the
   first-byte deadline gets 504 `UPSTREAM_TIMEOUT` (never shorter than one attempt today). A probe of a frozen worker can cost one client a 504 after the probe header timeout.
   New series appear (list above). Logs gain one WARN per breaker open and `verdict`/`probe`/`retry_denied` fields on attempt lines.
-- With `mode: off` (the code default until PR G) and with static workers nothing changes: byte-identical requests, headers, bodies, logs and `/metrics`; the golden series files are unchanged.
+- With `mode: off` (the code default until PR G, now the kill switch) and with static workers nothing changes: byte-identical requests, headers, bodies, logs and `/metrics`; the golden series files are unchanged.
 - Risk: misclassifying overload as a fault removes capacity when it is scarce. The cap (50%), the neutral codes, the peek and the 10 s cool-down limit it; a real vLLM sidecar's 503 vocabulary is unknown
   (the code list is `neutral503Codes`). A terminal 503 that is not peeked counts as a fault.
 - Risk: a lying worker can answer `queue_full` to stay in rotation (trust boundary: registration).
 
 ## Consequences (PR C)
 
-- A new unused package and an inert configuration section. `resilience.mode` is `off` and nothing reads it; behaviour, metrics and logs are unchanged.
+- A new unused package and an inert configuration section. `resilience.mode` was `off` and nothing read it; behaviour, metrics and logs were unchanged.
 - `resilience.*` keys are accepted in files and the environment from now on, so a configuration prepared for PR D already loads.
 
 ## Consequences (PR A)

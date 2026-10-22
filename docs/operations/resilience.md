@@ -2,15 +2,13 @@
 
 Phase 15 teaches the gateway to survive a failing worker: a per-worker circuit breaker takes it out of routing and probes it back in, a retry
 budget stops retries from multiplying an outage, a bounded queue and a global cap shed overload honestly, and the gateway can drain. The design
-and its reasons are in ADR-020 and `docs/plans/active/phase-15-fault-tolerance.md`. This guide grows with each of the seven pull requests; it
-says at every point what is wired.
+and its reasons are in ADR-020 and `docs/plans/completed/phase-15-fault-tolerance.md`; the measurements are in `docs/benchmarks/phase-15-chaos.md`.
 
 ## Status (read this first)
 
-**Circuit breakers, the retry budget, the first-byte deadline and the failure taxonomy (pull request D), the admission queue, load shedding and the global request cap (pull request E)
-and the gateway drain (pull request F) are wired in.** Everything is inert unless you turn it on: `resilience.mode` **defaults to `off`** in code until the last pull request (G) flips the shipped
-default to `on`, and the feature takes effect only with `gateway.worker_source: registry`. With `off` (or static workers) requests, headers, bodies, logs and `/metrics`
-are byte-identical to before. The final design is "on in registry mode, `off` is the kill switch".
+**Everything is wired, and since the last pull request (G) `resilience.mode` defaults to `on`.** The feature takes effect only with `gateway.worker_source: registry`; with static workers
+`mode: on` is a valid no-op. **This is a behaviour change for every existing registry-mode deployment that sets nothing**, listed below. `resilience.mode: off` is the kill switch: with it (and with static workers) requests, headers, bodies, logs and `/metrics`
+are byte-identical to the gateway before Phase 15 (a committed differential against master checks 39 request shapes).
 
 | PR | Content | State |
 | --- | --- | --- |
@@ -19,21 +17,49 @@ are byte-identical to before. The final design is "on in registry mode, `off` is
 | C | `internal/resilience`, `resilience.*` configuration | merged |
 | D | Breaker, budget, deadline and failure taxonomy wired into the gateway | done |
 | E | Queue, hand-off, load shedding, global cap | done |
-| **F** | Gateway and worker drain | **this guide** |
-| G | Default flip, dashboard, alerts, benchmark note | not yet |
+| F | Gateway and worker drain | done |
+| **G** | Default flip, dashboard, alerts, benchmark note | **this guide** |
 
-### Turning it on
+### Behaviour changes with the default on (decision D25)
+
+With the default (on, registry mode), no fault, free capacity: nothing changes except the items below. *Excluded* = made not to change; *asserted* = changes, pinned by a named test; *documented* = changes, stated in README/ADR-020/operations guide/PR text with the kill switch.
+
+1. A request that finds every eligible worker full waits up to 3 s (bounded FIFO) before the 503; `Retry-After` reflects recent waits — asserted + documented.
+2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
+3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
+4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
+5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
+7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
+8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.
+9. Log volume: one WARN per breaker open (at most one per worker per cool-down), shed INFO rate-limited to 1/s per reason — documented.
+10. Tail drop is tenant-blind except for the per-tenant queue share (0.5 of depth); a shed after the quota charge is not refunded — documented.
+11. New series, dashboard and alerts appear; a probe of a frozen worker can cost one client a 504 — documented.
+
+The list is repeated verbatim in ADR-020, the operations guide, the README note and the PR text.
+
+**Additional visible details** (not in the list above; found by the differential): attempt log lines gain `verdict` (`ok`, `fault`, `neutral`) and, when they apply, `probe` and `retry_denied`; the refusal of a full model is the usual
+`NO_CAPACITY` body with another message and no `eligible_workers` field, and it is not counted as a scheduling decision (`scheduler_decisions_total{result="no_capacity"}` no longer rises for it, `admission_rejections_total` does); the registry refresh, key-usage writes and
+lease renewal keep running through the readiness grace and the drain; the ejection cap is per model.
+
+**Kill switch.** `resilience.mode: off` in the configuration file, `SERVERFLOW_RESILIENCE_MODE=off` in the environment, or `SF_RESILIENCE_MODE=off` in the compose `.env` (then `make dev-up` again); restart the gateway. A misspelled value (`of`) is refused at start-up rather than ignored,
+so a mistyped kill switch cannot silently leave the feature on.
+
+**Before you upgrade a registry-mode gateway, check:** (1) your longest concurrent load against `admission.max_global_requests` (1000 by default; each streaming request counts until its last byte); (2) that your balancer's readiness probe notices a failing `/readyz` within
+`resilience.drain.readiness_grace` (5 s by default) and that `gateway.shutdown_timeout` covers the grace plus your longest stream; (3) that clients treat `503 NO_CAPACITY` with `Retry-After` as retryable; (4) that your log processing accepts the new fields; (5) the new dashboard and alerts (`docs/operations/observability.md`).
+
+### Turning it off or on explicitly
 
 ```yaml
 gateway:
   worker_source: registry
 resilience:
-  mode: on        # or SERVERFLOW_RESILIENCE_MODE=on
+  mode: off       # or on (the default); SERVERFLOW_RESILIENCE_MODE=off|on
 ```
 
-Every other key keeps its default. To go back, set `mode: off` (or unset the variable) and restart: that is the kill switch.
+Every other key keeps its default.
 
-### What changes with `mode: on` in registry mode (PR D: items 1-6, PR E: items 7-11)
+### How it works, in detail (decisions of PR D and PR E)
 
 1. **A worker with sustained faults is ejected.** After 5 faults in a row (or a 50% fault ratio over at least 10 outcomes in 10 s) its breaker opens and the worker receives no traffic;
    after about 10 s (+-20%) one live request at a time is sent to it as a probe, and a good probe closes the breaker, a failed one reopens it with the cool-down doubled up to 2 min.
@@ -119,7 +145,7 @@ Kafka events are unchanged: a shed after admission is one `failed` event with `f
 
 ```yaml
 resilience:
-  mode: off                  # on | off. Default off until the last Phase 15 PR; the final default is on. Registry mode only.
+  mode: on                   # on | off. Default on; off is the kill switch. Effective in registry mode only.
   breaker:
     consecutive_failures: 5  # 1-1000
     failure_ratio: 0.5       # 0-1; 0 switches the ratio rule off
@@ -165,9 +191,18 @@ Validation:
   `SERVERFLOW_RESILIENCE_MODE`: a value other than `on` or `off` is kept and fails validation, so a misspelled kill switch cannot silently leave
   the feature in its default state.
 
-## What is not wired yet
+## Runbooks
 
-The behaviour changes the default brings (decision D25), the dashboard, the alerts and the other runbooks (PR G).
+**A worker keeps getting ejected.** `circuit_breaker_state` (the Resilience dashboard, "Breaker state by worker") names it and the gateway's WARN `circuit breaker changed state` gives the reason (`consecutive_failures` or `failure_ratio`). The worker is failing for real (check its own logs and
+`inference_failures_total` by `reason`), or the gateway is misjudging it: a worker that answers `503` without the codes `queue_full`, `draining` or `not_ready` is judged faulty (a real vLLM sidecar's vocabulary is unverified; Phase 13), and a worker that is merely slow
+beyond `upstream_header_timeout` is ejected by design. Each gateway decides alone, so another gateway may still use the worker. If ejection is wrong for your workers, raise `resilience.breaker.consecutive_failures` or lower `max_open_fraction` (0 never ejects) before turning the feature off.
+
+**The breaker will not close.** After the cool-down (10 s, doubling on each failed probe up to 2 min) one live request at a time probes the worker; a good probe closes it. If it never closes: the probes fail (`circuit_breaker_probes_total{result="fault"}` rising and "Breaker transitions" cycling open and half-open),
+or no request ever reaches it (traffic too low to probe, a model with one worker that is the only candidate, or the worker is ineligible in the registry, which takes it out of the cap and out of routing anyway). A probe of a frozen worker can cost one client a 504 after `breaker.probe_header_timeout`. Restarting the gateway closes every breaker.
+
+**Everything is being shed.** See "Runbook: everything is being shed (PR E)" above; the alert is `ServerFlowShedding`.
+
+**A restart dropped requests.** See "Drain and rolling restarts (PR F)" below.
 
 ## Drain and rolling restarts (PR F)
 
@@ -210,7 +245,7 @@ preStop and termination grace periods, and vLLM's own drain behaviour are Phase 
 - Under sustained overload every queued request waits `queue.max_wait` and then fails: queueing helps bursts, not shortage.
 - The global cap is taken before the body is read and the body read deadline is 30 s (`defaultBodyReadTimeout`). A client that authenticates and then dribbles its body can hold a place for up to 30 s, so enough slow
   connections keep `global_limit` firing for everyone; with authentication off anyone can do it. Before this PR the gateway had no cap, so this is a new availability trade (the price of refusing a flood without reading its
-  bodies). The cap is off until PR G flips the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
+  bodies). The cap is live since PR G flipped the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
 - A `global_limit` refusal sets `Connection: close` with the request body unread. A client that is still uploading a large body can see a connection reset or a broken pipe instead of the 503 and its `Retry-After`; clients should treat
   a reset on upload as retryable.
 

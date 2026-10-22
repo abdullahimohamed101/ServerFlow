@@ -1,0 +1,57 @@
+{
+ "requests": [
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=false",
+   "status": 503,
+   "headers": {
+    "Content-Length": "159",
+    "Content-Type": "application/json",
+    "Retry-After": "1"
+   },
+   "body": "{\"error\":{\"message\":\"no worker has capacity for the model `qwen-7b` right now\",\"type\":\"api_error\",\"code\":\"NO_CAPACITY\",\"model\":\"qwen-7b\",\"eligible_workers\":0}}"
+  },
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=false",
+   "status": 503,
+   "headers": {
+    "Content-Length": "159",
+    "Content-Type": "application/json",
+    "Retry-After": "1"
+   },
+   "body": "{\"error\":{\"message\":\"no worker has capacity for the model `qwen-7b` right now\",\"type\":\"api_error\",\"code\":\"NO_CAPACITY\",\"model\":\"qwen-7b\",\"eligible_workers\":0}}"
+  }
+ ],
+ "series": [
+  "auth_rejections_total{status=401} counter 0",
+  "auth_rejections_total{status=403} counter 0",
+  "auth_rejections_total{status=500} counter 0",
+  "auth_rejections_total{status=503} counter 0",
+  "gateway_registry_refresh_failures_total{} counter 0",
+  "gateway_registry_snapshot_age_seconds{} gauge ~",
+  "inference_failures_total{model=qwen-7b,reason=NO_CAPACITY} counter 2",
+  "inference_gateway_overhead_seconds{model=qwen-7b} histogram count=0",
+  "inference_request_duration_seconds{model=qwen-7b} histogram count=2",
+  "inference_requests_active{} gauge 0",
+  "inference_requests_total{model=qwen-7b,status=503} counter 2",
+  "inference_ttft_seconds{model=qwen-7b} histogram count=0",
+  "rate_limit_bypassed_total{} counter 0",
+  "rate_limit_decision_seconds{} histogram count=0",
+  "rate_limit_rejections_total{limit=concurrency} counter 0",
+  "rate_limit_rejections_total{limit=model} counter 0",
+  "rate_limit_rejections_total{limit=requests} counter 0",
+  "rate_limit_rejections_total{limit=tokens} counter 0",
+  "rate_limit_rejections_total{limit=unavailable} counter 0",
+  "scheduler_decision_duration_seconds{strategy=round-robin} histogram count=2",
+  "scheduler_decisions_total{model=qwen-7b,result=no_capacity,strategy=round-robin} counter 2",
+  "scheduler_ineligible_selections_total{} counter 0",
+  "scheduler_no_capacity_total{model=qwen-7b,reason=no_capacity} counter 2",
+  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+ ],
+ "logs": [
+  "{\"attempt_id\":\"\",\"error_code\":\"NO_CAPACITY\",\"level\":\"INFO\",\"msg\":\"no worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\"}",
+  "{\"attempt_id\":\"\",\"error_code\":\"NO_CAPACITY\",\"level\":\"INFO\",\"msg\":\"no worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\"}",
+  "{\"attempt_id\":\"\",\"error_code\":\"NO_CAPACITY\",\"level\":\"WARN\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":503,\"stream\":false}",
+  "{\"attempt_id\":\"\",\"error_code\":\"NO_CAPACITY\",\"level\":\"WARN\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":503,\"stream\":false}",
+  "{\"component\":\"gateway\",\"level\":\"INFO\",\"msg\":\"gateway.worker_networks is empty: workers may name any loopback or private address; set it to the networks your workers live on\"}"
+ ]
+}

@@ -1,0 +1,63 @@
+{
+ "requests": [
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=false",
+   "status": 502,
+   "headers": {
+    "Content-Length": "112",
+    "Content-Type": "application/json"
+   },
+   "body": "{\"error\":{\"message\":\"the upstream failed to complete the request\",\"type\":\"api_error\",\"code\":\"INFERENCE_FAILED\"}}"
+  },
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=false",
+   "status": 200,
+   "headers": {
+    "Content-Length": "66",
+    "Content-Type": "application/json",
+    "X-Content-Type-Options": "nosniff"
+   },
+   "body": "{\"worker\":\"b-2\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}"
+  }
+ ],
+ "series": [
+  "auth_rejections_total{status=401} counter 0",
+  "auth_rejections_total{status=403} counter 0",
+  "auth_rejections_total{status=500} counter 0",
+  "auth_rejections_total{status=503} counter 0",
+  "gateway_registry_refresh_failures_total{} counter 0",
+  "gateway_registry_snapshot_age_seconds{} gauge ~",
+  "inference_attempts_total{model=qwen-7b,outcome=failed} counter 1",
+  "inference_attempts_total{model=qwen-7b,outcome=ok} counter 1",
+  "inference_failures_total{model=qwen-7b,reason=INFERENCE_FAILED} counter 1",
+  "inference_gateway_overhead_seconds{model=qwen-7b} histogram count=2",
+  "inference_request_duration_seconds{model=qwen-7b} histogram count=2",
+  "inference_requests_active{} gauge 0",
+  "inference_requests_total{model=qwen-7b,status=200} counter 1",
+  "inference_requests_total{model=qwen-7b,status=502} counter 1",
+  "inference_ttft_seconds{model=qwen-7b} histogram count=0",
+  "rate_limit_bypassed_total{} counter 0",
+  "rate_limit_decision_seconds{} histogram count=0",
+  "rate_limit_rejections_total{limit=concurrency} counter 0",
+  "rate_limit_rejections_total{limit=model} counter 0",
+  "rate_limit_rejections_total{limit=requests} counter 0",
+  "rate_limit_rejections_total{limit=tokens} counter 0",
+  "rate_limit_rejections_total{limit=unavailable} counter 0",
+  "scheduler_decision_duration_seconds{strategy=round-robin} histogram count=2",
+  "scheduler_decisions_total{model=qwen-7b,result=selected,strategy=round-robin} counter 2",
+  "scheduler_ineligible_selections_total{} counter 0",
+  "scheduler_selections_total{model=qwen-7b,worker_id=a-1} counter 1",
+  "scheduler_selections_total{model=qwen-7b,worker_id=b-2} counter 1",
+  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+ ],
+ "logs": [
+  "{\"attempt\":1,\"attempt_id\":\"\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\",\"worker_id\":\"a-1\"}",
+  "{\"attempt\":1,\"attempt_id\":\"\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\",\"strategy\":\"round-robin\",\"worker_id\":\"b-2\"}",
+  "{\"attempt\":1,\"attempt_id\":\"\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\",\"worker_id\":\"b-2\",\"worker_status\":200}",
+  "{\"attempt\":1,\"attempt_id\":\"\",\"level\":\"INFO\",\"msg\":\"attempt finished\",\"outcome\":\"failed\",\"request_id\":\"\",\"worker_id\":\"a-1\",\"worker_status\":302}",
+  "{\"attempt_id\":\"\",\"attempts\":1,\"error_code\":\"INFERENCE_FAILED\",\"level\":\"WARN\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":502,\"stream\":false,\"worker_id\":\"a-1\"}",
+  "{\"attempt_id\":\"\",\"attempts\":1,\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":200,\"stream\":false,\"worker_id\":\"b-2\"}",
+  "{\"attempt_id\":\"\",\"level\":\"WARN\",\"msg\":\"upstream returned a redirect\",\"request_id\":\"\",\"status\":302}",
+  "{\"component\":\"gateway\",\"level\":\"INFO\",\"msg\":\"gateway.worker_networks is empty: workers may name any loopback or private address; set it to the networks your workers live on\"}"
+ ]
+}

@@ -126,7 +126,7 @@ On Windows (no `make`), use the existing quality gate:
 | 12 | Kafka | Complete |
 | 13 | Real vLLM worker pool | Not started |
 | 14 | Workload-aware scheduler | Not started |
-| 15 | Fault tolerance | Not started |
+| 15 | Fault tolerance | Complete (`docs/operations/resilience.md`, ADR-020, `docs/benchmarks/phase-15-chaos.md`); **on by default in registry mode, see the note below** |
 | 16 | Dockerized multi-service deployment | Complete (`docs/operations/docker-deployment.md`, ADR-021) |
 | 17 | Kubernetes | Not started |
 | 18 | Kubernetes GPU workers | Not started |
@@ -136,6 +136,28 @@ On Windows (no `make`), use the existing quality gate:
 | 22 | Advanced fair scheduling | Not started |
 | 23 | Final performance study | Not started |
 | 24 | Production polish | Not started |
+
+## Behaviour changes in Phase 15 (resilience is on by default)
+
+From Phase 15 `resilience.mode` defaults to **`on`** (circuit breakers, retry budget, bounded admission queue with load shedding, gateway drain; ADR-020). It takes effect only with `gateway.worker_source: registry`; static-worker deployments are not affected.
+An existing registry-mode deployment that sets nothing changes behaviour as listed here. `resilience.mode: off` (or `SERVERFLOW_RESILIENCE_MODE=off`, or `SF_RESILIENCE_MODE=off` in the compose `.env`) is the kill switch and restores the previous behaviour exactly.
+Details, configuration, metrics and runbooks: `docs/operations/resilience.md`.
+
+With the default (on, registry mode), no fault, free capacity: nothing changes except the items below. *Excluded* = made not to change; *asserted* = changes, pinned by a named test; *documented* = changes, stated in README/ADR-020/operations guide/PR text with the kill switch.
+
+1. A request that finds every eligible worker full waits up to 3 s (bounded FIFO) before the 503; `Retry-After` reflects recent waits — asserted + documented.
+2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
+3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
+4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
+5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
+7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
+8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.
+9. Log volume: one WARN per breaker open (at most one per worker per cool-down), shed INFO rate-limited to 1/s per reason — documented.
+10. Tail drop is tenant-blind except for the per-tenant queue share (0.5 of depth); a shed after the quota charge is not refunded — documented.
+11. New series, dashboard and alerts appear; a probe of a frozen worker can cost one client a 504 — documented.
+
+The list is repeated verbatim in ADR-020, the operations guide, the README note and the PR text.
 
 ## Development
 

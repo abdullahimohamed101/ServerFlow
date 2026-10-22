@@ -1,0 +1,37 @@
+{
+ "requests": [
+  {
+   "request": "POST /v1/chat/completions model=nope stream=false",
+   "status": 404,
+   "headers": {
+    "Content-Length": "111",
+    "Content-Type": "application/json"
+   },
+   "body": "{\"error\":{\"message\":\"the model `nope` does not exist\",\"type\":\"invalid_request_error\",\"code\":\"MODEL_NOT_FOUND\"}}"
+  }
+ ],
+ "series": [
+  "auth_rejections_total{status=401} counter 0",
+  "auth_rejections_total{status=403} counter 0",
+  "auth_rejections_total{status=500} counter 0",
+  "auth_rejections_total{status=503} counter 0",
+  "inference_failures_total{model=unknown,reason=MODEL_NOT_FOUND} counter 1",
+  "inference_gateway_overhead_seconds{model=unknown} histogram count=0",
+  "inference_request_duration_seconds{model=unknown} histogram count=1",
+  "inference_requests_active{} gauge 0",
+  "inference_requests_total{model=unknown,status=404} counter 1",
+  "inference_ttft_seconds{model=unknown} histogram count=0",
+  "rate_limit_bypassed_total{} counter 0",
+  "rate_limit_decision_seconds{} histogram count=0",
+  "rate_limit_rejections_total{limit=concurrency} counter 0",
+  "rate_limit_rejections_total{limit=model} counter 0",
+  "rate_limit_rejections_total{limit=requests} counter 0",
+  "rate_limit_rejections_total{limit=tokens} counter 0",
+  "rate_limit_rejections_total{limit=unavailable} counter 0",
+  "scheduler_ineligible_selections_total{} counter 0",
+  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+ ],
+ "logs": [
+  "{\"attempt_id\":\"\",\"error_code\":\"MODEL_NOT_FOUND\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":404,\"stream\":false}"
+ ]
+}

@@ -29,7 +29,7 @@ plane's registry (`docs/architecture/scheduling.md`). The mock worker is a
 GPU-free stand-in; worker agents register workers with a control plane that
 tracks their state and health. A request that fails before any output is retried on a different
 worker, up to `gateway.max_attempts` (default 2; ADR-012). With `auth.mode: required` /v1 needs an API key whose hash lives in
-PostgreSQL (ADR-014). With `rate_limit.mode: required` each tenant's request, token and concurrency quotas, and optional per-model caps, are enforced across gateways with Redis (ADR-015). With `resilience.mode: on` in registry mode (off by default until the last Phase 15 PR) the gateway also ejects failing workers with per-worker circuit breakers, bounds retries with a budget, holds requests for a full model in a bounded FIFO admission queue with direct hand-off, sheds overload with `503 NO_CAPACITY` and a global request cap, and drains on SIGTERM (`/readyz` fails first, a readiness grace, then in-flight requests finish; ADR-020, `docs/operations/resilience.md`). A benchmark harness drives reproducible load against it (below).
+PostgreSQL (ADR-014). With `rate_limit.mode: required` each tenant's request, token and concurrency quotas, and optional per-model caps, are enforced across gateways with Redis (ADR-015). With `resilience.mode: on` in registry mode (the default since Phase 15 PR G; `off` is the kill switch and restores the previous behaviour exactly) the gateway also ejects failing workers with per-worker circuit breakers, bounds retries with a budget, holds requests for a full model in a bounded FIFO admission queue with direct hand-off, sheds overload with `503 NO_CAPACITY` and a global request cap, and drains on SIGTERM (`/readyz` fails first, a readiness grace, then in-flight requests finish; ADR-020, `docs/operations/resilience.md`). A benchmark harness drives reproducible load against it (below).
 
 ## Major Components
 
@@ -60,7 +60,7 @@ Configuration is likewise one file per feature under `internal/config`.
 loopback by default, a bearer token for anything else). The metrics observer exports request, attempt, scheduler and overhead series with bounded labels
 (`telemetry.LabelGuard`); state that is not a request event (the worker registry, the registry snapshot, Redis, the PostgreSQL pool, the API key cache, the
 mock worker's engine) is exported by collectors that sit with what they observe and are attached with `gateway.WithCollector`. `observability/` holds the
-Prometheus configuration, recording and alert rules with promtool tests, and the Grafana datasource and four dashboards; `internal/observability` checks them
+Prometheus configuration, recording and alert rules with promtool tests, and the Grafana datasource and five dashboards (the four of spec section 30 and the Phase 15 resilience dashboard); `internal/observability` checks them
 against what a running cluster exports. See ADR-017 and `docs/operations/observability.md`.
 
 ### Mock Worker
@@ -271,5 +271,7 @@ make dev-up && make dev-smoke                                      # the whole s
 - **The container stack is a development stack** (Phase 16): no TLS between services, one broker and one database, the control-plane token crosses
   the private network in plain http by an explicit opt-in (`control_plane.allow_insecure_transport`, ADR-021). amd64, Docker Desktop and rootful
   Docker are unverified from the development machine.
+- **Resilience is on by default in registry mode** (Phase 15, ADR-020): an upgraded gateway ejects failing workers, queues and sheds, enforces `admission.max_global_requests` and drains on SIGTERM without any configuration change (the list is in README and `docs/operations/resilience.md`). Breakers, the retry budget, the queue and the global cap are
+  per gateway: N gateways allow N times each. Measured with mock workers on loopback only (`docs/benchmarks/phase-15-chaos.md`).
 - **Scheduler strategy claims** must be backed by benchmark evidence before
   any strategy is declared superior (spec section 14, 65).

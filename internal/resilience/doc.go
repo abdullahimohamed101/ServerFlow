@@ -18,7 +18,7 @@
 // events in the future until they are ignored, a step forward ages them out early. Both are bounded by the window
 // length and neither can wedge a breaker.
 //
-// Nothing here is wired into the gateway yet (Phase 15, PR C); resilience.mode defaults to off.
+// The gateway wires this package in (Phase 15, ADR-020) when resilience.mode is on (the default) and workers come from the registry.
 package resilience
 
 import (

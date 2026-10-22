@@ -1,0 +1,61 @@
+{
+ "requests": [
+  {
+   "request": "GET /v1/chat/completions model=qwen-7b stream=false",
+   "status": 405,
+   "headers": {
+    "Allow": "POST",
+    "Content-Length": "19",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff"
+   },
+   "body": "Method Not Allowed\n"
+  },
+  {
+   "request": "POST /nope model=qwen-7b stream=false",
+   "status": 404,
+   "headers": {
+    "Content-Length": "19",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff"
+   },
+   "body": "404 page not found\n"
+  },
+  {
+   "request": "DELETE /v1/models model=qwen-7b stream=false",
+   "status": 405,
+   "headers": {
+    "Allow": "GET, HEAD",
+    "Content-Length": "19",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff"
+   },
+   "body": "Method Not Allowed\n"
+  }
+ ],
+ "series": [
+  "auth_rejections_total{status=401} counter 0",
+  "auth_rejections_total{status=403} counter 0",
+  "auth_rejections_total{status=500} counter 0",
+  "auth_rejections_total{status=503} counter 0",
+  "gateway_registry_refresh_failures_total{} counter 0",
+  "gateway_registry_snapshot_age_seconds{} gauge ~",
+  "inference_requests_active{} gauge 0",
+  "rate_limit_bypassed_total{} counter 0",
+  "rate_limit_decision_seconds{} histogram count=0",
+  "rate_limit_rejections_total{limit=concurrency} counter 0",
+  "rate_limit_rejections_total{limit=model} counter 0",
+  "rate_limit_rejections_total{limit=requests} counter 0",
+  "rate_limit_rejections_total{limit=tokens} counter 0",
+  "rate_limit_rejections_total{limit=unavailable} counter 0",
+  "scheduler_decision_duration_seconds{strategy=round-robin} histogram count=0",
+  "scheduler_ineligible_selections_total{} counter 0",
+  "serverflow_build_info{commit=unknown,go_version=go1.27.1,version=unknown} gauge 1"
+ ],
+ "logs": [
+  "{\"component\":\"gateway\",\"level\":\"INFO\",\"msg\":\"gateway.worker_networks is empty: workers may name any loopback or private address; set it to the networks your workers live on\"}",
+  "{\"level\":\"INFO\",\"method\":\"DELETE\",\"msg\":\"request\",\"path\":\"/v1/models\",\"request_id\":\"\",\"status\":405}",
+  "{\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":405}",
+  "{\"level\":\"INFO\",\"method\":\"POST\",\"msg\":\"request\",\"path\":\"/nope\",\"request_id\":\"\",\"status\":404}"
+ ]
+}
