@@ -23,8 +23,23 @@ import (
 // resRec is a recording observer that also keeps breaker transitions.
 type resRec struct {
 	recObserver
-	tmu   sync.Mutex
-	trans []BreakerChange
+	tmu    sync.Mutex
+	trans  []BreakerChange
+	queued []QueueWait
+}
+
+// QueueWaited records the wait and puts "queue:<result>" in the call sequence.
+func (r *resRec) QueueWaited(_ context.Context, e QueueWait) {
+	r.tmu.Lock()
+	r.queued = append(r.queued, e)
+	r.tmu.Unlock()
+	r.add("queue:" + e.Result)
+}
+
+func (r *resRec) queueWaits() []QueueWait {
+	r.tmu.Lock()
+	defer r.tmu.Unlock()
+	return append([]QueueWait(nil), r.queued...)
 }
 
 func (r *resRec) BreakerTransition(_ context.Context, e BreakerChange) {
