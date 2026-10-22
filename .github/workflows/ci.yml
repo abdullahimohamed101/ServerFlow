@@ -276,6 +276,43 @@ jobs:
       - name: Deployment static checks
         run: scripts/quality.sh deploy
 
+  k8s-static:
+    # Phase 17: the Kubernetes deployment's static checks, no cluster: `kubectl kustomize` of the base and the kind overlay,
+    # kubeconform -strict against the schemas of the pinned Kubernetes version, and the tests/k8s policy tests (which must run).
+    # kubectl and kubeconform are the pinned releases of deploy/kubernetes/tools.env, each verified against its published
+    # SHA-256 (nothing comes from a container registry). The kind cluster itself is the advisory job in kubernetes.yml.
+    name: k8s static (render, schema, policy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Pinned tool versions (deploy/kubernetes/tools.env is the single source)
+        run: grep -E '^(KUBERNETES_VERSION|KUBECTL_LINUX_AMD64_SHA256|KUBECONFORM_VERSION|KUBECONFORM_LINUX_AMD64_SHA256)=' deploy/kubernetes/tools.env >> "$GITHUB_ENV"
+      - name: Install kubectl and kubeconform (checksum verified)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_LINUX_AMD64_SHA256}  $RUNNER_TEMP/kubectl" | sha256sum --check -
+          chmod +x "$RUNNER_TEMP/kubectl" && mv "$RUNNER_TEMP/kubectl" "$HOME/.local/bin/kubectl"
+          archive="kubeconform-linux-amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/$archive"
+          echo "${KUBECONFORM_LINUX_AMD64_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$HOME/.local/bin" kubeconform
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Tool versions (shellcheck comes with the runner image)
+        run: |
+          kubectl version --client
+          kubeconform -v
+          shellcheck --version | sed -n 2p
+      - name: Kubernetes static checks
+        run: scripts/quality.sh k8s
+
   compose-smoke:
     # Phase 16 (ADR-021): the whole system in containers, then 13 end-to-end checks that must all run (0 skipped).
     # Advisory at first: it is not in the owner's required-check list (docs/development/ci.md). Images come from

@@ -8,6 +8,7 @@
 #   scripts/k8s-up.sh reset     down, then remove .dev/k8s/ (the images and the shared .dev/ secrets stay)
 #   scripts/k8s-up.sh status    pods, volumes and jobs of the namespace
 #   scripts/k8s-up.sh smoke     the data-tier checks D1-D7; the last line is "smoke: N of N checks passed, 0 failed, 0 skipped"
+#   scripts/k8s-up.sh diagnose  status, events, descriptions and the last log lines of every pod (secret-free), for a failed run
 #   scripts/k8s-up.sh render    the rendered manifests of the kind overlay (no Secret content), safe to paste
 #   scripts/k8s-up.sh check     the static checks without a cluster (render, kubeconform, tests/k8s): same as `make k8s-check`
 #   scripts/k8s-up.sh audit|roll-test   not implemented yet (PR 3 and PR 6)
@@ -385,6 +386,13 @@ cmd_smoke() {
   [ "$FAILED" = 0 ]
 }
 
+# diagnose: what CI keeps when a run fails. Pod descriptions show the names of the Secrets a pod reads, never their values.
+cmd_diagnose() {
+  guard_context
+  explain "diagnostics requested"
+  kc -n "$NAMESPACE" describe pods 2>&1 || true
+}
+
 # check: the static checks (no cluster); the same stage CI runs.
 cmd_check() { exec "$ROOT/scripts/quality.sh" k8s; }
 
@@ -398,9 +406,10 @@ case "$CMD" in
   smoke) cmd_smoke ;;
   render) render ;;
   check) cmd_check ;;
+  diagnose) cmd_diagnose ;;
   audit | roll-test) die "$CMD is not implemented yet (the audit arrives with the workloads in PR 3, the rolling-update test in PR 6)" ;;
   *)
-    printf 'usage: scripts/k8s-up.sh up|down|reset|status|smoke|render|check|audit|roll-test | --check-context NAME\n' >&2
+    printf 'usage: scripts/k8s-up.sh up|down|reset|status|smoke|render|check|diagnose|audit|roll-test | --check-context NAME\n' >&2
     exit 2
     ;;
 esac

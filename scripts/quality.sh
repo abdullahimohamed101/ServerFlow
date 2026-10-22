@@ -13,7 +13,11 @@
 #   scripts/quality.sh deploy       Phase 16: the container deployment's static checks (no Docker daemon, no image pulls): the
 #                                   tests/deploy tests (which MUST run), hadolint, shellcheck, `docker compose config` of every
 #                                   file/profile combination
-#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), deploy, build
+#   scripts/quality.sh k8s          Phase 17: the Kubernetes deployment's static checks (no cluster): `kubectl kustomize` of the base
+#                                   and the kind overlay, kubeconform -strict, the tests/k8s tests (which MUST run), shellcheck.
+#                                   kubectl and kubeconform are the pinned versions of deploy/kubernetes/tools.env: a binary on PATH,
+#                                   else the pinned container image (scripts/k8s-tool.sh). Also `make k8s-check`
+#   scripts/quality.sh full         lint, unit, race (this includes the tracing tests), integration and observability (if configured), deploy, k8s, build
 #
 # integration needs the test servers described in docs/development/ci.md:
 #   SERVERFLOW_TEST_POSTGRES_DSN  (scripts/dev-postgres.sh start; scripts/dev-postgres.sh dsn)
@@ -267,6 +271,69 @@ deploy() {
   # YAML syntax of every deployment file is covered by the named tests above (they parse each file with the repository's Go YAML library).
 }
 
+# ---------------------------------------------------------------------------------------------------------
+# Phase 17: static checks of the Kubernetes deployment (docs/operations/kubernetes-deployment.md). No cluster: the overlay is
+# rendered with the pinned kubectl (scripts/k8s-tool.sh), validated against the schemas of the pinned Kubernetes version
+# with the pinned kubeconform, and judged by the tests/k8s policy tests, which must run and pass by name. Without the pinned
+# binaries and without Docker the stage is skipped loudly on a laptop and fails in CI (CI=true).
+have_k8s_tools() {
+  { scripts/k8s-tool.sh kubectl version --client >/dev/null 2>&1 && scripts/k8s-tool.sh kubeconform -v >/dev/null 2>&1; }
+}
+
+k8s() {
+  if ! have_k8s_tools; then
+    if [ "${CI:-}" = "true" ]; then
+      fail "kubectl and kubeconform (the pinned versions of deploy/kubernetes/tools.env, or Docker to run their images) are not available in CI"
+    fi
+    printf '\nquality: SKIPPING k8s (neither the pinned kubectl and kubeconform nor a running Docker). CI runs it.\n'
+    return 0
+  fi
+  local log t out
+  step "kubectl kustomize (base and kind overlay)"
+  local dir
+  for dir in deploy/kubernetes/base deploy/kubernetes/overlays/kind; do
+    scripts/k8s-tool.sh kubectl kustomize --load-restrictor=LoadRestrictionsNone "$dir" >/dev/null || fail "kubectl kustomize failed for $dir"
+  done
+  step "kubeconform -strict (Kubernetes $(scripts/k8s-tool.sh pin KUBERNETES_VERSION))"
+  # The rendered overlay goes into the repository's scratch directory (the container sees only the repository), then is removed.
+  mkdir -p .dev/k8s-check
+  out=.dev/k8s-check/overlay.yaml
+  scripts/k8s-tool.sh kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kubernetes/overlays/kind >"$out"
+  scripts/k8s-tool.sh kubeconform -strict -summary -kubernetes-version "$(scripts/k8s-tool.sh pin KUBERNETES_VERSION | sed 's/^v//')" "$out" || { rm -rf .dev/k8s-check; fail "kubeconform rejected the rendered overlay"; }
+  rm -rf .dev/k8s-check
+  log="$(mktemp "${TMPDIR:-/tmp}/serverflow-k8s.XXXXXX")"
+  step "k8s tests must run, not skip"
+  if ! go test -race -count=1 -v ./tests/k8s/... >"$log" 2>&1; then
+    show_failures "$log"
+    tail -80 "$log"
+    printf 'quality: full log kept at %s\n' "$log" >&2
+    exit 1
+  fi
+  for t in TestRenderedPodsAreHardenedAndComplete TestPodSecurityPolicy TestResourcesPolicy TestProbePolicy TestLifecycleAndVolumes \
+    TestMemoryFitsTheEngineMinimum TestPolicyCatchesMutations TestGatewayDrainRelations TestThirdPartyImagesEqualCompose TestEveryServerFlowImageIsBuiltByTheScript \
+    TestNamespaceEnforcesRestricted TestOnlyAllowedKindsAndNoSecrets TestEveryObjectIsInTheNamespaceWithTheLabels TestServicesSelectPodsAndTargetDeclaredPorts \
+    TestNoSecretsCommitted TestBaseRendersToo TestKindConfig TestKindConfigCatchesMistakes TestToolPins \
+    TestContextCheckUnderStrictShell TestForeignContextIsRefused TestEveryKubectlCallIsGuarded TestScriptsUnderStrictShell TestMakefileTargets \
+    TestKustomizeCommandIsPinned TestSecretsNeverTouchACommandLine TestWorkflowsPinTheTools TestStaticJobAndKindJob; do
+    grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
+  done
+  if grep -q -- "--- SKIP" "$log"; then
+    grep -- "--- SKIP" "$log" >&2
+    fail "a k8s test skipped; the render needs the pinned kubectl or Docker"
+  fi
+  rm -f "$log"
+  printf 'k8s: the named Kubernetes tests ran and passed, nothing skipped\n'
+
+  step "shellcheck (k8s scripts)"
+  if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck scripts/k8s-up.sh scripts/k8s-tool.sh
+  elif [ "${CI:-}" = "true" ]; then
+    fail "shellcheck is not installed in CI"
+  else
+    printf 'quality: SKIPPING shellcheck of the k8s scripts (not installed; CI runs it).\n'
+  fi
+}
+
 have_promtool() { command -v promtool >/dev/null 2>&1 || { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }; }
 
 # Fails on any vulnerability govulncheck reports as called (stdlib findings included; the toolchain CI uses
@@ -298,6 +365,7 @@ full() {
     printf '\nquality: SKIPPING observability (no promtool binary and no running Docker). CI will run it.\n'
   fi
   deploy
+  k8s
   build
 }
 
@@ -311,6 +379,7 @@ case "${1:-}" in
   tracing) tracing_tests ;;
   observability) observability ;;
   deploy) deploy ;;
+  k8s) k8s ;;
   full) full ;;
-  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|deploy|full\n' "$0" >&2; exit 2 ;;
+  *) printf 'usage: %s lint|unit|race|integration|build|vuln|tracing|observability|deploy|k8s|full\n' "$0" >&2; exit 2 ;;
 esac

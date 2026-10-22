@@ -19,7 +19,8 @@ in CI, so the two cannot drift apart.
 | `scripts/quality.sh vuln` | `govulncheck` (installs it if needed), failing on every called vulnerability (no exception list; the one that existed was removed on 2026-10-11, ADR-018) |
 | `scripts/quality.sh observability` | `promtool` check of the Prometheus config and rules and the rule tests, then `internal/observability` (dashboards and rules against the metrics a running cluster exports). Needs `promtool` or Docker (`scripts/promtool.sh`; image `quay.io/prometheus/prometheus:v2.53.0`, override with `PROMTOOL_IMAGE`) |
 | `scripts/quality.sh deploy` | Phase 16, the container deployment's static checks (no Docker daemon, no image pulls): `tests/deploy` and `cmd/healthcheck` tests whose names **must run**, the W1/W3 config tests, `hadolint` on the Dockerfile, `shellcheck` on the dev scripts, and `docker compose config` for 6 profile sets x 5 file sets. `hadolint` and `shellcheck` are required in CI and skipped loudly on a laptop without them. Also `make deploy-check` |
-| `scripts/quality.sh full` | lint, unit, race, integration (when configured), observability (when promtool or Docker is available), deploy, build. Also `make quality` |
+| `scripts/quality.sh k8s` | Phase 17, the Kubernetes deployment's static checks (no cluster): render, `kubeconform -strict`, the `tests/k8s` tests whose names **must run**, shellcheck of the k8s scripts. Needs the pinned `kubectl` and `kubeconform` on `PATH` or Docker to run their images (`scripts/k8s-tool.sh`); skipped loudly on a laptop with neither, required in CI. Also `make k8s-check` |
+| `scripts/quality.sh full` | lint, unit, race, integration (when configured), observability (when promtool or Docker is available), deploy, k8s, build. Also `make quality` |
 
 `integration` needs a PostgreSQL, a Redis and a Kafka-compatible broker that all require credentials, exactly like the CI services. Locally:
 
@@ -92,7 +93,13 @@ local server deliberately requires one.
 | `observability (promtool, dashboards)` | `quality.sh observability` | pinned promtool 2.53.0 release archive, SHA-256 verified; no Docker Hub |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 | `deploy (lint, config, static tests)` | `quality.sh deploy` | Phase 16: pinned `hadolint` v2.15.1 release (SHA-256 verified), `shellcheck` and the compose CLI from the runner image; about 2 minutes, no image pulls |
+| `k8s static (render, schema, policy)` | `quality.sh k8s` | Phase 17: `kubectl kustomize` of the base and the kind overlay, `kubeconform -strict` against the Kubernetes 1.36.4 schemas, and the `tests/k8s` policy tests (hardening, probes, resources, image pins equal to Compose's, no secrets, the context guard); pinned `kubectl` and `kubeconform` releases from `deploy/kubernetes/tools.env`, SHA-256 verified, nothing from a container registry; no cluster; every pull request |
 | `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers with `GATEWAYS=3` and 13 end-to-end checks that must all run (`0 failed, 0 skipped`; a single gateway skips S13); images from `public.ecr.aws`, `quay.io`, `mirror.gcr.io` and `gcr.io` (never Docker Hub) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
+
+`.github/workflows/kubernetes.yml` (Phase 17) holds `k8s kind data tier (advisory)`: a real single-node kind cluster on the runner, the data tier
+under Pod Security `restricted`, and the data-tier smoke checks (`0 failed, 0 skipped`). It runs on pull requests that touch the Kubernetes files, the Dockerfile or
+the migrations, and on every push to `master`; kind and kubectl are pinned releases with verified SHA-256; the node image comes from `mirror.gcr.io` by digest and the
+third-party images are pulled by the node (kubelet retries with backoff). It is not required, and **it has not run on GitHub yet** (the PR that adds it is its first run).
 
 A new push to a pull request cancels the run in progress. Every job has a timeout. Actions are pinned to
 commit SHAs with the version in a comment; Dependabot (`.github/dependabot.yml`) updates them and the Go
