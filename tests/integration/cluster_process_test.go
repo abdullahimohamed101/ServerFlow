@@ -411,11 +411,14 @@ func TestProcessAuthentication(t *testing.T) {
 
 func runBin(t *testing.T, name string, env []string, args ...string) (int, string) {
 	t.Helper()
+	// binary may build the program (a cold build cache on a loaded runner takes far longer than the limit
+	// below), so it is resolved before the clock starts: the limit bounds the run, not the build.
+	path := binary(t, name)
 	// A binary that should have refused to start but is serving instead must fail the
 	// test quickly, not hang it.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary(t, name), args...)
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = append(append(os.Environ(), testMetricsEnv...), env...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
