@@ -67,7 +67,8 @@ against what a running cluster exports. See ADR-017 and `docs/operations/observa
 Purpose: a configurable fake vLLM (latency, tokens/s, queueing, failures) so the
 platform can be built and tested without a GPU. Location: `cmd/mock-worker` +
 `internal/mockworker`. Owns: simulated generation, a bounded FIFO queue, failure
-injection, and provisional worker stats. It is passive: it does not register or
+injection, and provisional worker stats; an opt-in `--model-engine sim` times generation with
+`internal/sim/engine`, a pure deterministic continuous-batching model (Phase 14). It is passive: it does not register or
 send heartbeats (Phase 4). See `docs/development/mock-worker.md`. Status:
 implemented (Phase 3).
 
