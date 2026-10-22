@@ -418,3 +418,23 @@ func TestEjectionCapIsPerModelWhenTheViewChanges(t *testing.T) {
 		t.Fatalf("model a: exactly one of two workers may be ejected, got a1=%v a2=%v", a1, a2)
 	}
 }
+
+// Prune counts the workers that are left: pruning two of four eligible workers halves the cap, and an ejection beyond the
+// new cap is relaxed.
+func TestPruneRecountsTheEligibleWorkersAndRelaxesTheCap(t *testing.T) {
+	r := newRig(t, capParams(), ids(4)...)
+	r.sendN("w1", Fault, 5)
+	r.sendN("w2", Fault, 5)
+	r.want("w1", Open)
+	r.want("w2", Open) // 2 of 4 eligible
+	r.bs.Prune([]Key{key("w1"), key("w2")})
+	open := 0
+	for _, id := range []string{"w1", "w2"} {
+		if r.bs.State(key(id)) != Closed {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("%d of the two remaining workers are open, want 1 (floor(0.5 x 2))", open)
+	}
+}

@@ -461,11 +461,11 @@ tests:
             exp_annotations:
               summary: "A gateway is refusing requests with 503 NO_CAPACITY (reason queue_timeout) at more than one every 20 seconds"
               runbook: "docs/operations/observability.md#runbook-shedding"
-  - name: a burst the queue absorbs, one shed a minute and a flat counter raise no shedding alert
+  - name: a burst the queue absorbs, a steady shed every 30 s and a flat counter raise no shedding alert
     interval: 15s
     input_series:
       - {series: 'admission_rejections_total{instance="g1",model="a",reason="queue_full"}', values: '0x4 20x40'}
-      - {series: 'admission_rejections_total{instance="g1",model="b",reason="global_limit"}', values: '0x3 1x4 2x4 3x4 4x4 5x4 6x4 7x4 8x4 9x4 10x4'}
+      - {series: 'admission_rejections_total{instance="g1",model="b",reason="global_limit"}', values: '0+0.5x40'} # a steady one shed every 30 s (0.033/s): continuously above zero, below the 0.05/s threshold
     alert_rule_test:
       - {eval_time: 3m, alertname: ServerFlowShedding, exp_alerts: []}
       - {eval_time: 8m, alertname: ServerFlowShedding, exp_alerts: []}
