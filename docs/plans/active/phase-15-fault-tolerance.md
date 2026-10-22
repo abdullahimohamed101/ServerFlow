@@ -405,3 +405,7 @@ Hand mutation (committed first, mutated on scratch copies of the committed tree,
 Timing tests: all new gateway queue tests `-race -count=30` clean (241 s); `tests/chaos` overload tests `-race -count=10` clean.
 
 Not verified: more than one gateway, open-loop overload, real GPU queueing, the default cap of 1000 under load, Linux behaviour (CI only).
+
+#### PR E, after the independent verification (SHIP, no correctness bug found)
+
+Five hand mutants had survived; each now has a test that fails against it (mutated on a scratch copy of the committed tree): removing `q.Done` after a refresh-woken waiter is served (ghost waiter: the refresh test now asserts depth 0 and not Busy), a hand-off declined because the head is routing not returning the breaker ticket (`TestADeclinedHandOffReturnsTheProbeTicket`, half-open worker, probe ticket count), a refresh waking one waiter instead of `min(waiters, free slots)` (`TestARefreshWakesAsManyWaitersAsThereAreFreeSlots`), and `freeSlots` ignoring the local in-flight count or the breaker (`TestFreeSlotsHonourLocalLoadAndBreakers`). Docs: ADR-020 and the operations guide now state the new availability trade of the pre-body global cap (slow bodies hold places up to the 30 s body read timeout; an unread body behind `Connection: close` can show a client a reset instead of the 503), and the benchmark note states the TTFT rise (about 20 to 94 ms p95) and that closed-loop clients offered more load in the `on` group.

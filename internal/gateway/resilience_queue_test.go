@@ -469,6 +469,12 @@ func TestARefreshThatFreesCapacityWakesTheWaiters(t *testing.T) {
 	if time.Since(began) > time.Second {
 		t.Fatalf("the woken waiter took %v", time.Since(began))
 	}
+	// Served by its own routing, the waiter has left the queue: no ghost waiter that a later release would hand a
+	// slot nobody takes, and the next arrival is not forced to queue behind it.
+	e.awaitDepth(t, 0)
+	if e.rs.waitq.Busy("qwen-7b") {
+		t.Fatal("the queue still reports waiters after the only waiter was served")
+	}
 	g.release(t, 1)
 	if r := awaitResult(t, r1); r.resp.StatusCode != 200 {
 		t.Fatalf("status %d", r.resp.StatusCode)

@@ -179,6 +179,11 @@ behaviour changes the default brings (decision D25), the dashboard, the alerts a
 - A worker that becomes admissible only because its breaker's cool-down ended frees nobody before the next registry refresh (at most `gateway.registry_refresh`).
 - With authentication off there is no tenant share: one client can fill a model's queue (the depth bound and the global cap still hold).
 - Under sustained overload every queued request waits `queue.max_wait` and then fails: queueing helps bursts, not shortage.
+- The global cap is taken before the body is read and the body read deadline is 30 s (`defaultBodyReadTimeout`). A client that authenticates and then dribbles its body can hold a place for up to 30 s, so enough slow
+  connections keep `global_limit` firing for everyone; with authentication off anyone can do it. Before this PR the gateway had no cap, so this is a new availability trade (the price of refusing a flood without reading its
+  bodies). The cap is off until PR G flips the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
+- A `global_limit` refusal sets `Connection: close` with the request body unread. A client that is still uploading a large body can see a connection reset or a broken pipe instead of the 503 and its `Retry-After`; clients should treat
+  a reset on upload as retryable.
 
 ## Known limits of the breaker (measured while building PR D)
 

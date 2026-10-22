@@ -550,3 +550,89 @@ func TestADeclinedHandOffWakesAWaiterToRouteItself(t *testing.T) {
 	}
 	e.settle(t, "w1")
 }
+
+// A refresh wakes as many head waiters as the new view has free slots, not one: two free slots, two waiters, both
+// are served without a second refresh.
+func TestARefreshWakesAsManyWaitersAsThereAreFreeSlots(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	full := g.snap(2)
+	full.Metrics.ActiveRequests = 2 // stale: another gateway's requests occupy both slots
+	e := newResEnv(t, []protocol.WorkerSnapshot{full}, noBreaker)
+	r1 := e.chatAsync(context.Background(), "r1")
+	e.awaitDepth(t, 1)
+	r2 := e.chatAsync(context.Background(), "r2")
+	e.awaitDepth(t, 2)
+	e.lister.set([]protocol.WorkerSnapshot{g.snap(2)}, nil)
+	e.refresh(t)
+	g.awaitArrivals(t, 2) // both reach the worker on this one refresh
+	e.awaitDepth(t, 0)
+	g.release(t, 2)
+	awaitResult(t, r1)
+	awaitResult(t, r2)
+	e.settle(t, "w1")
+}
+
+// freeSlots counts what a routing could take: slots of workers the registry offers and the breakers admit, with the
+// larger of the reported and local load. A worker whose local count fills it, or whose breaker is open, adds nothing.
+func TestFreeSlotsHonourLocalLoadAndBreakers(t *testing.T) {
+	a, b := newGateWorker(t, "w-1"), newGateWorker(t, "w-2")
+	e := newResEnv(t, []protocol.WorkerSnapshot{a.snap(2), b.snap(2)})
+	if n := e.gw.router.freeSlots("qwen-7b"); n != 4 {
+		t.Fatalf("free slots %d, want 4", n)
+	}
+	e.gw.router.mu.Lock()
+	e.gw.router.inflight["w-1"] = 2 // this gateway has two requests on w-1: reported load 0 does not matter
+	e.gw.router.mu.Unlock()
+	if n := e.gw.router.freeSlots("qwen-7b"); n != 2 {
+		t.Fatalf("free slots %d, want 2 (w-1 is full by the local count)", n)
+	}
+	e.gw.router.mu.Lock()
+	delete(e.gw.router.inflight, "w-1")
+	e.gw.router.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		tk, ok := e.rs.breakers.Acquire(e.key("w-1"))
+		if !ok {
+			t.Fatal("acquire")
+		}
+		e.rs.breakers.Record(tk, resilience.Fault)
+	}
+	if e.state("w-1") != resilience.Open {
+		t.Fatalf("breaker %v", e.state("w-1"))
+	}
+	if n := e.gw.router.freeSlots("qwen-7b"); n != 2 {
+		t.Fatalf("free slots %d, want 2 (w-1 is ejected)", n)
+	}
+}
+
+// A hand-off declined because the head waiter is already routing gives the breaker ticket back: a half-open worker's
+// only probe ticket must not leak, or the worker would stay ejected.
+func TestADeclinedHandOffReturnsTheProbeTicket(t *testing.T) {
+	a, b := newGateWorker(t, "w-1"), newGateWorker(t, "w-2")
+	sa := a.snap(2)
+	e := newResEnv(t, []protocol.WorkerSnapshot{sa, b.snap(2)})
+	for i := 0; i < 3; i++ {
+		tk, ok := e.rs.breakers.Acquire(e.key("w-1"))
+		if !ok {
+			t.Fatal("acquire")
+		}
+		e.rs.breakers.Record(tk, resilience.Fault)
+	}
+	e.advance(t, 11*time.Second) // past the cool-down: the next Acquire is the half-open probe
+	stand, err := e.rs.waitq.Enqueue("qwen-7b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.rs.waitq.Leave(stand)
+	e.rs.waitq.Wake("qwen-7b", 1) // the head is routing: it cannot receive a hand-off
+	e.gw.router.mu.Lock()
+	handed, wake := e.gw.router.handoffLocked(&sa)
+	e.gw.router.mu.Unlock()
+	if handed || wake {
+		t.Fatalf("handed %v wake %v: a routing head declines the hand-off", handed, wake)
+	}
+	for _, in := range e.rs.breakers.Snapshot() {
+		if in.Probes != 0 {
+			t.Fatalf("%d probe ticket(s) of %s were not returned", in.Probes, in.Key.ID)
+		}
+	}
+}
