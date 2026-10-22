@@ -119,9 +119,13 @@ type Evidence struct {
 	ServedWhileAnnouncing int64
 	ControlPlane          string
 	// WindowFailures is the failed requests of the fault window, GatewayNoCapacity the 503s the
-	// gateway gave for lack of a worker in it (overload evidence).
+	// gateway gave for lack of a worker in it, GatewayQueued the requests that waited in its admission queue and
+	// GatewayShed the requests admission control refused (overload evidence; the last two are 0 on a build without
+	// the queue).
 	WindowFailures    int
 	GatewayNoCapacity float64
+	GatewayQueued     float64
+	GatewayShed       float64
 }
 
 // Params returns the scenario's settings at a time scale for a cluster of this many workers.
@@ -282,8 +286,8 @@ func buildScenarios() []Scenario {
 	})
 	list = append(list, Scenario{
 		Name: "overload", Group: "overload", Overload: true,
-		Description: "More closed-loop clients than the cluster has request slots for the length of the fault window: the workers' slots and queues fill and the gateway answers 503.",
-		CannotShow:  "What a real queue in the gateway does (Phase 15 D11): on master there is none, so this shows the rejections the clients get. Closed-loop clients also back off on a 503, which softens the overload an open-loop crowd would cause.",
+		Description: "More closed-loop clients than the cluster has request slots for the length of the fault window: the workers' slots fill and the gateway either holds the extra requests in its admission queue (resilience on, Phase 15 D11) or answers 503 at once (master, resilience off).",
+		CannotShow:  "How an open-loop crowd behaves: closed-loop clients back off on a 503, which softens the overload (and the queue never sees more waiters than there are clients). Real GPU contention while requests wait is not modelled by the mock either.",
 		params:      func(_ int, scale float64) Params { return newParams(scale) },
 		apply: func(_ context.Context, e *Env) error {
 			e.Extra.Start(e.ExtraClients)
@@ -291,7 +295,8 @@ func buildScenarios() []Scenario {
 		},
 		clear: func(_ context.Context, e *Env) error { e.Extra.Stop(); return nil },
 		evidenced: func(ev Evidence) (bool, string) {
-			return ev.WindowFailures > 0 || ev.GatewayNoCapacity > 0, fmt.Sprintf("%d failed requests, %.0f gateway no-capacity refusals in the fault window", ev.WindowFailures, ev.GatewayNoCapacity)
+			return ev.WindowFailures > 0 || ev.GatewayNoCapacity > 0 || ev.GatewayQueued > 0 || ev.GatewayShed > 0,
+				fmt.Sprintf("%d failed requests, %.0f gateway no-capacity refusals, %.0f requests queued and %.0f shed in the fault window", ev.WindowFailures, ev.GatewayNoCapacity, ev.GatewayQueued, ev.GatewayShed)
 		},
 	})
 	return list

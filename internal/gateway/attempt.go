@@ -115,8 +115,16 @@ func (idleTimeoutError) Temporary() bool { return true }
 // has been written to the client it may move to a different worker (ADR-012). Once output has begun there is
 // no second try.
 func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *http.ResponseController, ireq *protocol.InferenceRequest, body []byte, info *reqInfo, start time.Time) {
-	run, rerr := s.reserveAttempt(r, ireq, info, nil)
+	if s.res != nil {
+		// The retryable phase begins here and includes any wait in the admission queue (D6, D11).
+		info.deadlineAt = s.res.firstByteDeadline(s.res.now())
+	}
+	run, rerr := s.reserveFirstAttempt(r, ireq, info)
 	if rerr != nil {
+		if rerr.shed != "" {
+			s.shed(w, r, info, rerr.shed, rerr.Error)
+			return
+		}
 		s.refuseNoWorker(w, r, info, ireq, rerr.Error)
 		return
 	}
@@ -124,7 +132,6 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 	if s.res != nil {
 		// A routed first attempt: what the retry budget measures retries against (D5).
 		s.res.budget.NoteFirst(ireq.Model)
-		info.deadlineAt = s.res.firstByteDeadline(s.res.now())
 	}
 
 	// From here until the function returns, every run that holds a slot is released and every started attempt

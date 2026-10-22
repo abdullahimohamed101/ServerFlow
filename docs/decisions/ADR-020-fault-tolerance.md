@@ -1,7 +1,7 @@
 # ADR-020: Fault Tolerance (Circuit Breakers, Retry Budget, Bounded Admission, Drain)
 
 Status: Accepted in part. Phase 15 is delivered as seven pull requests (plan: `docs/plans/active/phase-15-fault-tolerance.md`, decisions D1 to D27). This record
-is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
+is extended by each of them. Sections are marked **[PR A]**, **[PR C]** (library and configuration only), **[PR D]** (breaker, budget, deadline and taxonomy wired), **[PR E]** (admission queue, hand-off, shedding and the global cap wired) or **[later PR]** (placeholder: the decision is in the plan, the text lands with
 the pull request that implements it).
 Date: 2026-10-11
 
@@ -231,9 +231,95 @@ Kafka events are unchanged (schema v1): the attempt-level `failure_class` can no
 that touches the router would deadlock); a goroutine for transition delivery (more lifecycle for events that are a handful per minute); peeking after routing (it would make the verdict of a
 retry whose routing fails depend on a guess).
 
-### [later PR] Admission queue, hand-off, shedding and the global cap (PR E)
+### [PR E] Admission queue, hand-off, load shedding and the global cap, wired (D11, D12, D13, D14)
 
-Decisions D11 and D12. Text lands with PR E.
+With `resilience.mode: on` in registry mode the gateway now uses the queue and the counter of PR C. With `mode: off` or static workers `Server.res` is nil, every call site returns before touching anything,
+the queue series are not registered, and requests, headers, bodies, logs and `/metrics` are byte-identical to master (master-versus-branch differential on 39 request shapes, below). Files: `resilience_queue.go`
+(global cap, pre-limiter check, shed, first routing with the queue, the wait, the shutdown flush), `router.go` (enqueue and hand-off inside the router's critical section), `metrics_resilience.go` (series),
+and small edits to `attempt.go`, `handlers.go`, `snapshot.go`, `server.go`, `observer_translate.go`, `metrics.go`.
+
+**Where a request waits (D11).** Only on its first routing, and only when the model is served and every eligible worker is at its concurrency limit (`routeError.full()`: `Eligible > 0 && Eligible == AtCapacity`), or when
+other requests are already waiting for the model and at least one worker is schedulable. The decision and the enqueue happen **inside `router.reserve`, under `router.mu`**, which is also what a release holds while it hands a
+slot over: there is no instant between "everything is full" and "I am a waiter" in which a slot can be freed with nobody to receive it. A retry's routing and a woken waiter's routing never enqueue. No eligible worker, an unknown
+model and an unusable view are immediate refusals as before. The queue key is the registry-confirmed model name; a model beyond `metrics.max_models` gets no queue (`ErrNoQueue`), so client text cannot create one (test with 20 hostile names).
+
+**Strict FIFO with direct hand-off.** An arrival that finds the model's queue non-empty enqueues behind it even when a worker has room. When a request's attempt ends, `routed.release` (under `router.mu`) asks the queue for the head
+waiter: if there is one it receives a `routed` for the **same worker**, `inflight[worker]` stays incremented, and the scheduler is not consulted. The hand-off first looks the worker up in the current (aged) registry view, requires it
+to be schedulable and takes a **breaker ticket** (`Acquire`), so ejection and draining cannot be bypassed; otherwise the slot is released normally and one waiter is woken (`Wake(model, 1)`) to route through the normal path. If the
+head is itself routing after a wake-up, the library banks the slot as credit (PR C). After every successful registry refresh `wakeWaiters` computes the free slots of each queued model from the new view (workers the registry offers and
+the breakers admit, load `max(worker-reported, local)`, as the router overlays it) and wakes up to that many head waiters: this is when a stale reported count stops hiding capacity. A woken waiter routes with the normal path, and if
+everything is still full parks in place (or, on any other routing failure, also keeps waiting until `max_wait`). Hand-off bypasses the scheduler strategy for the queued request (it inherits the freeing worker); that is a stated
+distortion of the strategy's distribution under queueing.
+
+**Waiting.** `awaitSlot` waits on the waiter's channel, the request context and a timer of `queue.max_wait` (default `min(3 s, first-byte deadline)`). Outcomes: hand-off or successful re-route (served), `max_wait` (shed
+`queue_timeout`), the client leaving (the waiter leaves at once; recorded as a client that left, 499, not a shed), a flush at shutdown (shed `draining`). `QueueWaited(served|timeout|client_gone|drained)` fires exactly once for a request that
+waited, before anything that follows from it; a deferred cleanup removes the waiter and returns a slot that was handed to it if anything else unwinds the request. The wait is measured in real time (a timer decides it). The first-byte
+deadline (D6) now starts when the request reaches `forwardRegistry`, so **queue wait counts against it**; `queue.max_wait` is validated not to exceed the effective deadline, so a request that waits the maximum still has
+the rest of its deadline for its attempt (test: a request that waited most of a 2 s deadline is cut with 504 when its worker is slow).
+
+**Shedding (D11).** All overload is `503 NO_CAPACITY` with `Retry-After` and the existing OpenAI-shaped body (`error.message/type/code`, plus `model` and `eligible_workers` when known; `api.ErrOverloaded`); the message carries the reason.
+429 stays reserved for the tenant's own quota (`RATE_LIMITED`); a test asserts no overload path produces one. Reasons and `Retry-After`:
+
+| reason | when | before the limiter | `Retry-After` |
+| --- | --- | --- | --- |
+| `global_limit` | `admission.max_global_requests` places are taken | yes, **before the body is read** | 1 |
+| `queue_full` | the model's queue is at `max_model_depth`, or the tenant holds its share | yes (only if the queue already has waiters) | EWMA of recent waits, rounded up, 1-10 |
+| `queue_timeout` | a waiter passed `max_wait` | no: after the charge, **not refunded** | same |
+| `draining` | the gateway is shutting down and the request would have to wait, or a waiter is flushed | queue closed: at enqueue; flush: after the charge | 1 |
+
+The global cap counts from the top of the chat handler (authentication is behind it) until the request ends: body read, queue wait and the whole response, streams included. It is not `inference_requests_active`, which starts before
+authentication. Over the cap the arrival is refused without reading its body (`Connection: close`), so a flood costs almost nothing; the model is unknown at that point, so the shed is counted under `model="unknown"`.
+The tenant share is `max(1, floor(share x depth))` of a model's queue per authenticated tenant (not applied when authentication is off); it stops one tenant from filling the queue and is not fairness (Phase 22).
+The EWMA is fed by every served and timed-out wait of the gateway, not per model.
+
+**Phase 8 order.** The cheap checks run before the limiter so those refusals spend no quota: the global cap, and a model queue that already has waiters and is full for the request (depth reached or tenant share used). A request that
+finds an empty queue goes to the limiter and then routes; if it then has to wait it holds its **concurrency lease** until it leaves, whichever way (tested against a fake limiter: charges, releases and leases). A request that passed
+the pre-check can still find the queue full at enqueue time (a race) and is then shed after its charge.
+
+**Seam (D13).** Now fired: `QueueWaited`, `Rejection{Kind: overload}` with the four reasons, `AttemptStart.QueueWait` (the first attempt only: the wait precedes it). `RequestAdmitted` precedes a pre-limiter queue shed, as it does the D3 pre-check
+(the Admission says no rate limit decision was made), so the Kafka stream sees `received` then one `failed` event with `failure_class=no_capacity`; a `global_limit` shed happens before admission and emits no event (nothing is known about
+the request). Sequences, pinned by `reqSeq` tests: served `start admit queue:served attempt+1 attempt-1 done`; timeout `start admit queue:timeout reject:overload:queue_timeout done:503`; shed without waiting `start admit reject:overload:queue_full done:503`; global
+`start reject:overload:global_limit done:503`; client gone `start admit queue:client_gone done:499`.
+
+**Series, spans, logs (D14).** Registered only when the feature is effective: `admission_rejections_total{model,reason}`, `inference_queue_duration_seconds{model}` (requests that waited, whatever the outcome; buckets 5 ms to 60 s) and, read at
+scrape time, `admission_queue_depth{model}` (0 for every served model). No new label names. **The overhead histogram excludes the wait**: `inference_gateway_overhead_seconds` observes `SinceRequestStart - QueueWait`, so
+`ServerFlowGatewayOverheadHigh` keeps its meaning (test: a request that waited 300 ms adds 0.3 s to the queue histogram and nothing like it to the overhead). A shed is never a scheduling decision (it does not feed
+`scheduler_decisions_total` or `scheduler_no_capacity_total`). Span: a `queue.wait` **event** on the request's root span with `serverflow.queue.wait_ms` and `serverflow.queue.result` (a closed set), both on the allow-list; it is an event,
+not a span, because `queue_wait` is already the name of the worker-side span. Log: one `request shed` line (INFO) per reason at most once a second, with the count held back; it carries the reason, the model when confirmed, the tenant
+IDs as every request line does, and never a body, prompt, key or worker text. The metrics observer's queue and rejection methods allocate nothing in the steady state (test and benchmark).
+
+**Shutdown.** When `Serve`'s context ends the queue is closed (arrivals that would have to wait are shed `draining`; arrivals a worker can take are served) and a timer flushes whoever is still waiting 250 ms before the shutdown timeout
+(`draining` sheds), so a waiter is answered rather than cut. Waiters that finish earlier (served or `max_wait`) are unaffected. The readiness grace, `Connection: close` and the second-signal behaviour of D16 are PR F.
+
+**Deviations and decisions made while implementing PR E** (numbered for the plan's progress notes):
+1. `ErrNoQueue` (depth 0, or a model beyond the model cap) keeps the classic refusal: `NO_CAPACITY`, `Retry-After: 1`, counted in `scheduler_decisions_total{result="no_capacity"}` and `scheduler_no_capacity_total`. It is not an overload shed: with `max_model_depth: 0` the gateway behaves as master.
+2. The global cap refuses before the body is read and so has no model, no `RequestAdmitted`, no Kafka event and `model="unknown"` in `admission_rejections_total` (the plan said "from just after authentication (body read included)" and "refused at once").
+3. The pre-limiter queue check runs only when the queue already has waiters (`Busy`); the authoritative refusal is the enqueue.
+4. A woken waiter that cannot be routed for any reason keeps waiting until `max_wait`; the "no eligible worker is an immediate refusal" rule applies to arrivals only. An arrival that finds a busy queue but no schedulable worker is refused at once, not queued.
+5. The shed body omits `eligible_workers` when the count is not known (a busy queue, a timeout) instead of saying 0.
+6. The first-byte deadline starts at `forwardRegistry`, before the queue (it was set after the first routing); with an empty queue this is the same instant.
+7. `AttemptStart.QueueWait` is set on attempt 1 only.
+8. Tracing: an event, not a span (above). 9. `gateway_draining` and the readiness behaviour are PR F's. 10. Tenant occupancy lives in `Queue`, as in PR C.
+11. Library change (additive): `Queue.Refusal(model, tenant) error` (the error `Enqueue` would return), used by the pre-limiter check.
+12. Harness: the chaos windows gain `gateway_queued`, `gateway_shed`, `queue_wait_mean_ms` and `queue_depth_max` (omitted when zero, so the committed baselines keep their keys), and the `overload` scenario's evidence accepts queueing as well as refusals.
+
+**Alternatives rejected.** Waking and re-routing on release (the first draft: a stale reported count makes the woken waiter fail deterministically, and arrivals can jump the queue); enqueueing after the routing returned (a slot freed in
+the gap is lost until the next refresh); a goroutine per queue for timeouts (the caller already has the timer and the context); sharing one queue across overflow models (they would block each other); refusing the global cap
+after parsing the body (costs a body read per refused request at the moment the gateway is least able to afford it); returning the shed as 429 or 529 (above).
+
+**Limits found while implementing (kept, reported).**
+- Strict FIFO means a request that arrives while others wait queues behind them even if its worker would have room (the point), and a retry's routing bypasses the queue (it may take a free slot ahead of waiters; its own
+  failed attempt's slot is handed to the head).
+- Hand-off gives the queued request the worker that freed the slot, not the scheduler's best choice.
+- A queued request holds its rate-limit concurrency lease: a tenant's own `max_concurrent` quota counts its waiters.
+- The queue is per gateway; N gateways have N queues, N EWMAs and N global caps.
+- A refresh wakes waiters only when the new view has free slots; a worker that becomes admissible only through a cool-down ending frees nobody until the next refresh (at most `registry_refresh`, one second by default).
+- Unauthenticated deployments have no tenant share: one client can fill the queue (the depth bound and the global cap still hold).
+- The global cap is taken before the body is read and the body read deadline is 30 s (`defaultBodyReadTimeout`). A client that authenticates and then dribbles its body can hold a place for up to 30 s, so enough slow
+  connections keep `global_limit` firing for everyone; with authentication off anyone can do it. Before this PR the gateway had no cap, so this is a new availability trade (the price of refusing a flood without reading its
+  bodies). The cap is off until PR G flips the default; the mitigations are a larger cap, a shorter body read timeout at the edge (load balancer) and authentication.
+- A `global_limit` refusal sets `Connection: close` with the request body unread. A client that is still uploading a large body can see a connection reset or a broken pipe instead of the 503 and its `Retry-After`; clients should treat
+  a reset on upload as retryable.
 
 ### [later PR] Drain contract (PR F)
 
@@ -242,6 +328,18 @@ Decisions D15 and D16. Text lands with PR F.
 ### [later PR] Defaults, the default-on consequences and the D25 list (PR G)
 
 Text lands with PR G, with `docs/operations/resilience.md`.
+
+## Consequences (PR E)
+
+- With `resilience.mode: on` (registry mode) a request that finds every eligible worker full waits up to `queue.max_wait` (default 3 s) in a bounded per-model FIFO instead of getting an immediate 503; what exceeds the depth (128),
+  the tenant share (half of it, per authenticated tenant) or the wait is refused `503 NO_CAPACITY` with `Retry-After`, never 429. `admission.max_global_requests` (default 1000) becomes live: the 1001st concurrent request on a gateway
+  is refused `global_limit` (long streams count until they end; raise the key if 1000 is ordinary). A shed after the quota charge is not refunded. New series: `admission_rejections_total`, `inference_queue_duration_seconds`,
+  `admission_queue_depth`; the overhead histogram no longer includes waiting. Logs gain `request shed` (at most 1/s per reason).
+- With `mode: off` and with static workers nothing changes (differential; golden series files unchanged).
+- Security review items: the tenant share (authenticated tenant ID as a queue key, bounded by the depth), the pre-body global cap (a flood is refused without reading its bodies), the interplay of sheds with the limiter (which
+  refusals spend quota), the queue key (registry-confirmed models only) and the hand-off consulting the breaker.
+- Risk: queueing hides overload for up to `max_wait`: under sustained overload every queued request waits the maximum and then fails (worse latency for failures); the depth bound limits how many.
+- Risk: the hand-off and wake paths are the most intricate concurrency in the gateway; they are covered by a randomized model test, `-race -count` runs, the library's stress tests and hand mutation (plan, PR E notes).
 
 ## Consequences (PR D)
 

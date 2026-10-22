@@ -49,6 +49,9 @@ type snapshotCache struct {
 	// serializes those calls so a late one for a superseded snapshot cannot overwrite a newer view.
 	onSync func(members []resilience.Member, models map[string]string)
 	syncMu sync.Mutex
+	// onRefreshed, when set, runs after every successful refresh, once the new view and the breakers' sync are in
+	// place: the admission queue wakes the waiters that the corrected counts may now serve (Phase 15 PR E).
+	onRefreshed func()
 }
 
 type snapshot struct {
@@ -113,6 +116,9 @@ func (c *snapshotCache) Refresh(ctx context.Context) error {
 		c.syncMu.Lock()
 		c.runSync(snap, c.now().Sub(started))
 		c.syncMu.Unlock()
+	}
+	if c.onRefreshed != nil {
+		c.onRefreshed()
 	}
 	return nil
 }
@@ -249,6 +255,21 @@ func (c *snapshotCache) Serves(model string) (serves, ok bool) {
 		return false, false
 	}
 	return len(s.byModel[model]) > 0, true
+}
+
+// worker returns the current, aged view of one worker of a model (eligibility re-judged as View does), or false
+// when there is no usable snapshot or the model has no such worker. Workers are kept in ID order.
+func (c *snapshotCache) worker(model, id string) (protocol.WorkerSnapshot, bool) {
+	s, age, ok := c.fresh()
+	if !ok {
+		return protocol.WorkerSnapshot{}, false
+	}
+	list := s.byModel[model]
+	i := sort.Search(len(list), func(i int) bool { return list[i].WorkerID >= id })
+	if i >= len(list) || list[i].WorkerID != id {
+		return protocol.WorkerSnapshot{}, false
+	}
+	return c.age(list[i:i+1], age)[0], true
 }
 
 // Models lists the models that have at least one eligible worker, sorted.

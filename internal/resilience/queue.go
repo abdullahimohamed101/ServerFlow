@@ -176,6 +176,14 @@ func (q *Queue) Full(model, tenant string) bool {
 	return q.refuseLocked(model, tenant) != nil
 }
 
+// Refusal returns why an Enqueue for the model and tenant would be refused (nil when it would be accepted). The
+// error can be passed to ShedReason. It is Full with the reason.
+func (q *Queue) Refusal(model, tenant string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.refuseLocked(model, tenant)
+}
+
 func (q *Queue) refuseLocked(model, tenant string) error {
 	if q.closed {
 		return ErrDraining

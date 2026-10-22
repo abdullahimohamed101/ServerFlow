@@ -180,11 +180,12 @@ func RunOnce(ctx context.Context, o Options, sc Scenario, d Deps, id string, rep
 	last := len(tl.Ticks) - 1
 	warmTick := tickAt(p, p.Warmup)
 	wins := []report.ChaosWindow{
-		summarizeWindow("baseline", w.Baseline, records, delta(tl, warmTick, tl.ApplyTick)),
-		summarizeWindow("fault", w.Fault, records, delta(tl, tl.ApplyTick, tl.ClearTick)),
-		summarizeWindow("recovery", w.Recovery, records, delta(tl, tl.ClearTick, last)),
+		summarizeWindow("baseline", w.Baseline, records, delta(tl, warmTick, tl.ApplyTick), maxQueueDepth(tl, warmTick, tl.ApplyTick)),
+		summarizeWindow("fault", w.Fault, records, delta(tl, tl.ApplyTick, tl.ClearTick), maxQueueDepth(tl, tl.ApplyTick, tl.ClearTick)),
+		summarizeWindow("recovery", w.Recovery, records, delta(tl, tl.ClearTick, last), maxQueueDepth(tl, tl.ClearTick, last)),
 	}
 	ev.WindowFailures, ev.GatewayNoCapacity = wins[1].Failed, wins[1].NoCapacityDelta
+	ev.GatewayQueued, ev.GatewayShed = wins[1].QueuedDelta, wins[1].ShedDelta
 
 	ser := series(p, tl, records)
 	iso, isoNote := timeToIsolate(p, tl, faulty != "" && !sc.Rolling)

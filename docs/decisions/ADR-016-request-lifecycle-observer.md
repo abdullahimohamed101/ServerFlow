@@ -88,3 +88,10 @@ Fired from PR D with `resilience.mode: on` (registry mode): `BreakerTransition`,
 `AttemptEnd` gains two fields, `Probe` and `Verdict` (`ok`, `fault`, `neutral` or empty) -- an addition to the PR A stub list, because the probe counter needs the verdict and events are the only path the metrics observer
 sees. `BreakerTransition` is delivered outside every gateway lock by the request goroutine that finds it queued. A new attempt class `deadline` (first-byte deadline) joins `connect`, `reset`, `empty_stream`,
 `status_NNN` and `panic`. `AttemptStart.QueueWait`, `QueueWaited` and `Rejection` kind `overload` stay unfired until PR E. With the feature off nothing is fired.
+
+## Amendment (Phase 15, PR E; ADR-020)
+
+Fired from PR E with `resilience.mode: on` (registry mode): `QueueWaited` (once per request that waited, with `Result` `served`, `timeout`, `client_gone` or `drained`, before the event that follows from it), `Rejection` kind `overload`
+(reasons `global_limit`, `queue_full`, `queue_timeout`, `draining`, status 503) and `AttemptStart.QueueWait` (the first attempt only). The metrics observer gives `overload` its own series and still never counts it as a scheduling decision;
+it subtracts `QueueWait` from the request age when it records the gateway overhead. No new fields or methods: the PR A list is complete. A request refused by the global request cap is rejected before `RequestAdmitted` (the
+model is not known yet). With the feature off nothing is fired.

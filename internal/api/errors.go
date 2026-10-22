@@ -82,6 +82,39 @@ func ErrNoCapacity(model string, eligibleWorkers int) *Error {
 	}
 }
 
+// Reasons of an overload shed (ErrOverloaded). They are the Retry-After classes of ADR-020 and the reason label
+// values of admission_rejections_total.
+const (
+	OverloadGlobalLimit  = "global_limit"
+	OverloadQueueFull    = "queue_full"
+	OverloadQueueTimeout = "queue_timeout"
+	OverloadDraining     = "draining"
+)
+
+// ErrOverloaded reports a request shed by the gateway's admission control (Phase 15): the global request cap, a full
+// model queue (or a tenant's share of it), a wait that ran out, or a gateway that is shutting down. It is a 503
+// NO_CAPACITY with Retry-After, never a 429, which stays reserved for a tenant exceeding its own quota (RFC 9110
+// 15.6.4 against RFC 6585). The body has the shape of every NO_CAPACITY error; model and eligible_workers are present
+// when known (a negative eligible count, or an empty model, leaves the field out). The message carries the reason.
+func ErrOverloaded(reason, model string, eligibleWorkers, retryAfter int) *Error {
+	var msg string
+	switch reason {
+	case OverloadGlobalLimit:
+		msg = "the gateway is at its limit of concurrent requests; retry shortly"
+	case OverloadQueueTimeout:
+		msg = "no worker had capacity for the model `" + truncate(model, 64) + "` within the queue wait limit"
+	case OverloadDraining:
+		msg = "the gateway is shutting down; retry on another instance"
+	default:
+		msg = "the queue for the model `" + truncate(model, 64) + "` is full; retry shortly"
+	}
+	e := &Error{Code: CodeNoCapacity, HTTPStatus: http.StatusServiceUnavailable, Message: msg, Model: truncate(model, 64), RetryAfter: max(retryAfter, 1)}
+	if eligibleWorkers >= 0 {
+		e.EligibleWorkers = &eligibleWorkers
+	}
+	return e
+}
+
 // ErrUnauthorized reports a missing or unusable API key. Its body is identical whatever the
 // reason (absent, malformed, unknown, wrong secret, revoked, expired) so a response never
 // reveals whether a key exists.

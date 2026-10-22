@@ -45,17 +45,30 @@ func delta(tl Timeline, from, to int) Counters {
 	return tl.Ticks[to].Sub(tl.Ticks[from].Counters)
 }
 
+// maxQueueDepth is the deepest the admission queue was at any tick from one tick to another (0 on a build without it).
+func maxQueueDepth(tl Timeline, from, to int) float64 {
+	deepest := 0.0
+	for i := max(from, 0); i <= to && i < len(tl.Ticks); i++ {
+		deepest = math.Max(deepest, tl.Ticks[i].QueueDepth)
+	}
+	return deepest
+}
+
 func tickAt(p Params, offset time.Duration) int { return int(offset / p.Bucket) }
 
 func ptr(v float64) *float64 { return &v }
 
 // summarizeWindow describes the requests sent inside a window and the gateway counters over it.
-func summarizeWindow(name string, w collect.Window, recs []collect.Record, d Counters) report.ChaosWindow {
+func summarizeWindow(name string, w collect.Window, recs []collect.Record, d Counters, depthMax float64) report.ChaosWindow {
 	s := collect.SummarizeRecords(recs, w)
 	cw := report.ChaosWindow{Name: name, StartSeconds: w.Start.Seconds(), EndSeconds: w.End.Seconds(),
 		Sent: s.Sent, Succeeded: s.Succeeded, Failed: s.Failed, Retried: s.Retried,
 		AttemptsDelta: d.Attempts, RetriesDelta: d.Retries, NoCapacityDelta: d.NoCapacity, IneligibleDelta: d.Ineligible,
+		QueuedDelta: d.Queued, ShedDelta: d.Shed, QueueDepthMax: depthMax,
 		ErrorClasses: s.ErrorClasses, StatusClasses: s.StatusClasses}
+	if d.Queued > 0 {
+		cw.QueueWaitMeanMs = ptr(d.QueueWaitSum / d.Queued * 1000)
+	}
 	if s.Sent > 0 {
 		cw.SuccessRate = float64(s.Succeeded) / float64(s.Sent)
 	}

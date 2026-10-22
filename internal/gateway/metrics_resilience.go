@@ -19,7 +19,13 @@ type resilienceMetrics struct {
 	denied      *prometheus.CounterVec // model, reason
 	suppressed  *prometheus.CounterVec // model
 	deadline    *prometheus.CounterVec // model
+	// Admission (PR E): refusals by reason, and the wait of the requests that waited.
+	rejections *prometheus.CounterVec   // model, reason
+	queueWait  *prometheus.HistogramVec // model
 }
+
+// queueWaitBuckets cover the queue's range: from the first 5 ms to the 60 s ceiling of resilience.queue.max_wait.
+var queueWaitBuckets = []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2, 3, 5, 10, 30, 60}
 
 func (m *metrics) enableResilience(rs *resilienceState) {
 	rm := &resilienceMetrics{
@@ -43,9 +49,77 @@ func (m *metrics) enableResilience(rs *resilienceState) {
 			Name: "inference_deadline_exceeded_total",
 			Help: "Requests whose first-byte deadline (resilience.retry.first_byte_deadline) elapsed before any output, by model. The client got 504 UPSTREAM_TIMEOUT.",
 		}, []string{"model"}),
+		rejections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "admission_rejections_total",
+			Help: "Requests shed by admission control with 503 NO_CAPACITY, by model and reason (global_limit, queue_full, queue_timeout or draining). global_limit is refused before the body is read, so its model is unknown.",
+		}, []string{"model", "reason"}),
+		queueWait: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "inference_queue_duration_seconds",
+			Help:    "Time requests spent waiting in the admission queue for a worker slot, by model. Only requests that waited are observed, whatever the outcome; the gateway overhead histogram excludes this time.",
+			Buckets: queueWaitBuckets,
+		}, []string{"model"}),
 	}
 	m.res = rm
-	m.reg.MustRegister(rm.transitions, rm.probes, rm.denied, rm.suppressed, rm.deadline, newBreakerCollector(m, rs))
+	m.reg.MustRegister(rm.transitions, rm.probes, rm.denied, rm.suppressed, rm.deadline, rm.rejections, rm.queueWait,
+		newBreakerCollector(m, rs), newQueueCollector(m, rs))
+}
+
+// overloadShed counts a request shed by admission control.
+func (m *metrics) overloadShed(e Rejection) {
+	if m.res == nil {
+		return
+	}
+	mi := m.model(e.Model)
+	mi.rejections.pair(m.res.rejections, mi.label, e.Reason).Inc()
+}
+
+// queueWaited records the wait of a request that waited in the admission queue.
+func (m *metrics) queueWaited(e QueueWait) {
+	if m.res == nil {
+		return
+	}
+	mi := m.model(e.Model)
+	ref := mi.queueWait.Load()
+	if ref == nil {
+		ref = &observerRef{o: m.res.queueWait.WithLabelValues(mi.label)}
+		mi.queueWait.Store(ref)
+	}
+	ref.o.Observe(e.Waited.Seconds())
+}
+
+// queueCollector exports admission_queue_depth{model}, read at scrape time: the requests waiting for a worker slot.
+// Every model the registry serves reads its depth (0 when empty), so an absent series never means "empty".
+type queueCollector struct {
+	m     *metrics
+	rs    *resilienceState
+	depth *prometheus.Desc
+}
+
+func newQueueCollector(m *metrics, rs *resilienceState) *queueCollector {
+	return &queueCollector{m: m, rs: rs, depth: prometheus.NewDesc("admission_queue_depth",
+		"Requests waiting in the admission queue for a worker slot, by model (0 when none).", []string{"model"}, nil)}
+}
+
+func (c *queueCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.depth }
+
+func (c *queueCollector) Collect(ch chan<- prometheus.Metric) {
+	depth := map[string]int{}
+	if models := c.rs.models.Load(); models != nil {
+		for _, mm := range *models {
+			depth[c.m.models.Value(mm)] += 0
+		}
+	}
+	for model, n := range c.rs.waitq.Depths() {
+		depth[c.m.models.Value(model)] += n
+	}
+	names := make([]string, 0, len(depth))
+	for model := range depth {
+		names = append(names, model)
+	}
+	sort.Strings(names)
+	for _, model := range names {
+		ch <- prometheus.MustNewConstMetric(c.depth, prometheus.GaugeValue, float64(depth[model]), model)
+	}
 }
 
 // breakerChange counts a breaker transition, or a trip the ejection cap held back.

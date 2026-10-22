@@ -64,6 +64,15 @@ type ChaosWindow struct {
 	RetriesDelta    float64 `json:"gateway_retries"`
 	NoCapacityDelta float64 `json:"gateway_no_capacity"`
 	IneligibleDelta float64 `json:"gateway_ineligible_selections"`
+	// QueuedDelta, ShedDelta, QueueWaitMeanMs and QueueDepthMax describe the gateway's admission queue (Phase 15 PR E):
+	// the requests that waited in it (inference_queue_duration_seconds), the requests admission control refused
+	// (admission_rejections_total), the mean wait of those that waited, and the deepest the queue was at a
+	// one-bucket tick inside the window. They are omitted when zero, so a result from a build without the queue (and
+	// every committed baseline) keeps exactly the keys it always had.
+	QueuedDelta     float64  `json:"gateway_queued,omitempty"`
+	ShedDelta       float64  `json:"gateway_shed,omitempty"`
+	QueueWaitMeanMs *float64 `json:"queue_wait_mean_ms,omitempty"`
+	QueueDepthMax   float64  `json:"queue_depth_max,omitempty"`
 	// AttemptsPerRequest is the change in inference_attempts_total divided by the change in
 	// inference_requests_total over the window (not by Sent); nil when the gateway handled none. Requests the
 	// gateway refused without any attempt (no capacity) pull it down.

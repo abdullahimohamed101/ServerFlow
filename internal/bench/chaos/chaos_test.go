@@ -465,7 +465,7 @@ func TestSummarizeWindowSeparatesSuccessesFromFailuresAndCountsAttempts(t *testi
 	add(12*time.Second, 200, 200*time.Millisecond, 2) // retried
 	add(13*time.Second, 504, 2*time.Second, 0)
 	add(25*time.Second, 200, 10*time.Millisecond, 0) // after the window
-	cw := summarizeWindow("fault", w, recs, Counters{Attempts: 9, Requests: 6, NoCapacity: 1})
+	cw := summarizeWindow("fault", w, recs, Counters{Attempts: 9, Requests: 6, NoCapacity: 1}, 0)
 	if cw.Sent != 3 || cw.Succeeded != 2 || cw.Failed != 1 || cw.Retried != 1 || cw.SuccessRate < 0.66 || cw.SuccessRate > 0.67 {
 		t.Fatalf("%+v", cw)
 	}
@@ -475,7 +475,7 @@ func TestSummarizeWindowSeparatesSuccessesFromFailuresAndCountsAttempts(t *testi
 	if cw.FailureP50 == nil || *cw.FailureP50 != 2000 || cw.LatencyP95 == nil || *cw.LatencyP95 != 200 {
 		t.Fatalf("%v %v", cw.FailureP50, cw.LatencyP95)
 	}
-	if empty := summarizeWindow("x", w, nil, Counters{}); empty.AttemptsPerRequest != nil || empty.SuccessRate != 0 {
+	if empty := summarizeWindow("x", w, nil, Counters{}, 0); empty.AttemptsPerRequest != nil || empty.SuccessRate != 0 {
 		t.Fatalf("%+v", empty)
 	}
 }
@@ -998,7 +998,7 @@ func TestCountersThatGoBackwardsNeverMakeANegativeDelta(t *testing.T) {
 			}
 		}
 	}
-	cw := summarizeWindow("fault", collect.Window{}, nil, delta(tl, 0, 1))
+	cw := summarizeWindow("fault", collect.Window{}, nil, delta(tl, 0, 1), 0)
 	if cw.AttemptsPerRequest == nil || *cw.AttemptsPerRequest < 0 {
 		t.Fatalf("%v", cw.AttemptsPerRequest)
 	}
@@ -1054,5 +1054,33 @@ func TestRunPrintsTheNoOpNoteForResilienceAndRecordsLoadAtStart(t *testing.T) {
 		if r.NotMeasured["worker_balance"] == "" {
 			t.Fatal("worker balance should be listed as not measured")
 		}
+	}
+}
+
+// The admission queue's series are read from the gateway when they exist and read 0 when they do not (master), a
+// window reports their deltas and the deepest tick, and the overload evidence accepts queueing as well as refusals.
+func TestQueueSeriesAreSummarizedPerWindow(t *testing.T) {
+	d := Counters{Queued: 10, QueueWaitSum: 2.5, Shed: 3}
+	cw := summarizeWindow("fault", collect.Window{}, nil, d, 7)
+	if cw.QueuedDelta != 10 || cw.ShedDelta != 3 || cw.QueueDepthMax != 7 || cw.QueueWaitMeanMs == nil || *cw.QueueWaitMeanMs != 250 {
+		t.Fatalf("%+v", cw)
+	}
+	none := summarizeWindow("baseline", collect.Window{}, nil, Counters{}, 0)
+	if none.QueueWaitMeanMs != nil || none.QueuedDelta != 0 {
+		t.Fatalf("a build without the queue reports none: %+v", none)
+	}
+	tl := Timeline{Ticks: []Snapshot{{Counters: Counters{QueueDepth: 1}}, {Counters: Counters{QueueDepth: 9}}, {Counters: Counters{QueueDepth: 4}}}}
+	if got := maxQueueDepth(tl, 0, 2); got != 9 {
+		t.Fatalf("deepest %v", got)
+	}
+	if got := Counters(Snapshot{Counters: Counters{QueueDepth: 4, Queued: 5}}.Counters).Sub(Counters{QueueDepth: 9, Queued: 2}); got.QueueDepth != 4 || got.Queued != 3 {
+		t.Fatalf("a gauge keeps the later reading, counters subtract: %+v", got)
+	}
+	sc, _ := Lookup("overload")
+	if ok, _ := sc.evidenced(Evidence{GatewayQueued: 5}); !ok {
+		t.Fatal("an overload the queue absorbed is still evidenced")
+	}
+	if ok, _ := sc.evidenced(Evidence{}); ok {
+		t.Fatal("no failure, no refusal and no queueing is no overload")
 	}
 }

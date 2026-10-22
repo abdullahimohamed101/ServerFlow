@@ -18,6 +18,14 @@ type Counters struct {
 	// probes (circuit_breaker_probes_total; 0 on a build without a breaker).
 	FaultySelections float64
 	Probes           float64
+	// Queued is the requests that waited in the admission queue (inference_queue_duration_seconds count),
+	// QueueWaitSum their total wait in seconds, Shed the requests admission control refused with 503
+	// (admission_rejections_total) and QueueDepth the requests waiting right now (admission_queue_depth, a gauge:
+	// Sub keeps the later reading). All read 0 on a build without the admission queue.
+	Queued       float64
+	QueueWaitSum float64
+	Shed         float64
+	QueueDepth   float64
 }
 
 // Sub returns c - o. A counter that went backwards (the gateway restarted) was reset to zero in between, so
@@ -29,8 +37,12 @@ func (c Counters) Sub(o Counters) Counters {
 		}
 		return a - b
 	}
-	return Counters{d(c.Attempts, o.Attempts), d(c.Requests, o.Requests), d(c.Retries, o.Retries), d(c.NoCapacity, o.NoCapacity),
-		d(c.Ineligible, o.Ineligible), d(c.FaultySelections, o.FaultySelections), d(c.Probes, o.Probes)}
+	return Counters{
+		Attempts: d(c.Attempts, o.Attempts), Requests: d(c.Requests, o.Requests), Retries: d(c.Retries, o.Retries),
+		NoCapacity: d(c.NoCapacity, o.NoCapacity), Ineligible: d(c.Ineligible, o.Ineligible),
+		FaultySelections: d(c.FaultySelections, o.FaultySelections), Probes: d(c.Probes, o.Probes),
+		Queued: d(c.Queued, o.Queued), QueueWaitSum: d(c.QueueWaitSum, o.QueueWaitSum), Shed: d(c.Shed, o.Shed), QueueDepth: c.QueueDepth,
+	}
 }
 
 // Snapshot is the counters at one tick of the timeline.

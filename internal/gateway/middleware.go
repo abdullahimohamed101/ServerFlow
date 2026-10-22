@@ -58,6 +58,9 @@ type reqInfo struct {
 	// deadlineAt is when the retryable phase of a registry request ends (retry.first_byte_deadline); zero when
 	// resilience is off.
 	deadlineAt time.Time
+	// queueWait is how long the request waited in the admission queue before its first attempt (zero when it did
+	// not wait, and always without resilience).
+	queueWait time.Duration
 	// scan reads token counts off a successful response as it passes (tokens.go); tokSource, tokIn and tokOut are
 	// what it found, for the Completion event.
 	scan          *tokenScanner

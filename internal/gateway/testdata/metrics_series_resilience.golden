@@ -1,7 +1,10 @@
+admission_queue_depth | GAUGE | Requests waiting in the admission queue for a worker slot, by model (0 when none). | labels=model | buckets=
+admission_rejections_total | COUNTER | Requests shed by admission control with 503 NO_CAPACITY, by model and reason (global_limit, queue_full, queue_timeout or draining). global_limit is refused before the body is read, so its model is unknown. | labels=model,reason | buckets=
 breaker_trips_suppressed_total | COUNTER | Circuit breaker trips held back by the ejection cap (resilience.breaker.max_open_fraction), by model. | labels=model | buckets=
 circuit_breaker_probes_total | COUNTER | Probe attempts (live requests a half-open breaker lets through), by model and result (ok, fault or neutral). | labels=model,result | buckets=
 circuit_breaker_state | GAUGE | State of a circuit breaker that is not closed: 1 half-open (probing), 2 open. A closed breaker has no series. worker_id is capped like the other worker labels (later workers are "other", with the highest state). | labels=model,worker_id | buckets=
 circuit_breaker_transitions_total | COUNTER | Circuit breaker state changes, by model and the state entered (open, half_open or closed). Present only with resilience.mode on. | labels=model,state | buckets=
 circuit_breakers_open | GAUGE | Circuit breakers that are open or half-open, by model (0 when none). | labels=model | buckets=
 inference_deadline_exceeded_total | COUNTER | Requests whose first-byte deadline (resilience.retry.first_byte_deadline) elapsed before any output, by model. The client got 504 UPSTREAM_TIMEOUT. | labels=model | buckets=
+inference_queue_duration_seconds | HISTOGRAM | Time requests spent waiting in the admission queue for a worker slot, by model. Only requests that waited are observed, whatever the outcome; the gateway overhead histogram excludes this time. | labels=model | buckets=0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2,3,5,10,30,60
 retries_denied_total | COUNTER | Retries that were wanted but not made, by model and reason (budget or deadline). The failed worker's response was relayed instead. | labels=model,reason | buckets=

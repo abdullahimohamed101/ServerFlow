@@ -12,9 +12,9 @@ import (
 	"serverflow/pkg/protocol"
 )
 
-// Phase 15, PR A: the observer seam additions exist as stubs. These tests pin the contract the later PRs rely
-// on: the new fields and methods exist, NopObserver supplies defaults, the fan-out contains panics in the new
-// methods, and until a feature fires them every one of them stays at its zero value.
+// Phase 15, PR A: the observer seam additions. These tests pin the contract: the new fields and methods exist,
+// NopObserver supplies defaults, the fan-out contains panics in the new methods, and with resilience off every one
+// of them stays at its zero value (PR D and PR E fire them with it on).
 
 type seamObserver struct {
 	NopObserver
@@ -77,22 +77,22 @@ func TestEveryRegistrySequenceLeavesTheNewSeamFieldsAtTheirZeroValues(t *testing
 	for _, r := range []*recObserver{rec, rec2} {
 		for _, a := range r.att {
 			if a.Probe || a.QueueWait != 0 {
-				t.Fatalf("nothing probes or queues yet: %+v", a)
+				t.Fatalf("with resilience off nothing probes or queues: %+v", a)
 			}
 		}
 		for _, a := range r.ends {
 			if a.RetryDenied != "" {
-				t.Fatalf("nothing denies a retry yet: %+v", a)
+				t.Fatalf("with resilience off nothing denies a retry: %+v", a)
 			}
 		}
 		for _, j := range r.rej {
 			if j.Kind == RejectOverload {
-				t.Fatalf("nothing is shed yet: %+v", j)
+				t.Fatalf("with resilience off nothing is shed: %+v", j)
 			}
 		}
 	}
 	if len(seam.queued) != 0 || len(seam.trans) != 0 {
-		t.Fatalf("QueueWaited and BreakerTransition are not fired yet: %+v %+v", seam.queued, seam.trans)
+		t.Fatalf("with resilience off QueueWaited and BreakerTransition are never fired: %+v %+v", seam.queued, seam.trans)
 	}
 }
 
