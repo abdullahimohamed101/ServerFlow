@@ -70,9 +70,8 @@ func status(code int, body string) func(http.ResponseWriter, *http.Request) {
 // refusing returns a snapshot for a worker whose port nobody listens on.
 func refusing(t *testing.T, id string) protocol.WorkerSnapshot {
 	t.Helper()
-	sw := newScriptWorker(t, id, okJSON(id))
-	s := sw.snapshot("qwen-7b")
-	sw.srv.Close()
+	s := snapWorker(id, "qwen-7b", 0)
+	s.Address, s.MaxConcurrency = "http://"+holdRefusedPort(t), 8
 	return s
 }
 
