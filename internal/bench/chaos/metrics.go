@@ -5,8 +5,8 @@ import (
 )
 
 // readCounters sums the gateway series the harness uses. Series that do not exist (a build without the
-// breaker has no circuit_breaker_probes_total) contribute 0, so the same harness runs on master and
-// on a build with the feature.
+// breaker has no circuit_breaker_probes_total, one without the queue no admission_queue_depth) contribute 0, so the
+// same harness runs on master and on a build with the feature.
 func readCounters(g prometheus.Gatherer, faulty string) (Counters, error) {
 	fams, err := g.Gather()
 	if err != nil {
@@ -28,6 +28,19 @@ func readCounters(g prometheus.Gatherer, faulty string) (Counters, error) {
 			dst = &c.Ineligible
 		case "circuit_breaker_probes_total":
 			dst = &c.Probes
+		case "admission_rejections_total":
+			dst = &c.Shed
+		case "inference_queue_duration_seconds":
+			for _, m := range f.GetMetric() {
+				c.Queued += float64(m.GetHistogram().GetSampleCount())
+				c.QueueWaitSum += m.GetHistogram().GetSampleSum()
+			}
+			continue
+		case "admission_queue_depth":
+			for _, m := range f.GetMetric() {
+				c.QueueDepth += m.GetGauge().GetValue()
+			}
+			continue
 		case "scheduler_selections_total":
 			for _, m := range f.GetMetric() {
 				for _, l := range m.GetLabel() {
