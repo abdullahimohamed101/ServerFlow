@@ -7,8 +7,8 @@ says at every point what is wired.
 
 ## Status (read this first)
 
-**Circuit breakers, the retry budget, the first-byte deadline and the failure taxonomy (pull request D) and the admission queue, load shedding and the global request cap (pull request E)
-are wired in; drain is not yet (F).** Everything is inert unless you turn it on: `resilience.mode` **defaults to `off`** in code until the last pull request (G) flips the shipped
+**Circuit breakers, the retry budget, the first-byte deadline and the failure taxonomy (pull request D), the admission queue, load shedding and the global request cap (pull request E)
+and the gateway drain (pull request F) are wired in.** Everything is inert unless you turn it on: `resilience.mode` **defaults to `off`** in code until the last pull request (G) flips the shipped
 default to `on`, and the feature takes effect only with `gateway.worker_source: registry`. With `off` (or static workers) requests, headers, bodies, logs and `/metrics`
 are byte-identical to before. The final design is "on in registry mode, `off` is the kill switch".
 
@@ -18,8 +18,8 @@ are byte-identical to before. The final design is "on in registry mode, `off` is
 | B | Mock-worker runtime faults, chaos harness | merged |
 | C | `internal/resilience`, `resilience.*` configuration | merged |
 | D | Breaker, budget, deadline and failure taxonomy wired into the gateway | done |
-| **E** | Queue, hand-off, load shedding, global cap | **this guide** |
-| F | Gateway and worker drain | not yet |
+| E | Queue, hand-off, load shedding, global cap | done |
+| **F** | Gateway and worker drain | **this guide** |
 | G | Default flip, dashboard, alerts, benchmark note | not yet |
 
 ### Turning it on
@@ -167,8 +167,37 @@ Validation:
 
 ## What is not wired yet
 
-Gateway and worker drain (`drain.*` is accepted and ignored; the readiness grace, `/readyz` failing on SIGTERM and `Connection: close` are PR F; the queue's own shutdown behaviour is described above), `gateway_draining`, and the
-behaviour changes the default brings (decision D25), the dashboard, the alerts and the other runbooks (PR G).
+The behaviour changes the default brings (decision D25), the dashboard, the alerts and the other runbooks (PR G).
+
+## Drain and rolling restarts (PR F)
+
+**What happens when a gateway gets SIGTERM** (resilience `on`, registry workers; with `off` or static workers the old behaviour is unchanged: the listener closes at once and in-flight requests finish within `gateway.shutdown_timeout`):
+
+| time | gateway |
+| --- | --- |
+| signal | `/readyz` answers `503` at once (the 2 s probe cache is bypassed; same body as an overload shed, "shutting down", `Retry-After: 1`), `gateway_draining` is 1, every response says `Connection: close`. `/healthz` stays `200`; `/metrics` keeps answering. Log: `gateway draining: not ready, still serving`. |
+| for `drain.readiness_grace` | the listener stays open and requests are served (including queueing) so a balancer that has not noticed yet loses nothing. |
+| end of grace | the queue closes (waiters finish, are served or hit `queue.max_wait`; arrivals that would have to wait are shed `draining`), the listener closes, in-flight requests, streams included, finish. Whoever is still queued 250 ms before the end of the budget is shed `draining`. |
+| `gateway.shutdown_timeout` after the signal | whatever is left is cut and the process exits non-zero (as before). The timeout covers the grace. |
+| second signal, any time | the process exits at once (queued and in-flight requests get no answer). |
+
+**Settings to choose together:** `readiness_grace` longer than your balancer's detection time (probe period times failure threshold, plus propagation to the data path); `gateway.shutdown_timeout` at least `readiness_grace` plus your longest
+stream; the orchestrator's termination grace period at least `shutdown_timeout` plus a margin. The default grace is `min(5s, shutdown_timeout/2)`; a developer's Ctrl-C therefore waits up to 5 s (press it again to quit at once).
+Set `SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=0` to drain without a grace (the listener then closes at the signal, as with the feature off, but `/readyz` still fails and the queue still closes).
+
+**Rolling workers.** The mock worker (`--drain-announce`, `--drain-timeout`) and the agent implement the worker half: on SIGTERM the backend reports `draining`, keeps serving for the announce period, refuses new work (a neutral `503 draining`) and finishes what is in flight;
+the agent reports `DRAINING` (the registry stops offering the worker within the heartbeat interval plus the gateway's registry refresh) and deregisters when the backend exits. Choose the announce above the heartbeat interval plus `gateway.registry_refresh`
+(1 s + 0.1 s in the benchmark cluster, plus margin). With an announce of 0 the requests routed from a stale view reach a refusing worker and are retried on another worker: the client sees nothing, but the retry budget is spent. Signal the agent first or the backend first;
+both end with the worker deregistered.
+
+**Runbook: a restart dropped requests.** (1) `connection refused` or resets at the balancer right after a gateway restart: the balancer sent requests after the listener closed. Lengthen `readiness_grace` beyond its detection time. (2) Streams cut at the end of a restart:
+`shutdown_timeout` minus the grace is shorter than the stream; raise `shutdown_timeout` and the orchestrator's termination period. (3) `503 NO_CAPACITY` "shutting down" from a gateway: it was draining, the client should retry (another instance); `admission_rejections_total{reason="draining"}`
+counts them. (4) A worker restart shows retries (`inference_retries_total`) and `503 draining` from the worker: the announce is shorter than the heartbeat plus refresh.
+
+**Metrics.** `gateway_draining` (gauge, only with the feature on): 1 from the first signal. Alert on a gateway that stays 1 for longer than `shutdown_timeout` (it has not exited).
+
+**Verified with mock workers and loopback only.** Process tests send real signals to the gateway, mock worker, agent and control plane binaries (`tests/integration/drain_process_test.go`); the results are in `docs/benchmarks/phase-15-chaos.md`. Real balancers, Kubernetes
+preStop and termination grace periods, and vLLM's own drain behaviour are Phase 13, 17 and 18 and have not been tested.
 
 ## Known limits of the queue (PR E)
 
