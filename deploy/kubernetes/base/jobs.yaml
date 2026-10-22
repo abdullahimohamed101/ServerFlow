@@ -1,0 +1,116 @@
+# One-shot jobs, applied by scripts/k8s-up.sh after the data tier is Ready (Kubernetes has no depends_on): the schema
+# migration and the lifecycle topic. Both are idempotent, so running `make k8s-up` again is safe (the script deletes the
+# finished Jobs first, because a Job's pod template cannot be changed in place).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: migrate
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: jobs
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: migrate
+        app.kubernetes.io/part-of: serverflow
+    spec:
+      serviceAccountName: migrate
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: serverflow/admin
+          imagePullPolicy: IfNotPresent
+          args: [migrate, up]
+          envFrom:
+            - secretRef: {name: dsn}
+          env:
+            # The PostgreSQL Service is inside the cluster network and speaks plain protocol (ADR-021).
+            - {name: SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT, value: "true"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-init
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: redpanda-init
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: jobs
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: redpanda-init
+        app.kubernetes.io/part-of: serverflow
+    spec:
+      serviceAccountName: redpanda-init
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redpanda-init
+          image: mirror.gcr.io/redpandadata/redpanda:v25.3.17@sha256:c96a71811ec85eee436b7471e4d2777b70ceb4d6a0bc5447094854b3150511c1
+          imagePullPolicy: IfNotPresent
+          # Idempotent: create the lifecycle topic (6 partitions, 7 days) unless it exists. The password is expanded by bash
+          # from the Secret `kafka`; it is not in this file.
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              export RPK_BROKERS=redpanda:9092 RPK_USER=serverflow RPK_PASS="$SERVERFLOW_EVENTS_SASL_PASSWORD" RPK_SASL_MECHANISM=SCRAM-SHA-256
+              for i in $(seq 1 30); do
+                if rpk topic describe inference.lifecycle.v1 >/dev/null 2>&1; then echo "topic exists"; exit 0; fi
+                if rpk topic create inference.lifecycle.v1 -p 6 -r 1 -c retention.ms=604800000 >/dev/null 2>&1; then echo "topic created"; exit 0; fi
+                sleep 1
+              done
+              echo "could not create the lifecycle topic" >&2
+              exit 1
+          envFrom:
+            - secretRef: {name: kafka}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            # The image declares VOLUME for its data directory; an emptyDir keeps the root file system read-only.
+            - {name: data, mountPath: /var/lib/redpanda/data}
+            - {name: config, mountPath: /var/lib/redpanda/.config}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Mi}
+        - name: config
+          emptyDir: {sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 8Mi}
