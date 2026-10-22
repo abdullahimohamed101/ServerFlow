@@ -81,3 +81,10 @@ The seam gains stubs for fault tolerance and one guarantee. Nothing is fired by 
 - **`AttemptEnd.RetryDenied`** (`budget`, `deadline`, or empty), **`AttemptStart.Probe`** and **`AttemptStart.QueueWait`**: fields reserved for the retry budget, the circuit breaker and the admission queue. Always zero today.
 - **`Rejection` kind `overload`** with reasons `global_limit`, `queue_full`, `queue_timeout`, `draining`. It must not feed `scheduler_decisions_total`; the metrics observer ignores it until Phase 15 gives it its own series. Never fired yet.
 - **Two new methods, `QueueWaited(ctx, QueueWait)` and `BreakerTransition(ctx, BreakerChange)`**, on `Observer`, with empty defaults on `NopObserver` and panic-contained fan-out in `multiObserver`. Observers that embed `NopObserver` (tracing, events) need no change; an observer that implements the interface from scratch must add them. `BreakerTransition` is delivered on a background context, not a request's. Never fired yet.
+
+## Amendment (Phase 15, PR D; ADR-020)
+
+Fired from PR D with `resilience.mode: on` (registry mode): `BreakerTransition`, `AttemptStart.Probe` and `AttemptEnd.RetryDenied`. A suppressed trip is a `BreakerTransition` with `To "closed"` and `Reason "suppressed"`.
+`AttemptEnd` gains two fields, `Probe` and `Verdict` (`ok`, `fault`, `neutral` or empty) -- an addition to the PR A stub list, because the probe counter needs the verdict and events are the only path the metrics observer
+sees. `BreakerTransition` is delivered outside every gateway lock by the request goroutine that finds it queued. A new attempt class `deadline` (first-byte deadline) joins `connect`, `reset`, `empty_stream`,
+`status_NNN` and `panic`. `AttemptStart.QueueWait`, `QueueWaited` and `Rejection` kind `overload` stay unfired until PR E. With the feature off nothing is fired.

@@ -1,0 +1,480 @@
+// Package chaos holds deterministic assertion tests for Phase 15 fault tolerance (ADR-020): a real embedded
+// cluster (control plane, mock workers with their agents, a registry-mode gateway), a fault injected into one worker
+// through mockworker.Faults, closed-loop clients, and assertions on what the clients saw and on the gateway's own
+// counters. They are not benchmarks: the numbers come from `benchmark chaos`. Cool-downs and timeouts are scaled
+// down by configuration so a scenario takes seconds, and every wait is a poll with a generous bound.
+package chaos
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	dto "github.com/prometheus/client_model/go"
+
+	"serverflow/internal/bench/embedded"
+	"serverflow/internal/config"
+	"serverflow/internal/mockworker"
+	"serverflow/internal/registry/client"
+)
+
+const (
+	clients      = 6
+	coolDown     = 300 * time.Millisecond
+	maxCoolDown  = 600 * time.Millisecond
+	consecutive  = 5
+	minVolume    = 10
+	probeConcur  = 1
+	faultedIndex = 0
+)
+
+// rig is one running cluster with clients.
+type rig struct {
+	t       *testing.T
+	c       *embedded.Cluster
+	faulty  string
+	model   string
+	client  *http.Client
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	reqs    atomic.Int64
+	fails   atomic.Int64
+	statusM sync.Mutex
+	status  map[int]int
+}
+
+type rigOpts struct {
+	header  time.Duration // gateway.upstream_header_timeout (0: 30s)
+	mutate  func(*config.Config)
+	workers int
+}
+
+func newRig(t *testing.T, o rigOpts) *rig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("chaos tests start a cluster; skipped with -short")
+	}
+	workers := o.workers
+	if workers == 0 {
+		workers = 3
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cl, err := embedded.Start(ctx, embedded.Config{
+		Scheduler: "least-active", Workers: workers, Models: []string{"mock-model"}, MaxConcurrency: 8, TTFT: 5 * time.Millisecond,
+		Resilience: "on",
+		GatewayMutate: func(c *config.Config) {
+			if o.header > 0 {
+				c.Gateway.UpstreamHeaderTimeout = o.header
+			}
+			c.Resilience.Breaker.CoolDown, c.Resilience.Breaker.MaxCoolDown = coolDown, maxCoolDown
+			c.Resilience.Breaker.ConsecutiveFailures, c.Resilience.Breaker.MinVolume = consecutive, minVolume
+			c.Resilience.Breaker.ProbeConcurrency = probeConcur
+			if o.mutate != nil {
+				o.mutate(c)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cl.Close)
+	if got := cl.Resilience(); got != "on" {
+		t.Fatalf("the cluster ran with resilience %q", got)
+	}
+	r := &rig{t: t, c: cl, faulty: cl.Specs()[faultedIndex].ID, model: "mock-model", stop: make(chan struct{}), status: map[int]int{},
+		client: &http.Client{Timeout: 20 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64}}}
+	t.Cleanup(func() { r.client.CloseIdleConnections() })
+	if r.faults() == nil {
+		t.Fatal("no fault handle for the first worker")
+	}
+	return r
+}
+
+func (r *rig) faults() *mockworker.Faults { return r.c.Faults(r.faulty) }
+
+// start launches the closed-loop clients (half streaming).
+func (r *rig) start() {
+	for i := 0; i < clients; i++ {
+		r.wg.Add(1)
+		go func(i int) {
+			defer r.wg.Done()
+			for {
+				select {
+				case <-r.stop:
+					return
+				default:
+				}
+				r.one(i%2 == 0)
+			}
+		}(i)
+	}
+}
+
+func (r *rig) one(stream bool) {
+	body := fmt.Sprintf(`{"model":%q,"max_tokens":4,"messages":[{"role":"user","content":"hello"}]`, r.model)
+	if stream {
+		body += `,"stream":true`
+	}
+	req, _ := http.NewRequest(http.MethodPost, r.c.GatewayURL+"/v1/chat/completions", strings.NewReader(body+"}"))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req)
+	code := 0
+	if err == nil {
+		b, rerr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		code = resp.StatusCode
+		if rerr != nil {
+			code = 0 // the body broke after the headers: a failed request
+		}
+		if stream && code == 200 && !strings.Contains(string(b), "[DONE]") {
+			code = 0
+		}
+	}
+	r.reqs.Add(1)
+	if code != 200 {
+		r.fails.Add(1)
+	}
+	r.statusM.Lock()
+	r.status[code]++
+	r.statusM.Unlock()
+}
+
+func (r *rig) finish() {
+	close(r.stop)
+	r.wg.Wait()
+}
+
+// window runs for d and returns the requests and failures in it.
+func (r *rig) window(d time.Duration) (reqs, fails int64) {
+	r0, f0 := r.reqs.Load(), r.fails.Load()
+	time.Sleep(d)
+	return r.reqs.Load() - r0, r.fails.Load() - f0
+}
+
+// --- gateway counters ------------------------------------------------------------------------------
+
+func (r *rig) gather() []*dto.MetricFamily {
+	r.t.Helper()
+	fams, err := r.c.Metrics().Gather()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return fams
+}
+
+// val sums the series of name whose labels include all of the given name=value pairs.
+func (r *rig) val(name string, labels ...string) float64 {
+	r.t.Helper()
+	total := 0.0
+	for _, f := range r.gather() {
+		if f.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range f.GetMetric() {
+			for _, want := range labels {
+				k, v, _ := strings.Cut(want, "=")
+				ok := false
+				for _, l := range m.GetLabel() {
+					ok = ok || (l.GetName() == k && l.GetValue() == v)
+				}
+				if !ok {
+					continue series
+				}
+			}
+			switch {
+			case m.GetCounter() != nil:
+				total += m.GetCounter().GetValue()
+			case m.GetGauge() != nil:
+				total += m.GetGauge().GetValue()
+			}
+		}
+	}
+	return total
+}
+
+func (r *rig) selections() float64 { return r.val("scheduler_selections_total", "worker_id="+r.faulty) }
+func (r *rig) opens() float64      { return r.val("circuit_breaker_transitions_total", "state=open") }
+func (r *rig) closes() float64     { return r.val("circuit_breaker_transitions_total", "state=closed") }
+func (r *rig) probes() float64     { return r.val("circuit_breaker_probes_total") }
+func (r *rig) openNow() float64    { return r.val("circuit_breakers_open") }
+
+func (r *rig) eventually(d time.Duration, cond func() bool, what string) {
+	r.t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.t.Fatalf("not within %v: %s (status counts %v)", d, what, r.statuses())
+}
+
+// settle is how long the breaker must stay closed, with no new open, before recovery is judged: a stream that was
+// already in flight when the fault ended has ended or aborted by then. It is kept short on purpose: the recovered
+// worker is often not selected from about 400 ms after its breaker closed in this rig (the least-active scheduler reads
+// the load the worker last reported in a heartbeat, one second old), and the window that follows
+// has to start soon after the close.
+const settle = 150 * time.Millisecond
+
+// closedAndSettled returns a condition for "recovered": the breaker is closed (neither open nor half-open), it closed
+// after the fault ended or was already closed at that moment (a leaky scenario can sit re-closed between two cycles), and
+// it has had no new open for d. It must be built right after the fault has been cleared, so that what it counts, the
+// closes and the opens, is after the clear; a close from an earlier cycle does not count.
+func (r *rig) closedAndSettled(d time.Duration) func() bool {
+	closes0, alreadyClosed := r.closes(), r.openNow() == 0
+	lastOpens, since := r.opens(), time.Now()
+	return func() bool {
+		if o := r.opens(); o != lastOpens || r.openNow() != 0 {
+			lastOpens, since = r.opens(), time.Now()
+			return false
+		}
+		return (alreadyClosed || r.closes() > closes0) && time.Since(since) >= d
+	}
+}
+
+// afterNextHeartbeat waits until the control plane has received a heartbeat of the faulty worker that was sent after
+// now, and for the gateway to have refreshed its view since.
+func (r *rig) afterNextHeartbeat() {
+	r.t.Helper()
+	from := time.Now()
+	r.eventually(10*time.Second, func() bool {
+		ws, err := r.c.ControlPlane().Workers(context.Background(), client.Query{})
+		if err != nil {
+			return false
+		}
+		for _, w := range ws {
+			if w.WorkerID == r.faulty {
+				return w.LastHeartbeat.After(from)
+			}
+		}
+		return false
+	}, "a heartbeat of the recovered worker")
+	time.Sleep(3 * embedded.RegistryRefresh)
+}
+
+func (r *rig) statuses() map[int]int {
+	r.statusM.Lock()
+	defer r.statusM.Unlock()
+	out := map[int]int{}
+	for k, v := range r.status {
+		out[k] = v
+	}
+	return out
+}
+
+// --- the scenario shape ----------------------------------------------------------------------------
+
+// scenario injects a fault, lets the breaker act, and checks the contract of acceptance criterion 19:
+//   - the breaker opens after at most maxFaultsToOpen requests reached the faulty worker (the configured number of
+//     faults plus what was in flight);
+//   - once it is open, client failures stop except one per probe, and the faulty worker receives only probes;
+//   - after the fault ends the breaker closes and traffic returns, with no failures.
+type scenario struct {
+	rigOpts
+	apply, clear    func(*rig) error
+	maxFaultsToOpen int // requests that may reach the faulty worker before its breaker opens
+	// ratioRule says only the failure-ratio rule can see this fault (an always-500 worker, a partial burst). The
+	// ratio is over the sliding window, which still holds the worker's healthy history, so the faults needed are
+	// that history (every attempt the worker had before the fault) plus min_volume.
+	ratioRule bool
+	// leaky: a probe can pass although the worker is still faulty -- a stream that breaks after its first byte has
+	// already passed (the verdict is taken at the first byte so that a long stream does not hold the probe slot), and
+	// with a partial fault rate a probe succeeds with the probability of the requests that are not failed. The breaker
+	// then closes, lets the next requests through and opens again (the fresh window needs min_volume outcomes for the
+	// ratio rule), so each probe can cost several failures or attempts: min_volume + 1 is what this rig's short streams and six clients allow; with long streams it scales with the streams in flight (ADR-020, limits).
+	leaky bool
+}
+
+func runScenario(t *testing.T, s scenario) {
+	r := newRig(t, s.rigOpts)
+	r.start()
+	defer r.finish()
+
+	if reqs, fails := r.window(600 * time.Millisecond); reqs < 20 || fails != 0 {
+		t.Fatalf("baseline: %d requests, %d failures", reqs, fails)
+	}
+	sel0 := r.selections()
+	if sel0 == 0 {
+		t.Fatal("the worker to be faulted received no traffic in the baseline")
+	}
+	if err := s.apply(r); err != nil {
+		t.Fatal(err)
+	}
+	r.eventually(20*time.Second, func() bool { return r.opens() >= 1 }, "the breaker opens")
+	reached := r.selections() - sel0
+	bound := float64(s.maxFaultsToOpen)
+	if s.ratioRule {
+		bound += sel0 + minVolume
+	}
+	if reached > bound {
+		t.Errorf("%v requests reached the faulty worker before its breaker opened, want at most %v", reached, bound)
+	}
+	if r.openNow() < 1 {
+		t.Errorf("circuit_breakers_open reads %v right after an open", r.openNow())
+	}
+
+	// Let what was in flight at the open finish, then watch: only probes may reach the worker and only
+	// probes may cost a client a failure. A request in flight at the open to a worker that stalls ends only when the
+	// header timeout cuts it (found as a failure of TestFrozenWorker in 1 of 15 runs: 3 failures with 1 probe), so
+	// the wait covers that.
+	inflight := 150 * time.Millisecond
+	if s.header > 0 {
+		inflight += s.header
+	}
+	time.Sleep(inflight)
+	selOpen, probesOpen := r.selections(), r.probes()
+	reqs, fails := r.window(1200 * time.Millisecond)
+	probes := r.probes() - probesOpen
+	reachedAfter := r.selections() - selOpen
+	perProbe := 1.0
+	if s.leaky {
+		perProbe = minVolume + 1 // a re-closed breaker has an empty window: with this rig's short streams min_volume + 1 bounds the cost of a cycle (it scales with streams in flight otherwise)
+	}
+	if reachedAfter > perProbe*(probes+1) { // +1: a probe whose verdict is still pending when the window closes
+		t.Errorf("%v attempts reached the ejected worker in the window with only %v probes", reachedAfter, probes)
+	}
+	if float64(fails) > perProbe*(probes+1) {
+		t.Errorf("%d client failures in the window (%d requests) with only %v probes: failures must stop except one per probe (statuses %v)", fails, reqs, probes, r.statuses())
+	}
+	if reqs < 20 {
+		t.Errorf("only %d requests in the window: the survivors should keep serving", reqs)
+	}
+	if perCoolDown := 1200*time.Millisecond/coolDown + 2; probes > float64(perCoolDown*probeConcur) {
+		t.Errorf("%v probes in 1.2s with a %v cool-down: at most %d", probes, coolDown, perCoolDown*probeConcur)
+	}
+
+	// The fault ends: the breaker closes (a probe passes) and traffic returns without failures.
+	if err := s.clear(r); err != nil {
+		t.Fatal(err)
+	}
+	// Closed, and staying closed: the counters since the fault ended, not since the start. In a leaky scenario a close
+	// from an earlier cycle is already counted, and the breaker can sit re-closed for a moment after the fault is
+	// cleared and be opened again by a stream that was already in flight (found by instrumenting a failing run: it
+	// was closed at the clear, the wait passed at once, a late abort reopened it and no traffic came back in the
+	// window). So the wait counts closes after the clear (or accepts a breaker that is already closed) and requires a short quiet period with no new open.
+	quiet := time.Duration(0) // only a leaky scenario has a late abort that can reopen the breaker after a close
+	if s.leaky {
+		quiet = settle
+	}
+	r.eventually(15*time.Second, r.closedAndSettled(quiet), "the breaker closes after the fault ends and stays closed")
+	// The least-active scheduler routes by the load the worker last reported, and a figure taken during the recovery
+	// burst can keep a closed breaker's worker last for up to a heartbeat (confirmed by sampling a failing run: selections
+	// flat while the worker reported 3 active, resuming with the next heartbeat). Judge the return of traffic from a
+	// heartbeat that post-dates the close, and require the breaker to still be closed after it.
+	r.afterNextHeartbeat()
+	r.eventually(15*time.Second, r.closedAndSettled(quiet), "the breaker is still closed after the worker's next heartbeat")
+	selClosed := r.selections()
+	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
+	allowed := int64(0)
+	if s.leaky {
+		allowed = minVolume + 1
+	}
+	if _, fails := r.window(800 * time.Millisecond); fails > allowed {
+		t.Errorf("%d failures after recovery (allowed %d)", fails, allowed)
+	}
+	// Traffic returns: at least 3 attempts reach the recovered worker. The scheduler routes by the load the worker last
+	// reported, up to a heartbeat (1 s) old, so a worker that reported a high load while recovering can wait a heartbeat
+	// or two behind its peers: the bound is 3 s from the close, not the 800 ms of the failure window above (a run of the
+	// full gate under load saw 2 attempts in 800 ms and more afterwards).
+	deadline := time.Now().Add(3*time.Second - 800*time.Millisecond)
+	for r.selections()-selClosed < 3 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if r.selections()-selClosed < 3 {
+		t.Errorf("traffic did not return to the recovered worker (%v new attempts in 3s)", r.selections()-selClosed)
+	}
+	if r.val("scheduler_ineligible_selections_total") != 0 {
+		t.Error("scheduler_ineligible_selections_total must stay 0")
+	}
+}
+
+func rate(rate float64, mode mockworker.FailureMode) (func(*rig) error, func(*rig) error) {
+	return func(r *rig) error { return r.faults().SetErrorRate(rate, mode) },
+		func(r *rig) error { return r.faults().SetErrorRate(0, mode) }
+}
+
+// error-burst, injected 503 mock_failure on every request: a fault, retried on another worker. Clients never see it.
+func TestErrorBurstUnavailableAllRequests(t *testing.T) {
+	apply, clear := rate(1, mockworker.ModeUnavailable)
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients})
+}
+
+// A partial burst: four in five requests fail. The streak rule rarely sees five in a row and the ratio rule has to
+// outweigh the worker's healthy history in the window. (Half of the requests failing is the ratio threshold itself
+// and trips only by chance: that case is in the benchmark, not asserted here.)
+func TestErrorBurstUnavailablePartial(t *testing.T) {
+	apply, clear := rate(0.8, mockworker.ModeUnavailable)
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true, leaky: true})
+}
+
+// An always-500 worker is invisible to the consecutive rule (a 500 is not a retryable fault) but the ratio rule
+// ejects it, and its requests are never retried.
+func TestErrorBurst500IsEjectedByTheRatioRuleAndNeverRetried(t *testing.T) {
+	apply, clear := rate(1, mockworker.ModeError)
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true})
+}
+
+func TestConnectionResets(t *testing.T) {
+	apply, clear := rate(1, mockworker.ModeDrop)
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: consecutive + clients})
+}
+
+// A stream that breaks after two tokens, on every request: each request is an ok at its first byte turned into a fault
+// by the abort, so the ratio rule opens the breaker once the faults outweigh the worker's healthy history in the window;
+// after that only a probe can break.
+func TestMidstreamFailures(t *testing.T) {
+	apply, clear := rate(1, mockworker.ModeMidstream)
+	runScenario(t, scenario{apply: apply, clear: clear, maxFaultsToOpen: clients, ratioRule: true, leaky: true})
+}
+
+// A frozen worker (reads requests, never answers; /stats keeps answering so the agent says READY): only the gateway's
+// header timeout can see it. Each fault costs the header timeout, so the isolation bound is that times the faults
+// needed (concurrently), and the probes of the frozen worker cost one client each.
+func TestFrozenWorker(t *testing.T) {
+	runScenario(t, scenario{
+		rigOpts: rigOpts{header: 400 * time.Millisecond},
+		apply:   func(r *rig) error { r.faults().SetBlackhole(true); return nil },
+		clear:   func(r *rig) error { r.faults().SetBlackhole(false); return nil },
+		// every request that reaches the frozen worker until it opens stalls for the header timeout
+		maxFaultsToOpen: consecutive + clients,
+	})
+}
+
+// A slow worker whose delay is below the header timeout is slow but successful: no breaker may open.
+func TestSlowButSuccessfulWorkerNeverOpensABreaker(t *testing.T) {
+	r := newRig(t, rigOpts{header: 2 * time.Second})
+	r.start()
+	defer r.finish()
+	r.window(400 * time.Millisecond)
+	r.faults().SetExtraDelay(300 * time.Millisecond)
+	_, fails := r.window(2500 * time.Millisecond)
+	if fails != 0 {
+		t.Errorf("%d failures with a worker that is slow but within the header timeout (statuses %v)", fails, r.statuses())
+	}
+	if r.opens() != 0 || r.openNow() != 0 {
+		t.Errorf("a breaker opened for a slow but successful worker (%v opens)", r.opens())
+	}
+	if r.faults().Stats().Delayed == 0 {
+		t.Error("the delay never touched a request: the scenario proved nothing")
+	}
+}
+
+// A slow worker whose delay is above the header timeout times out: those are faults, and the breaker ejects it.
+func TestSlowWorkerBeyondTheHeaderTimeoutIsEjected(t *testing.T) {
+	runScenario(t, scenario{
+		rigOpts: rigOpts{header: 250 * time.Millisecond},
+		apply:   func(r *rig) error { r.faults().SetExtraDelay(1500 * time.Millisecond); return nil },
+		clear:   func(r *rig) error { r.faults().SetExtraDelay(0); return nil },
+
+		maxFaultsToOpen: consecutive + clients,
+	})
+}

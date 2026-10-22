@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/internal/resilience"
 	"serverflow/pkg/protocol"
 )
 
@@ -74,6 +75,18 @@ type attemptRun struct {
 	octx            context.Context
 	nextUnavailable bool
 	nextRoute       string
+
+	// Resilience (Phase 15; all zero when the feature is off). guard bounds the retryable phase of this
+	// attempt; verdict is what the breaker was told at the retry-decision point (a Verdict* value, "" until
+	// then); ticketDone says the breaker ticket has been settled, by that verdict or by a release; retryDenied
+	// says why a wanted retry was not made; peek is a body peek of a held 503 that may still be reading.
+	guard       *phaseGuard
+	verdict     string
+	ticketDone  bool
+	retryDenied string
+	peek        *peekRead
+	// okAt is when the ok verdict was given (the first byte), so that a stream that breaks later can take it back.
+	okAt time.Time
 }
 
 // nextRouteResult names why a retry's routing failed, for AttemptEnd.NextRouteResult.
@@ -108,6 +121,11 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 		return
 	}
 	info.model = ireq.Model
+	if s.res != nil {
+		// A routed first attempt: what the retry budget measures retries against (D5).
+		s.res.budget.NoteFirst(ireq.Model)
+		info.deadlineAt = s.res.firstByteDeadline(s.res.now())
+	}
 
 	// From here until the function returns, every run that holds a slot is released and every started attempt
 	// is ended, whatever happens: a normal finish, a client that left, a panic in the recorder, the upstream
@@ -128,13 +146,23 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 	var tried []string
 	for {
 		s.sendAttempt(r, run, body, info)
-		if r.Context().Err() != nil || !run.retryable || len(info.attempts) >= s.retry.max {
+		wantRetry := r.Context().Err() == nil && run.retryable && len(info.attempts) < s.retry.max
+		var reserved *resilience.Reservation
+		if wantRetry && s.res != nil {
+			// The deadline and the budget are checked before the retry is routed: a retry that is denied never
+			// reaches AttemptStarted, and the budget is reserved at the check and refunded below if no other
+			// worker is found, so only a retry whose send begins stays consumed (D5).
+			reserved, wantRetry = s.permitRetry(run, info, ireq.Model)
+		}
+		s.settleVerdict(r, run, info, wantRetry)
+		if !wantRetry {
 			break
 		}
 		// Find the next worker before letting go of this response: if there is none, this response is
 		// what the client gets (ADR-012 D7).
 		next, nextErr := s.reserveAttempt(r, ireq, info, append(tried, run.target.worker.WorkerID))
 		if nextErr != nil {
+			s.res.refund(reserved)
 			run.nextUnavailable = true
 			if r.Context().Err() == nil { // a client that left is not a scheduling outcome
 				run.nextRoute = nextRouteResult(nextErr.Error)
@@ -159,6 +187,7 @@ func (s *Server) forwardRegistry(w http.ResponseWriter, r *http.Request, rc *htt
 	case run.err != nil:
 		s.fail(w, info, mapUpstreamError(run.err))
 	default:
+		s.joinPeek(run)
 		s.relay(w, r, rc, run.resp, run.src, run.idle, info, start)
 	}
 }
@@ -244,6 +273,7 @@ func (s *Server) reserveAttempt(r *http.Request, ireq *protocol.InferenceRequest
 	selecting := time.Now()
 	target, rerr := s.router.Route(r.Context(), ireq, exclude...)
 	info.selectStart, info.selectDuration = selecting, time.Since(selecting)
+	s.res.flush() // transitions the routing itself caused (a cool-down that ended); a no-op without resilience
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -261,11 +291,18 @@ func (s *Server) startAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	run.octx = r.Context() // until the observers return theirs; AttemptEnded needs a context even if they did not
 	info.attempted = len(info.attempts)
 	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
-		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(run.selecting)))
+		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(run.selecting), target.probe()))
 	info.attemptCtx, run.octx = octx, octx
 	run.ctx, run.cancel = context.WithCancel(withAttemptID(octx, id))
 	run.idle = time.AfterFunc(s.cfg.UpstreamIdleTimeout, run.cancel)
 	run.idle.Stop()
+	if s.res != nil {
+		hdr := time.Duration(0)
+		if target.probe() {
+			hdr = s.res.probeHeader
+		}
+		run.guard = newPhaseGuard(run.cancel, info.deadlineAt.Sub(s.res.now()), hdr)
+	}
 	s.log.Debug("worker selected", append([]any{"request_id", info.id, "attempt_id", id, "attempt", idx + 1, "strategy", s.router.strategy,
 		"worker_id", target.worker.WorkerID, "model", ireq.Model}, tenantAttrs(info)...)...)
 }
@@ -273,7 +310,34 @@ func (s *Server) startAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 // sendAttempt sends the request to the attempt's worker and decides whether what came back may be retried.
 // For a stream it reads the first chunk before returning, so nothing has reached the client by then.
 func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info *reqInfo) {
+	s.sendOnce(r, run, body, info)
+	if beforeEndPhaseHook != nil {
+		beforeEndPhaseHook()
+	}
+	s.endPhase(r, run, info)
+}
+
+// endPhase ends the retryable phase of the attempt. If the first-byte deadline fired before the response arrived
+// (and the client has not left) the attempt becomes the deadline's.
+func (s *Server) endPhase(r *http.Request, run *attemptRun, info *reqInfo) {
+	if run.guard != nil && run.guard.end() && r.Context().Err() == nil {
+		s.markDeadline(run, info)
+	}
+}
+
+// sendOnce is the wire part of sendAttempt: the call, and for a 200 the wait for its first byte.
+func (s *Server) sendOnce(r *http.Request, run *attemptRun, body []byte, info *reqInfo) {
 	resp, err := run.target.up.Do(run.ctx, chatCompletionsPath, body, info.id)
+	if run.guard != nil {
+		run.guard.headersDone()
+		if run.guard.headerExpired() && r.Context().Err() == nil {
+			// The probe's own, shorter header timeout fired: a timeout like the transport's (not retried).
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			resp, err = nil, headerTimeoutError{}
+		}
+	}
 	if err != nil {
 		run.err = err
 		if r.Context().Err() == nil {
@@ -294,9 +358,11 @@ func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info
 
 	if class, ok := s.retry.status(resp.StatusCode); ok {
 		run.class, run.retryable = class, true
+		s.arrived(run)
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
+		s.arrived(run)
 		return
 	}
 
@@ -312,6 +378,7 @@ func (s *Server) sendAttempt(r *http.Request, run *attemptRun, body []byte, info
 	}
 	if n > 0 {
 		run.src = io.MultiReader(bytes.NewReader(buf[:n]), resp.Body)
+		s.arrived(run)
 		return
 	}
 	run.err = rerr
@@ -342,11 +409,15 @@ func (s *Server) abandonAttempt(run *attemptRun, info *reqInfo, outcome string) 
 		}
 	}()
 	defer run.target.release()
+	defer s.returnTicket(run)
 	defer func() {
 		if run.resp != nil {
 			_ = run.resp.Body.Close()
 		}
 	}()
+	if run.guard != nil {
+		run.guard.stop()
+	}
 	if run.idle != nil {
 		run.idle.Stop()
 	}
@@ -364,6 +435,7 @@ func (s *Server) finishAttempt(run *attemptRun, info *reqInfo) {
 	case info.errCode != "" || run.err != nil || (run.resp != nil && run.resp.StatusCode >= 500):
 		outcome = outcomeFailed
 	}
+	s.recordAfterRelay(run, info)
 	s.abandonAttempt(run, info, outcome)
 }
 
@@ -373,7 +445,7 @@ func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	s.obs.AttemptEnded(run.octx, AttemptEnd{
 		RequestID: info.id, AttemptID: rec.ID, Number: run.rec + 1, WorkerID: rec.Worker, Model: info.model, Outcome: outcome,
 		Duration: rec.Duration, Class: rec.Class, WillRetry: outcome == outcomeRetried, NextWorkerUnavailable: run.nextUnavailable,
-		NextRouteResult: run.nextRoute,
+		NextRouteResult: run.nextRoute, RetryDenied: run.retryDenied, Probe: run.target.probe(), Verdict: run.finalVerdict(),
 	})
 	level := slog.LevelDebug
 	if outcome != outcomeOK {
@@ -386,6 +458,15 @@ func (s *Server) endAttempt(run *attemptRun, info *reqInfo, outcome string) {
 	}
 	if run.resp != nil {
 		attrs = append(attrs, "worker_status", run.resp.StatusCode)
+	}
+	if v := run.finalVerdict(); v != "" {
+		attrs = append(attrs, "verdict", v)
+	}
+	if run.target.probe() {
+		attrs = append(attrs, "probe", true)
+	}
+	if run.retryDenied != "" {
+		attrs = append(attrs, "retry_denied", run.retryDenied)
 	}
 	attrs = append(attrs, traceAttrs(run.octx)...)
 	attrs = append(attrs, tenantAttrs(info)...)

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"serverflow/internal/api"
+	"serverflow/internal/resilience"
 	"serverflow/internal/scheduler"
 	"serverflow/pkg/protocol"
 )
@@ -31,6 +32,10 @@ type router struct {
 	client   *http.Client
 	log      *slog.Logger
 
+	// res is set when resilience is effective (Phase 15): the router then keeps workers whose circuit breaker is
+	// open out of the selection and takes a breaker ticket for the worker it chooses.
+	res *resilienceState
+
 	mu       sync.Mutex
 	inflight map[string]int // worker ID -> requests sent and not yet finished
 }
@@ -45,7 +50,14 @@ type routed struct {
 	worker  protocol.WorkerSnapshot
 	up      Upstream
 	release func()
+	// ticket is the circuit breaker's right to send this attempt (zero without resilience). A probe ticket must
+	// come back through the breakers exactly once: with a verdict at the retry-decision point, or released by
+	// the attempt's cleanup.
+	ticket resilience.Ticket
 }
+
+// probe reports whether the attempt is a circuit breaker's trial request (AttemptStart.Probe).
+func (t *routed) probe() bool { return t.ticket.Probe() }
 
 // routeError is why Route found no worker: the API error to send, and what the scheduler counted when it
 // refused (zero when the refusal did not come from the scheduler). The counts let callers tell "every eligible
@@ -80,7 +92,17 @@ func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, excl
 		}
 	}
 
-	chosen, rerr := r.reserve(ctx, req, workers)
+	broke := 0 // registry-eligible workers the breakers took out of this selection
+	if r.res != nil && r.res.nonClosed.Load() > 0 {
+		for i := range workers {
+			if schedulable(&workers[i]) && !r.res.breakers.Admissible(keyOf(&workers[i])) {
+				workers[i].Eligible = false // a copy: the shared view is untouched, and eligible_workers stays truthful
+				broke++
+			}
+		}
+	}
+
+	chosen, ticket, rerr := r.reserve(ctx, req, workers, broke)
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -88,6 +110,7 @@ func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, excl
 	id := chosen.WorkerID
 	var once sync.Once
 	return &routed{
+		ticket: ticket,
 		worker: *chosen,
 		up:     &httpUpstream{baseURL: trimSlash(chosen.Address), client: r.client},
 		release: func() {
@@ -102,10 +125,14 @@ func (r *router) Route(ctx context.Context, req *protocol.InferenceRequest, excl
 	}, nil
 }
 
-// reserve overlays local load, selects, and takes the slot in one critical
+// reserve overlays local load, selects, takes the breaker ticket and takes the slot in one critical
 // section, so two requests cannot both take a worker's last slot. The deferred
-// unlock keeps a panicking scheduler from wedging every request.
-func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot) (*protocol.WorkerSnapshot, *routeError) {
+// unlock keeps a panicking scheduler from wedging every request. A worker whose breaker turns out to be
+// unavailable after the scheduler chose it (another request took the last probe slot, or the breaker opened since
+// the filter) is dropped from the selection and the scheduler chooses again; each candidate is tried at most once
+// and no observer has been told anything yet. broke is how many registry-eligible workers the breakers already
+// removed.
+func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot, broke int) (*protocol.WorkerSnapshot, resilience.Ticket, *routeError) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range workers {
@@ -113,27 +140,51 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 			workers[i].Metrics.ActiveRequests = local
 		}
 	}
-	chosen, err := r.sched.SelectWorker(ctx, req, workers)
-	if err != nil {
-		var none *scheduler.NoWorkerError
-		if !errors.As(err, &none) {
-			return nil, &routeError{Error: api.ErrInternal()} // the client went away, or the scheduler failed
+	var chosen *protocol.WorkerSnapshot
+	var ticket resilience.Ticket
+	for {
+		var err error
+		chosen, err = r.sched.SelectWorker(ctx, req, workers)
+		if err != nil {
+			var none *scheduler.NoWorkerError
+			if !errors.As(err, &none) {
+				return nil, ticket, &routeError{Error: api.ErrInternal()} // the client went away, or the scheduler failed
+			}
+			counts := routeError{Serving: none.Serving, Eligible: none.Eligible, AtCapacity: none.AtCapacity}
+			switch {
+			case none.UnknownModel():
+				counts.Error = api.ErrModelNotFound(req.Model)
+			case r.cache.Degraded():
+				// The registry cannot be reached and the cached view is aging out: that is
+				// the cause, not a shortage of capacity, and a 1s retry hint would mislead.
+				counts.Error = api.ErrWorkerUnavailable()
+			default:
+				counts.Error = api.ErrNoCapacity(req.Model, none.Eligible)
+				if r.res != nil && broke > 0 && none.Eligible == 0 {
+					// Every worker the registry offers is ejected: tell the client when the first one is tried again.
+					counts.RetryAfter = r.res.breakers.RetryAfter()
+				}
+			}
+			return nil, ticket, &counts
 		}
-		counts := routeError{Serving: none.Serving, Eligible: none.Eligible, AtCapacity: none.AtCapacity}
-		switch {
-		case none.UnknownModel():
-			counts.Error = api.ErrModelNotFound(req.Model)
-		case r.cache.Degraded():
-			// The registry cannot be reached and the cached view is aging out: that is
-			// the cause, not a shortage of capacity, and a 1s retry hint would mislead.
-			counts.Error = api.ErrWorkerUnavailable()
-		default:
-			counts.Error = api.ErrNoCapacity(req.Model, none.Eligible)
+		if r.res == nil {
+			break
 		}
-		return nil, &counts
+		t, ok := r.res.breakers.Acquire(keyOf(chosen))
+		if ok {
+			ticket = t
+			break
+		}
+		for i := range workers {
+			if workers[i].WorkerID == chosen.WorkerID {
+				workers[i].Eligible = false
+				break
+			}
+		}
+		broke++
 	}
 	r.inflight[chosen.WorkerID]++
-	return chosen, nil
+	return chosen, ticket, nil
 }
 
 // InFlight returns how many requests this gateway currently has on a worker.

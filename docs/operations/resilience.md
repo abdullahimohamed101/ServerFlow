@@ -7,20 +7,55 @@ says at every point what is wired.
 
 ## Status (read this first)
 
-**Nothing in this guide changes gateway behaviour yet.** Pull request C added the pure library `internal/resilience` (breakers, retry budget,
-admission queue, global cap) and the configuration section below. No gateway code calls the library, so the settings are accepted, validated
-and ignored. `resilience.mode` **defaults to `off`** in code until the last pull request (G) flips the shipped default to `on`; the final design
-is "on in registry mode, `off` is the kill switch". `/metrics`, requests and logs are byte-identical to before.
+**Circuit breakers, the retry budget, the first-byte deadline and the failure taxonomy are wired in (pull request D); the queue, shedding, the global cap and
+drain are not yet (E, F).** Everything is inert unless you turn it on: `resilience.mode` **defaults to `off`** in code until the last pull request (G) flips the shipped
+default to `on`, and the feature takes effect only with `gateway.worker_source: registry`. With `off` (or static workers) requests, headers, bodies, logs and `/metrics`
+are byte-identical to before. The final design is "on in registry mode, `off` is the kill switch".
 
 | PR | Content | State |
 | --- | --- | --- |
 | A | Panic-safe attempts, unknown-model pre-check, second-routing metric, observer seam stubs | merged |
 | B | Mock-worker runtime faults, chaos harness | merged |
-| **C** | `internal/resilience`, `resilience.*` configuration | **this guide** |
-| D | Breaker, budget, deadline and failure taxonomy wired into the gateway | not yet |
+| C | `internal/resilience`, `resilience.*` configuration | merged |
+| **D** | Breaker, budget, deadline and failure taxonomy wired into the gateway | **this guide** |
 | E | Queue, load shedding, global cap | not yet |
 | F | Gateway and worker drain | not yet |
 | G | Default flip, dashboard, alerts, benchmark note | not yet |
+
+### Turning it on (PR D)
+
+```yaml
+gateway:
+  worker_source: registry
+resilience:
+  mode: on        # or SERVERFLOW_RESILIENCE_MODE=on
+```
+
+Every other key keeps its default. To go back, set `mode: off` (or unset the variable) and restart: that is the kill switch.
+
+### What changes with `mode: on` in registry mode (PR D)
+
+1. **A worker with sustained faults is ejected.** After 5 faults in a row (or a 50% fault ratio over at least 10 outcomes in 10 s) its breaker opens and the worker receives no traffic;
+   after about 10 s (+-20%) one live request at a time is sent to it as a probe, and a good probe closes the breaker, a failed one reopens it with the cool-down doubled up to 2 min.
+   At most half of the registry-eligible workers of a model can be ejected (a model with one worker is never ejected). If every eligible worker is ejected the gateway answers
+   `503 NO_CAPACITY` at once with `Retry-After` the seconds to the first probe. Look for the WARN line `circuit breaker changed state` and `circuit_breaker_state`.
+2. **Retries draw on a budget.** Per model, a retry is allowed while the retries in the last 10 s are fewer than `max(10, 20% of first attempts)`. A denied retry means the client gets the
+   failed worker's own response (a 502/503) instead of a retried success; `retries_denied_total{reason="budget"}` counts them and the attempt line says `retry_denied`.
+3. **A retried 503 is peeked.** To tell a busy or draining worker (`queue_full`, `draining`, `not_ready`: not a fault) from a broken one, the gateway reads at most 1 KiB of the 503's body
+   for at most 250 ms before retrying. It is skipped when no retry is possible, and the bytes are put back if the response is relayed.
+4. **First-byte deadline.** The retryable phase (all attempts until the first byte reaches the client) is bounded by `retry.first_byte_deadline`, by default
+   `upstream_header_timeout + upstream_idle_timeout` plus the 5 s dial timeout, so no request the old gateway served is cut. Expiry before any byte is `504 UPSTREAM_TIMEOUT`
+   (`inference_deadline_exceeded_total`); it never applies after the first byte. No retry starts with less than `retry.min_remaining` (1 s) left.
+5. **Probes can cost a client.** A probe of a frozen worker waits for the probe header timeout (`min(10 s, upstream_header_timeout)` by default) and is not retried: that client gets a 504.
+6. **New series, logs and span attributes** (below). Kafka events and the schema are unchanged; an attempt's `failure_class` can be `deadline`.
+
+How a failure is judged (the taxonomy): connect errors, resets before headers, an empty first chunk, 502, 504, header timeouts, stalls and a 503 with any other code are **faults**; a 503 with
+`queue_full`/`draining`/`not_ready`, a 4xx, a client that left, an expired deadline and a panic are **neutral**; a 500 (or any other 5xx) counts **only in the ratio rule** and is never retried.
+A stream that breaks after its first byte is not retried; its ok (counted at the first byte) is converted into a fault. A 503 that is not peeked (no retry possible) counts as a fault.
+
+Metrics (present only when the feature is effective; no new label names): `circuit_breaker_state{worker_id,model}` (1 half-open, 2 open; only non-closed breakers have a series),
+`circuit_breakers_open{model}`, `circuit_breaker_transitions_total{model,state}`, `circuit_breaker_probes_total{model,result}`, `retries_denied_total{model,reason}`,
+`breaker_trips_suppressed_total{model}`, `inference_deadline_exceeded_total{model}`. Granted retries are the existing `inference_retries_total`.
 
 ## Concepts
 
@@ -104,7 +139,20 @@ Validation:
 
 ## What is not wired yet
 
-Everything above. In particular there are no breaker, budget or queue metrics yet (`circuit_breaker_*`, `retries_denied_total`,
-`admission_rejections_total`, `inference_queue_duration_seconds` arrive with PR D and E), no `Retry-After` shedding, no drain, and the
-`overload` rejection kind and the other observer additions are stubs that are never fired. Runbooks, the dashboard, the alerts and the list of
-behaviour changes that the default brings (decision D25) land with PR G.
+The admission queue, hand-off, load shedding, the global cap (`admission.max_global_requests` is still unused), `admission_rejections_total`, `inference_queue_duration_seconds`, gateway and
+worker drain (`queue.*` and `drain.*` are accepted and ignored), and the `overload` rejection kind and `QueueWaited` of the observer seam. Runbooks, the dashboard, the alerts and the list of
+behaviour changes the default brings (decision D25) land with PR G.
+
+## Known limits of the breaker (measured while building PR D)
+
+- The ratio rule looks at a sliding window that still contains the worker's healthy history, so a worker that starts failing every request needs as many faults as it had successes in the window
+  before the ratio trips; a hard failure (503s, resets, timeouts) is ejected by the consecutive rule within 5 faults. A worker that fails exactly `failure_ratio` of its requests is on the threshold and
+  is ejected only by chance. An always-500 worker is visible to the ratio rule only.
+- A probe whose stream breaks after its first byte has passed (its verdict is taken at the first byte so a long stream does not hold the probe slot); the re-closed breaker has an empty window and needs the faults to
+  reach half of it again, and the window holds the oks of the streams still in flight. The cost of a cool-down cycle therefore scales with the number of streams concurrently in flight on the worker (stream length times
+  request rate), not with `min_volume`. A worker that aborts every stream builds no consecutive streak (each stream's first byte is an ok); the ratio rule ejects it once its faults equal its healthy outcomes in the window. Simulation results, not production data (one worker aborting every stream, 10 requests/s per worker, 10 minutes, 50 seeds): about 38 / 186 / 690 aborted streams per cool-down cycle for streams of 2 s / 10 s / 60 s, and a median time to the first ejection of an always-aborting worker of 3.8 s / 19 s / 69 s (it was ejected in all 50 runs). A worker that aborts 20-30% of its streams, or alternates ok and abort, is never ejected, consistent with the 50% ratio threshold.
+- The 503 peek also runs for a model with a single worker (up to 250 ms, usually the time to read a small body), because whether another worker exists is known only after the retry is routed.
+- A worker whose breaker has just closed can wait up to about one heartbeat before it is picked again: the router uses the larger of its own in-flight count and the worker-reported load, and a stale high report keeps the least-active strategies away from it until the next heartbeat. This is a property of the scheduler's inputs, not of the breaker; the chaos tests allow for it.
+- A slow `BreakerTransition` observer delays the one request that delivers the transition; queued transitions are flushed at shutdown.
+- `Retry-After` for an all-ejected refusal is computed over all models' breakers.
+- A lying worker can answer `queue_full` to stay in rotation; registration is the trust boundary.

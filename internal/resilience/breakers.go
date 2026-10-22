@@ -323,6 +323,35 @@ func (bs *Breakers) RecordLate(t Ticket, v Verdict) {
 	bs.countClosed(b, now, v)
 }
 
+// RecordAbort converts an ok into a fault: the attempt's verdict was OK at its first byte (okAt is when Record was
+// called) and its stream then broke. So that each request counts once, with its final outcome, the ok is taken out
+// of the sliding window (when its bucket is still in it) and the fault is counted in its place; the streak sees a
+// fault now (the ok's reset of the streak cannot be undone). For a probe ticket it is RecordLate. Like RecordLate it
+// is ignored when the breaker has opened since the attempt started (an older ticket epoch) or is not closed. It is
+// the caller's duty to call it at most once per ticket: a ticket is a plain value and cannot remember it.
+func (bs *Breakers) RecordAbort(t Ticket, okAt time.Time) {
+	if !t.valid {
+		return
+	}
+	if t.probe {
+		bs.RecordLate(t, Fault)
+		return
+	}
+	bs.mu.Lock()
+	defer bs.unlock()
+	b := bs.lookup(t.key)
+	if b == nil {
+		return
+	}
+	now := bs.now()
+	bs.advanceLocked(b, now)
+	if b.epoch != t.epoch || b.state != Closed {
+		return // an epoch that has not changed with the breaker closed means it never left Closed: the ok was counted
+	}
+	b.win.add(okAt, now, 0, -1)
+	bs.countClosed(b, now, Fault)
+}
+
 func (bs *Breakers) recordLocked(t Ticket, v Verdict) {
 	b := bs.lookup(t.key)
 	if b == nil {

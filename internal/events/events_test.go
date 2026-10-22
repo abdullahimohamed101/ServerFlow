@@ -497,3 +497,51 @@ type discardSink struct{}
 func (discardSink) Produce(_ events.Record, done func(error)) error { done(nil); return nil }
 func (discardSink) Flush(context.Context) error                     { return nil }
 func (discardSink) Close() error                                    { return nil }
+
+// Phase 15 PR D: the new attempt-level values (class "deadline", probes, a denied retry, a neutral verdict) fit
+// event schema v1 unchanged: they travel as the attempt's free-text failure_class or not at all, the terminal
+// failure_class stays in the closed set (a first-byte deadline is a timeout), and the events validate.
+func TestResilienceValuesFitSchemaV1(t *testing.T) {
+	cases := []struct {
+		name  string
+		end   gateway.AttemptEnd
+		comp  gateway.Completion
+		class string // the attempt's failure_class
+		term  string // the terminal failure_class
+	}{
+		{"deadline", gateway.AttemptEnd{Outcome: gateway.AttemptFailed, Class: "deadline", Verdict: gateway.VerdictNeutral},
+			gateway.Completion{Status: 504, ErrorCode: "UPSTREAM_TIMEOUT"}, "deadline", protocol.FailureTimeout},
+		{"probe that failed", gateway.AttemptEnd{Outcome: gateway.AttemptFailed, Class: "status_503", Probe: true, Verdict: gateway.VerdictFault},
+			gateway.Completion{Status: 503}, "status_503", protocol.FailureWorkerError},
+		{"retry denied by the budget", gateway.AttemptEnd{Outcome: gateway.AttemptFailed, Class: "status_503", RetryDenied: gateway.RetryDeniedBudget, Verdict: gateway.VerdictFault},
+			gateway.Completion{Status: 503}, "status_503", protocol.FailureWorkerError},
+		{"retry denied by the deadline", gateway.AttemptEnd{Outcome: gateway.AttemptFailed, Class: "status_502", RetryDenied: gateway.RetryDeniedDeadline, Verdict: gateway.VerdictFault},
+			gateway.Completion{Status: 502}, "status_502", protocol.FailureWorkerError},
+		{"neutral probe cancelled", gateway.AttemptEnd{Outcome: gateway.AttemptClientClosed, Probe: true, Verdict: gateway.VerdictNeutral},
+			gateway.Completion{Status: 499}, "", protocol.FailureClientClosed},
+	}
+	for i, c := range cases {
+		sink := &eventstest.RecordingSink{}
+		o := newObs(t, sink, 10)
+		id := rid(100 + i)
+		ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: id})
+		o.RequestAdmitted(ctx, gateway.Admission{RequestID: id, Model: "m"})
+		actx := o.AttemptStarted(ctx, gateway.AttemptStart{RequestID: id, AttemptID: "att_x", Number: 1, WorkerID: "w1", Model: "m", Strategy: "rr", Probe: c.end.Probe})
+		c.end.RequestID, c.end.AttemptID, c.end.Number, c.end.WorkerID = id, "att_x", 1, "w1"
+		o.AttemptEnded(actx, c.end)
+		c.comp.RequestID, c.comp.Handled, c.comp.Model = id, true, "m"
+		o.RequestCompleted(ctx, c.comp)
+		eventually(t, func() bool { return len(sink.Records()) == 3 }, c.name)
+		evs, ok := sink.Events()
+		if !ok {
+			t.Fatalf("%s: an event did not decode", c.name)
+		}
+		last := evs[len(evs)-1]
+		if last.EventType != protocol.EventFailed || last.Terminal.FailureClass != c.term {
+			t.Errorf("%s: terminal %s/%q, want failed/%q", c.name, last.EventType, last.Terminal.FailureClass, c.term)
+		}
+		if got := last.Terminal.Attempts[0].FailureClass; got != c.class {
+			t.Errorf("%s: attempt failure_class %q, want %q", c.name, got, c.class)
+		}
+	}
+}

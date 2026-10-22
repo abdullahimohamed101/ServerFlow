@@ -237,6 +237,9 @@ func (o *Observer) AttemptStarted(ctx context.Context, e gateway.AttemptStart) c
 	if e.WorkerID != "" {
 		attrs = append(attrs, tracing.KeyWorkerID.String(safeID(e.WorkerID)))
 	}
+	if e.Probe {
+		attrs = append(attrs, tracing.KeyBreakerProbe.Bool(true))
+	}
 	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindClient), trace.WithTimestamp(now), trace.WithAttributes(attrs...)}
 	if st.prev.IsValid() {
 		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: st.prev, Attributes: []attribute.KeyValue{tracing.KeyLink.String(tracing.LinkRetryOf)}}))
@@ -314,6 +317,10 @@ func (o *Observer) endAttempt(st *reqState, att *attState, e *gateway.AttemptEnd
 			span.SetStatus(codes.Error, desc)
 		case gateway.AttemptClientClosed:
 			span.SetAttributes(tracing.KeyClientClosed.Bool(true))
+		}
+		if e.RetryDenied != "" {
+			span.AddEvent(tracing.EventRetryDenied, trace.WithTimestamp(now), trace.WithAttributes(
+				tracing.KeyRetryDenied.String(pick(e.RetryDenied, retryDenials))))
 		}
 		if e.WillRetry {
 			span.AddEvent(tracing.EventRetry, trace.WithTimestamp(now), trace.WithAttributes(

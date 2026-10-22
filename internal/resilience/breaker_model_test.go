@@ -15,6 +15,9 @@ import (
 type refEvent struct {
 	t time.Time
 	v Verdict
+	// converted marks an OK that a later stream abort turned into a fault (RecordAbort): it still ends a streak of
+	// faults (the reset cannot be undone) but no longer counts in the ratio window.
+	converted bool
 }
 
 type refBreaker struct {
@@ -205,7 +208,7 @@ func (m *refModel) countClosed(b *refBreaker, now time.Time, v Verdict) {
 	if b.state != Closed || v == Neutral {
 		return
 	}
-	b.events = append(b.events, refEvent{now, v})
+	b.events = append(b.events, refEvent{t: now, v: v})
 	why := m.tripReason(b, now, v)
 	if why == "" {
 		b.suppressed = false
@@ -249,6 +252,29 @@ func (m *refModel) late(id string, reg int64, probe bool, epoch int, v Verdict, 
 		return
 	}
 	m.countClosed(b, now, v)
+}
+
+// abort mirrors RecordAbort: the OK recorded at okAt becomes a fault.
+func (m *refModel) abort(id string, reg int64, probe bool, epoch int, okAt time.Time, now time.Time) {
+	if probe {
+		m.late(id, reg, probe, epoch, Fault, now)
+		return
+	}
+	b := m.br[id]
+	if b == nil || b.reg != reg {
+		return
+	}
+	m.advance(b, now, id)
+	if b.epoch != epoch || b.state != Closed {
+		return
+	}
+	for i := range b.events {
+		if e := &b.events[i]; e.v == OK && !e.converted && e.t.Equal(okAt) {
+			e.converted = true
+			break
+		}
+	}
+	m.countClosed(b, now, Fault)
 }
 
 // enforceCap mirrors the relaxation after the registry view changed.
@@ -301,7 +327,7 @@ func (m *refModel) tripReason(b *refBreaker, now time.Time, v Verdict) string {
 		cur := now.UnixNano() / int64(time.Second)
 		total, faults := 0, 0
 		for _, e := range b.events {
-			if e.t.UnixNano()/int64(time.Second) > cur-nb {
+			if !e.converted && e.t.UnixNano()/int64(time.Second) > cur-nb {
 				total++
 				if e.v == Fault || e.v == RatioFault {
 					faults++
@@ -322,6 +348,8 @@ type pendingTicket struct {
 	probe bool
 	tid   int
 	epoch int
+	v     Verdict   // the verdict it was recorded with
+	at    time.Time // when
 }
 
 func TestBreakerMatchesTheNaiveReference(t *testing.T) {
@@ -404,6 +432,7 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 							v := verdicts[ops.IntN(len(verdicts))]
 							bs.Record(tk, v)
 							ref.record(pt.id, pt.reg, pt.probe, pt.tid, pt.epoch, v, now)
+							pt.v, pt.at = v, now
 							done = append(done, pt)
 						}
 					case op < 55 && len(pending) > 0: // finish a pending attempt
@@ -417,10 +446,19 @@ func TestBreakerMatchesTheNaiveReference(t *testing.T) {
 							v := verdicts[ops.IntN(len(verdicts))]
 							bs.Record(pt.real, v)
 							ref.record(pt.id, pt.reg, pt.probe, pt.tid, pt.epoch, v, now)
+							pt.v, pt.at = v, now
 							done = append(done, pt)
 						}
 					case op < 63 && len(done) > 0: // a stream abort after the first byte, for an attempt already recorded
-						pt := done[ops.IntN(len(done))]
+						i := ops.IntN(len(done))
+						pt := done[i]
+						if pt.v == OK && ops.IntN(3) != 0 {
+							// the ok of an attempt whose stream then broke: convert it (once per ticket, as the gateway does)
+							bs.RecordAbort(pt.real, pt.at)
+							ref.abort(pt.id, pt.reg, pt.probe, pt.epoch, pt.at, now)
+							done = append(done[:i], done[i+1:]...)
+							break
+						}
 						v := []Verdict{Fault, Fault, RatioFault}[ops.IntN(3)]
 						bs.RecordLate(pt.real, v)
 						ref.late(pt.id, pt.reg, pt.probe, pt.epoch, v, now)

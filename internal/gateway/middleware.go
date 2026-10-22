@@ -55,6 +55,9 @@ type reqInfo struct {
 	// context the observers returned for the current attempt.
 	attempted  int
 	attemptCtx context.Context
+	// deadlineAt is when the retryable phase of a registry request ends (retry.first_byte_deadline); zero when
+	// resilience is off.
+	deadlineAt time.Time
 	// scan reads token counts off a successful response as it passes (tokens.go); tokSource, tokIn and tokOut are
 	// what it found, for the Completion event.
 	scan          *tokenScanner
