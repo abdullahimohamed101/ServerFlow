@@ -380,7 +380,42 @@ type WorkerSnapshot struct {
 	RegisteredAt        time.Time `json:"registered_at"`
 	LastHeartbeat       time.Time `json:"last_heartbeat"`
 	HeartbeatAgeSeconds float64   `json:"heartbeat_age_seconds"`
+
+	// Observed is the gateway's own view of this worker's load (ADR-022). It is filled by the gateway on its
+	// private copy of the snapshot, never serialised and never deserialised (json:"-"), so a control plane cannot
+	// supply it and the registry wire format is unchanged. Zero value: nothing observed.
+	Observed ObservedLoad `json:"-"`
 }
+
+// ObservedLoad is what the gateway itself knows about the work on one worker, computed from its own in-flight
+// ledger and its own measurements rather than from the worker's report. It is a plain value so scheduling
+// strategies stay pure arithmetic over a snapshot. In this version nothing fills it yet (the signals package
+// arrives in a later Phase 14 change); the type exists so the seam is reviewed on its own.
+type ObservedLoad struct {
+	// InflightRequests is the number of requests this gateway has in flight on the worker.
+	InflightRequests int
+	// WorkAheadTokens is the estimated token work ahead of a new request.
+	WorkAheadTokens float64
+	// CapacityTPS is the estimated token rate of the worker in tokens per second; 0 means unknown.
+	CapacityTPS float64
+	// TTFTSeconds is the gateway-observed time to first token in seconds; 0 means unknown.
+	TTFTSeconds float64
+	// EffectiveActive is the active-request count after the gateway's overlay of local and reported load.
+	EffectiveActive int
+	// Flags records why a value is a fallback.
+	Flags ObservedFlags
+}
+
+// ObservedFlags is a bit set describing the quality of an ObservedLoad.
+type ObservedFlags uint8
+
+// Quality flags of an ObservedLoad.
+const (
+	ObservedColdStart  ObservedFlags = 1 << iota // priors were used: the worker has no history yet
+	ObservedStale                                // the underlying report is older than its freshness bound
+	ObservedMissingGPU                           // the worker reports no GPU figure
+	ObservedInvalid                              // an input was NaN, infinite or out of range and was sanitised
+)
 
 // ModelInfo summarizes the workers serving one model.
 type ModelInfo struct {
