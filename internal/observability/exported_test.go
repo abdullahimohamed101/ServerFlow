@@ -305,8 +305,9 @@ var exemptions = map[string]string{
 // HTTP, or a recording rule defined in the repository.
 func TestEveryMetricUsedIsExportedOrRecorded(t *testing.T) {
 	gw, cp, wk, _ := runCluster(t)
+	rgw, _ := runResilienceCluster(t) // the Phase 15 series exist only after the events they count
 	families := map[string]bool{}
-	for _, e := range []exported{gw, cp, wk} {
+	for _, e := range []exported{gw, cp, wk, rgw} {
 		for n := range e {
 			families[n] = true
 		}
@@ -431,6 +432,7 @@ var _ = telemetry.AllowedLabelNames
 // histogram and ALERTS labels.
 func TestLabelsUsedByDashboardsAndRulesExist(t *testing.T) {
 	gw, cp, wk, _ := runCluster(t)
+	rgw, _ := runResilienceCluster(t)
 	labels := map[string]map[string]bool{}
 	add := func(e exported, extra ...string) {
 		for n, fi := range e {
@@ -448,6 +450,7 @@ func TestLabelsUsedByDashboardsAndRulesExist(t *testing.T) {
 		}
 	}
 	add(gw)
+	add(rgw)
 	add(cp)
 	add(wk, "worker_id") // the targets file labels the mock workers' targets
 	labels["ALERTS"] = map[string]bool{"alertname": true, "alertstate": true, "severity": true}

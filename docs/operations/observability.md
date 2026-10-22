@@ -88,8 +88,8 @@ per-worker concurrency.
 
 ## The dashboards
 
-Provisioned read-only from `observability/grafana/dashboards` (uids `sf-cluster-overview`, `sf-worker`, `sf-scheduler`, `sf-model`), against the
-datasource uid `serverflow-prometheus`. They cover spec section 30.
+Provisioned read-only from `observability/grafana/dashboards` (uids `sf-cluster-overview`, `sf-worker`, `sf-scheduler`, `sf-model`, `sf-resilience`), against the
+datasource uid `serverflow-prometheus`. The first four cover spec section 30; the fifth (Phase 15) covers fault tolerance.
 
 | Dashboard | Panels |
 | --- | --- |
@@ -97,8 +97,9 @@ datasource uid `serverflow-prometheus`. They cover spec section 30.
 | Worker | queue depth and capacity, active requests, GPU utilisation, tokens/s (counter and heartbeat), p95 latency, p95 TTFT, error rate, health and heartbeat age |
 | Scheduler | routed requests/s, selection distribution, queue imbalance, decisions/s by result, routing decision p95, no-capacity events, retries, ineligible selections, gateway overhead p95 |
 | Model | requests/s, tokens/s, active replicas, queue depth, p50/p95/p99 latency, p95 TTFT, error rate |
+| Resilience | breakers open and the state of each ejected worker, transitions, probes and trips held back by the ejection cap, retries made and denied, admission queue depth and wait, requests shed by reason, gateways and workers draining |
 
-Mock workers report no GPU numbers, so the GPU panels show no data until a worker with a GPU does (Phase 13); the panel descriptions say so.
+The Resilience panels read series that exist only on gateways running with `resilience.mode: on` in registry mode (the default since Phase 15 PR G); with `mode: off` or static workers they show "no data", and an empty breaker panel on a healthy cluster is the good case (a closed breaker has no series). Mock workers report no GPU numbers, so the GPU panels show no data until a worker with a GPU does (Phase 13); the panel descriptions say so.
 Per-worker latency, TTFT and error panels read the worker's own histograms, which Prometheus labels `worker_id` from the targets file.
 
 ## Series and cardinality rules
@@ -163,9 +164,11 @@ From request accepted to first dispatch the p95 is above 25 ms (authentication, 
 <a id="runbook-worker-down"></a>
 ### Worker not serving or silent (`ServerFlowWorkerNotServing`, `ServerFlowWorkerHeartbeatStale`)
 
-`NotServing`: the worker's agent reports it FAILED, UNHEALTHY or LOST (its backend is down); the gateway already routes around it. `HeartbeatStale`: no
-heartbeat for more than 10 s (the agent or the host is gone); this path takes 14.7 to 16.3 s from the failure to the alert (10 s of age plus a 5 s scrape and a 5 s evaluation), so it misses the 10 s failed-worker target of spec section 31, which the backend-failure path meets (about 5 s). Look at the agent's and the backend's logs for that `worker_id`; the registry removes a
-lost worker after `worker.retention`.
+`NotServing`: the worker's agent reports it FAILED, UNHEALTHY or LOST (its backend is down); the gateway already routes around it. `HeartbeatLate` (warning) fires when the heartbeat is more than 5 s
+old, which is `worker.suspect_timeout`: from that age the gateway no longer routes to the worker, so this is the moment of isolation. `HeartbeatStale` (critical) needs more than 10 s (`worker.unhealthy_timeout`, the registry marks the worker UNHEALTHY),
+so one late heartbeat warns and never pages critical; above 10 s both fire. Silent-agent detection is defined as "the gateway stops routing to a worker whose agent went silent" (Phase 15, D23): about 5 s plus one registry refresh, which the
+repeated kill experiment confirmed (`docs/benchmarks/phase-15-chaos.md`); the time to the critical alert is still about 16 s (10 s of age plus a 5 s scrape and a 5 s evaluation), which is slower than the 10 s failed-worker target of spec section 31, while the
+warning and the backend-failure path (`NotServing`, about 5 s) meet it. Look at the agent's and the backend's logs for that `worker_id`; the registry removes a lost worker after `worker.retention`.
 
 <a id="runbook-ineligible-selection"></a>
 ### Ineligible worker selected (`ServerFlowIneligibleWorkerSelected`)
@@ -200,3 +203,19 @@ unchecked, counted in `rate_limit_bypassed_total`). See `docs/operations/redis-a
 
 Requests keep finding the pool empty. Raise `postgres.max_conns`, or find the slow queries; key lookups are capped below the pool size on purpose.
 See `docs/operations/postgres-and-auth.md`.
+
+<a id="runbook-circuit-open"></a>
+### Circuit breaker open (`ServerFlowCircuitOpen`)
+
+A gateway has kept a worker out of routing (its circuit breaker open or half-open) for 2 minutes. The breaker opened because the worker failed 5 requests in a row, or half of at least 10 in 10 s (`resilience.breaker`); the gateway sends it one probe request at a time every
+cool-down (10 s, doubling to 2 min while probes fail). Open the Resilience dashboard: "Breaker state by worker" names the worker, "Breaker transitions" shows whether it cycles open and half-open (it fails its probes) or stays open. Then look at the gateway's WARN line
+`circuit breaker changed state` (the reason), at the worker's own logs and `inference_failures_total` by `reason`, and at `breaker_trips_suppressed_total`: a rise means more workers are failing than the ejection cap allows (half of the eligible workers of a model;
+a model with one worker is never ejected), which is the case to treat first. The breaker is per gateway: another gateway may still send the worker traffic. A worker that is healthy again closes on its next good probe; restarting the gateway also closes every
+breaker. See `docs/operations/resilience.md` ("worker keeps getting ejected", "breaker will not close").
+
+<a id="runbook-shedding"></a>
+### Shedding (`ServerFlowShedding`)
+
+A gateway is answering `503 NO_CAPACITY` with `Retry-After` faster than one request every 20 s for 2 minutes (reason `draining` is excluded: it is expected during a restart). `sum by (reason) (rate(admission_rejections_total[1m]))` says which door is closing:
+`global_limit` (more concurrent requests than `admission.max_global_requests`, 1000 by default), `queue_full` (the model's queue or one tenant's share of it is full) or `queue_timeout` (the workers stayed full for longer than `resilience.queue.max_wait`). The Resilience dashboard shows the queue depth
+and wait next to it. More workers or less load is the fix; a longer `max_wait` only moves the failure later; raise `admission.max_global_requests` if 1000 long streams are ordinary. Checks and the kill switch are in `docs/operations/resilience.md` ("everything is being shed").

@@ -123,7 +123,7 @@ on a failure and never prints a key, token or password. Every wait is a poll wit
 | S5 | 24 requests reach at least two workers (`scheduler_selections_total` in Prometheus) |
 | S6 | a throwaway tenant limited to 3 requests per minute gets 200 200 200 then 429 with `Retry-After` |
 | S7 | Prometheus reports the gateway(s), control plane and three mock workers up, and requests counted |
-| S8 | Grafana is healthy and the four dashboards exist |
+| S8 | Grafana is healthy and the five dashboards exist (the four of spec section 30 and `sf-resilience`) |
 | S9 | usage rows for tenant `dev` appear (Redpanda to PostgreSQL) |
 | S10 | one Jaeger trace holds gateway and mock-worker spans |
 | S11 | `kill mock-worker-3`: it leaves the pool, requests stay 200, and it returns after `start` |
