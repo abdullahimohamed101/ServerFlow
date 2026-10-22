@@ -5,9 +5,9 @@
 # Targets: gateway, control-plane, worker-agent, mock-worker, usage-consumer, admin. Context is the repository root.
 # Only syntax the classic builder and BuildKit both accept is used (no cache mounts, heredocs or BUILDPLATFORM), so
 # this builds without buildx. FROM lines are literal and digest-pinned (no FROM ${ARG}); bump them with the
-# Dependabot "docker" ecosystem. The builder comes from public.ecr.aws because Docker Hub rate-limits shared CI runners.
+# Dependabot "docker" ecosystem. The builder comes from mirror.gcr.io (Google's anonymous Docker Hub mirror, same digests) because Docker Hub rate-limits shared CI runners and public.ecr.aws refused them from 2026-10-16.
 
-FROM public.ecr.aws/docker/library/golang:1.27.2@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS build
+FROM mirror.gcr.io/library/golang:1.27.2@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS build
 # Labels let `make dev-reset` find the dangling build stages the classic builder leaves behind (each is 2+ GB).
 LABEL org.serverflow.stage="build"
 WORKDIR /src

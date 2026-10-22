@@ -21,10 +21,10 @@ that are hard to reverse, easy to misread, or security relevant, and what buildi
   -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X ...version.Version -X ...version.Commit"`, so identical inputs give identical
   binaries (measured: two `--no-cache` builds, identical SHA-256 for all seven). Layers are not claimed reproducible. The build uses only
   syntax the classic builder accepts, so it works without `buildx`; the cost is no Go build cache between builds.
-- **Base images are pinned by tag and digest, literally, and none comes from Docker Hub.** Go builder from `public.ecr.aws`, runtime from
-  `gcr.io`, PostgreSQL and Redis from `public.ecr.aws`, Prometheus and Jaeger from `quay.io`, Redpanda and Grafana from `mirror.gcr.io`
+- **Base images are pinned by tag and digest, literally, and none comes from Docker Hub.** Go builder from `mirror.gcr.io`, runtime from
+  `gcr.io`, PostgreSQL and Redis from `mirror.gcr.io`, Prometheus and Jaeger from `quay.io`, Redpanda and Grafana from `mirror.gcr.io`
   (a cache run by Google: no published availability guarantee, so pulls retry with backoff and CI caches the Redpanda tarball),
-  nginx from `public.ecr.aws`. The digest is the multi-arch index digest, identical on Docker Hub, so a mirror cannot substitute content.
+  nginx from `mirror.gcr.io`. Until 2026-10-16 the Go builder, PostgreSQL, Redis and nginx came from `public.ecr.aws`; its anonymous pulls then began to fail from GitHub-hosted runners (five attempts over 14 minutes, every time, for the compose smoke job), while `mirror.gcr.io` kept working, so they moved with the same digests. The digest is the multi-arch index digest, identical on Docker Hub, so a mirror cannot substitute content.
   A test fails any reference that is unpinned, `:latest` or Docker Hub; each reference is overridable from `.env`.
 - **Hardening is checked, not hoped for.** Every container is `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, memory- and
   pids-limited, log-rotated, non-root and on an `internal: true` network with no route out. Writable paths are size-capped tmpfs. Only the
