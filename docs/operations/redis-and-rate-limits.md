@@ -59,7 +59,7 @@ Quotas themselves (`requests_per_minute`, `tokens_per_minute`, `max_concurrent_r
 - **Not an upper bound.** The gateway forwards the body unchanged, so a request without `max_tokens` is charged `gateway.max_tokens_limit`
   (4096 by default) while the backend may generate up to its own limit (vLLM defaults to the context length). Set the worker's own maximum
   length (for vLLM `--max-model-len`, and a default `max_tokens` where the backend supports one) to the same value; Phase 15 adds admission
-  control.
+  control (a global request cap and a bounded queue; `docs/operations/resilience.md`), which does not bound a single request's tokens.
 - **Dense text is under-counted.** Input is estimated at three ASCII characters per token; digits, base64, hex, minified JSON and code can take
   1.5 to 3. The 1 MiB request body cap bounds the input.
 - **Registry mode and unknown models.** In `gateway.worker_source: registry` the registry decides which models exist. Since Phase 15 a request for a

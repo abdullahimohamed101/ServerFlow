@@ -122,6 +122,7 @@ API response.
 | `gateway.worker_networks` | empty | optional CIDR allow-list for worker addresses |
 | `gateway.max_attempts` | `2` | tries per request, 1 to 5 (1 disables retries; each extra attempt multiplies load during an outage, so keep it low) |
 | `gateway.retry_statuses` | `[502, 503]` | worker statuses that may be retried on another worker (5xx only, at most 10) |
+| `resilience.mode` | `on` | `on` (registry mode only) adds per-worker circuit breakers, a retry budget on top of `max_attempts`, a bounded admission queue with shedding and gateway drain; `off` is the kill switch. All `resilience.*` keys: `docs/operations/resilience.md` |
 | `scheduler.strategy` | `round-robin` | random, round-robin, least-active, least-queue |
 | `worker.suspect_timeout` | `5s` | the gateway shares this with the control plane |
 
