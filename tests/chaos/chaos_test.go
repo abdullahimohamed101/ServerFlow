@@ -217,6 +217,28 @@ func (r *rig) eventually(d time.Duration, cond func() bool, what string) {
 	r.t.Fatalf("not within %v: %s (status counts %v)", d, what, r.statuses())
 }
 
+// settle is how long a breaker must stay closed after the fault ends before recovery is judged: longer than a
+// stream in flight at the clear can take to finish and a cool-down, so a late abort has surfaced by then.
+const settle = 500 * time.Millisecond
+
+// closedAndSettled returns a condition that holds once no breaker is open, every open has been followed by a close,
+// and no new open has happened for d. It is built after the fault has been cleared, so the quiet period it measures
+// is entirely after the clear.
+func (r *rig) closedAndSettled(d time.Duration) func() bool {
+	lastOpens, since := r.opens(), time.Now()
+	return func() bool {
+		if o := r.opens(); o != lastOpens {
+			lastOpens, since = o, time.Now()
+			return false
+		}
+		if r.openNow() != 0 || r.closes() < lastOpens {
+			since = time.Now()
+			return false
+		}
+		return time.Since(since) >= d
+	}
+}
+
 func (r *rig) statuses() map[int]int {
 	r.statusM.Lock()
 	defer r.statusM.Unlock()
@@ -246,7 +268,7 @@ type scenario struct {
 	// already passed (the verdict is taken at the first byte so that a long stream does not hold the probe slot), and
 	// with a partial fault rate a probe succeeds with the probability of the requests that are not failed. The breaker
 	// then closes, lets the next requests through and opens again (the fresh window needs min_volume outcomes for the
-	// ratio rule), so each probe can cost up to min_volume + 1 failures or attempts.
+	// ratio rule), so each probe can cost several failures or attempts: min_volume + 1 is what this rig's short streams and six clients allow; with long streams it scales with the streams in flight (ADR-020, limits).
 	leaky bool
 }
 
@@ -287,7 +309,7 @@ func runScenario(t *testing.T, s scenario) {
 	reachedAfter := r.selections() - selOpen
 	perProbe := 1.0
 	if s.leaky {
-		perProbe = minVolume + 1 // a re-closed breaker has an empty window: the ratio needs min_volume outcomes to open again
+		perProbe = minVolume + 1 // a re-closed breaker has an empty window: with this rig's short streams min_volume + 1 bounds the cost of a cycle (it scales with streams in flight otherwise)
 	}
 	if reachedAfter > perProbe*(probes+1) { // +1: a probe whose verdict is still pending when the window closes
 		t.Errorf("%v attempts reached the ejected worker in the window with only %v probes", reachedAfter, probes)
@@ -306,7 +328,12 @@ func runScenario(t *testing.T, s scenario) {
 	if err := s.clear(r); err != nil {
 		t.Fatal(err)
 	}
-	r.eventually(15*time.Second, func() bool { return r.closes() >= 1 && r.openNow() == 0 }, "the breaker closes after the fault ends")
+	// Closed, and staying closed: the counters since the fault ended, not since the start. In a leaky scenario a close
+	// from an earlier cycle is already counted, and the breaker can sit re-closed for a moment after the fault is
+	// cleared and be opened again by a stream that was already in flight (found by instrumenting a failing run: it
+	// was closed at the clear, the wait passed at once, a late abort reopened it and no traffic came back in the
+	// window). So the wait is for every open to have been closed again and for no open for a settle period.
+	r.eventually(15*time.Second, r.closedAndSettled(settle), "the breaker closes after the fault ends and stays closed")
 	selClosed := r.selections()
 	// A leaky cycle that was already running when the fault ended (a probe had passed) may still fail a few requests.
 	allowed := int64(0)
