@@ -218,7 +218,8 @@ func TestDrainShutdownTimeoutCoversTheGrace(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return")
 	}
-	if took := time.Since(began); took < 1000*time.Millisecond || took > 1900*time.Millisecond {
+	if took := time.Since(began); took < 1000*time.Millisecond || took > 1500*time.Millisecond {
+		// A shutdown that restarted the full timeout after the grace would end at about 1.7 s.
 		t.Fatalf("Serve ended after %v, want about the 1.2 s shutdown timeout (grace included)", took)
 	}
 	<-stuck // cut by the timeout; its handler at the worker has gone with the connection
@@ -379,4 +380,51 @@ func TestDrainDoesNothingWithTheFeatureOff(t *testing.T) {
 		t.Fatalf("in-flight request: %d", r.resp.StatusCode)
 	}
 	s.waitDone(t, 5*time.Second)
+}
+
+// With no explicit readiness grace the gateway's wiring derives min(5s, shutdown_timeout/2) from its own shutdown
+// timeout, and Serve honours it.
+func TestDrainDefaultGraceFollowsTheGatewaysShutdownTimeout(t *testing.T) {
+	for _, tc := range []struct{ shutdown, want time.Duration }{
+		{time.Second, 500 * time.Millisecond}, {4 * time.Second, 2 * time.Second}, {30 * time.Second, 5 * time.Second},
+	} {
+		g := newGateWorker(t, "w1")
+		e := queueEnv(t, g, func(c *config.Config) { c.Gateway.ShutdownTimeout = tc.shutdown })
+		if e.rs.grace != tc.want {
+			t.Fatalf("shutdown timeout %v: default grace %v, want %v", tc.shutdown, e.rs.grace, tc.want)
+		}
+	}
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, func(c *config.Config) { c.Gateway.ShutdownTimeout = time.Second })
+	s := e.serve(t)
+	began := time.Now()
+	s.cancel()
+	took := s.waitDone(t, 3*time.Second)
+	if total := time.Since(began); total < 400*time.Millisecond || total > 900*time.Millisecond {
+		t.Fatalf("Serve ended after %v (%v waiting), want about the 500 ms default grace", total, took)
+	}
+}
+
+// The draining /readyz is a 503 and its access-log line says why: error_code NO_CAPACITY at WARN.
+func TestDrainReadyzLogLineCarriesTheErrorCode(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, drainCfg(10*time.Second, 5*time.Second))
+	s := e.serve(t)
+	s.cancel()
+	eventually(t, time.Second, func() bool { return e.rs.draining.Load() }, "draining")
+	if resp, _, err := s.get("/readyz"); err != nil || resp.StatusCode != 503 {
+		t.Fatalf("readyz: %v %v", err, resp)
+	}
+	var found bool
+	for _, l := range strings.Split(e.logs.String(), "\n") {
+		if strings.Contains(l, `"path":"/readyz"`) && strings.Contains(l, `"status":503`) {
+			found = true
+			if !strings.Contains(l, `"error_code":"NO_CAPACITY"`) || !strings.Contains(l, `"level":"WARN"`) {
+				t.Fatalf("the draining /readyz log line lacks error_code NO_CAPACITY at WARN: %s", l)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no access-log line for the draining /readyz:\n%s", e.logs.String())
+	}
 }

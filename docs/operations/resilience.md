@@ -175,7 +175,7 @@ The behaviour changes the default brings (decision D25), the dashboard, the aler
 
 | time | gateway |
 | --- | --- |
-| signal | `/readyz` answers `503` at once (the 2 s probe cache is bypassed; same body as an overload shed, "shutting down", `Retry-After: 1`), `gateway_draining` is 1, every response says `Connection: close`. `/healthz` stays `200`; `/metrics` keeps answering. Log: `gateway draining: not ready, still serving`. |
+| signal | `/readyz` answers `503` at once (the 2 s probe cache is bypassed; same body as an overload shed, "shutting down", `Retry-After: 1`), `gateway_draining` is 1, every response to a request that starts after the signal says `Connection: close` (one already in flight keeps its keep-alive header; `Shutdown` closes idle connections anyway). `/healthz` stays `200`; `/metrics` keeps answering. Log: `gateway draining: not ready, still serving`. |
 | for `drain.readiness_grace` | the listener stays open and requests are served (including queueing) so a balancer that has not noticed yet loses nothing. |
 | end of grace | the queue closes (waiters finish, are served or hit `queue.max_wait`; arrivals that would have to wait are shed `draining`), the listener closes, in-flight requests, streams included, finish. Whoever is still queued 250 ms before the end of the budget is shed `draining`. |
 | `gateway.shutdown_timeout` after the signal | whatever is left is cut and the process exits non-zero (as before). The timeout covers the grace. |

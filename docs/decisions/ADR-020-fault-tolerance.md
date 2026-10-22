@@ -332,7 +332,7 @@ is spent). **The agent was not changed**: PR B (announce, `embedded.DrainWorker`
 **Gateway drain (D16),** when the feature is effective (`resilience.mode: on`, registry workers). On the first SIGTERM or SIGINT, in this order:
 
 1. The drain flag is set. `/readyz` answers `503` at once, **bypassing the 2 s probe cache** (the body is the usual `NO_CAPACITY` shed body, message "the gateway is shutting down; retry on another instance", `Retry-After: 1`; no
-   new error code), every response carries `Connection: close`, and `gateway_draining` is 1. `/healthz` (liveness) stays `200`, and the metrics listener keeps answering until the process is about to exit.
+   new error code), every response to a request that starts after the signal carries `Connection: close` (a request already in flight keeps its keep-alive header, which is harmless because `Shutdown` closes idle connections), and `gateway_draining` is 1. `/healthz` (liveness) stays `200`, and the metrics listener keeps answering until the process is about to exit.
 2. For `resilience.drain.readiness_grace` (default `min(5s, shutdown_timeout/2)`) the listener stays open and requests are served normally, including queueing: a load balancer that has not yet noticed loses nothing.
 3. At the end of the grace the queue is closed (arrivals that would have to wait are shed `draining`; waiters already queued finish, are served or time out by `max_wait`), the listener is closed and `http.Server.Shutdown` waits for in-flight requests.
    Whoever is still queued 250 ms before the end of the shutdown budget is flushed with a `draining` shed.
@@ -366,7 +366,7 @@ stream; the orchestrator's termination period must be at least `shutdown_timeout
 **Limits found (kept, reported).**
 - A request that arrives at the very end of the grace, or after a balancer routes it from a stale poll, can still reach a closed listener (`connection refused`); the grace makes this unlikely, not impossible. With grace 0 the gateway roll behind the test balancer
   failed 1-5 requests per roll (see the benchmark note); with a 1 s grace and a 50 ms poll it failed none.
-- A second signal drops queued waiters and in-flight requests without an answer.
+- A second signal drops queued waiters and in-flight requests without an answer. Observation from the verification, not a PR F change: two SIGTERMs sent with zero gap were swallowed in 5 of 15 trials (probably the kernel coalescing identical pending signals); gaps of 10-20 ms always worked.
 - Streams longer than `shutdown_timeout` minus the grace are cut at the end of the budget, as before.
 - Only mock workers: a real vLLM sidecar's drain vocabulary and a real orchestrator's sequence are not verified (Phase 13, 17).
 
