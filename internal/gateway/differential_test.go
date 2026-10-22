@@ -106,25 +106,25 @@ func diffHandler(w diffWorker) http.Handler {
 				rw.Header().Set("Content-Type", "text/event-stream")
 				rw.WriteHeader(200)
 				for i := 0; i < 3; i++ {
-					fmt.Fprintf(rw, "data: {\"worker\":%q,\"i\":%d}\n\n", w.id, i)
+					_, _ = fmt.Fprintf(rw, "data: {\"worker\":%q,\"i\":%d}\n\n", w.id, i)
 					rw.(http.Flusher).Flush()
 				}
-				fmt.Fprint(rw, "data: [DONE]\n\n")
+				_, _ = fmt.Fprint(rw, "data: [DONE]\n\n")
 				return
 			}
 			rw.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(rw, `{"worker":%q,"usage":{"prompt_tokens":3,"completion_tokens":2}}`, w.id)
+			_, _ = fmt.Fprintf(rw, `{"worker":%q,"usage":{"prompt_tokens":3,"completion_tokens":2}}`, w.id)
 		case "503", "503-queue_full", "503-draining", "503-mock":
 			code := map[string]string{"503": "x", "503-queue_full": "queue_full", "503-draining": "draining", "503-mock": "mock_failure"}[w.mode]
 			rw.Header().Set("Content-Type", "application/json")
 			rw.WriteHeader(503)
-			fmt.Fprintf(rw, `{"error":{"message":"busy","type":"server_error","code":%q}}`, code)
+			_, _ = fmt.Fprintf(rw, `{"error":{"message":"busy","type":"server_error","code":%q}}`, code)
 		case "502", "500", "504", "400", "404", "429":
 			var n int
-			fmt.Sscanf(w.mode, "%d", &n)
+			_, _ = fmt.Sscanf(w.mode, "%d", &n)
 			rw.Header().Set("Content-Type", "application/json")
 			rw.WriteHeader(n)
-			fmt.Fprintf(rw, `{"error":{"message":"m","type":"t","code":"c%d"}}`, n)
+			_, _ = fmt.Fprintf(rw, `{"error":{"message":"m","type":"t","code":"c%d"}}`, n)
 		case "reset":
 			hj, _ := rw.(http.Hijacker)
 			c, _, _ := hj.Hijack()
@@ -137,14 +137,14 @@ func diffHandler(w diffWorker) http.Handler {
 		case "midstream":
 			rw.Header().Set("Content-Type", "text/event-stream")
 			rw.WriteHeader(200)
-			fmt.Fprintf(rw, "data: {\"worker\":%q,\"i\":0}\n\n", w.id)
+			_, _ = fmt.Fprintf(rw, "data: {\"worker\":%q,\"i\":0}\n\n", w.id)
 			rw.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		case "midstream-json":
 			rw.Header().Set("Content-Type", "application/json")
 			rw.Header().Set("Content-Length", "500")
 			rw.WriteHeader(200)
-			fmt.Fprint(rw, `{"partial":`)
+			_, _ = fmt.Fprint(rw, `{"partial":`)
 			rw.(http.Flusher).Flush()
 			panic(http.ErrAbortHandler)
 		case "hang":
@@ -161,7 +161,7 @@ func diffHandler(w diffWorker) http.Handler {
 			case <-r.Context().Done():
 				return
 			}
-			fmt.Fprint(rw, "data: [DONE]\n\n")
+			_, _ = fmt.Fprint(rw, "data: [DONE]\n\n")
 		case "redirect":
 			rw.Header().Set("Location", "http://example.invalid/")
 			rw.WriteHeader(302)
@@ -691,17 +691,22 @@ func TestEveryD25ItemNamesATestThatExists(t *testing.T) {
 
 func diffTestExists(t *testing.T, dir, name string) bool {
 	t.Helper()
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool { return strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range pkgs {
-		for _, f := range p.Files {
-			for _, d := range f.Decls {
-				if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
-					return true
-				}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+				return true
 			}
 		}
 	}
