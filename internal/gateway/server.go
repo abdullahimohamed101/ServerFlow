@@ -167,6 +167,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		s.router.policy.SetSelf(ln.Addr()) // a worker must not be able to loop requests back through us
 	}
 	bctx, stopBackground := context.WithCancel(ctx)
+	if s.res != nil {
+		// With the drain feature the readiness grace and the drain happen after ctx ends, and what the background
+		// work keeps alive (the registry refresh, key usage, lease renewal) must keep running until the server
+		// has stopped; it ends when Serve returns.
+		bctx, stopBackground = context.WithCancel(context.WithoutCancel(ctx))
+	}
 	defer stopBackground()
 	if s.background != nil {
 		go s.background(bctx)
@@ -191,11 +197,29 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case <-ctx.Done():
 	}
 
+	signalled := time.Now()
 	s.log.Info("gateway shutting down", "component", "gateway", "timeout", s.cfg.ShutdownTimeout.String())
+	budget := s.cfg.ShutdownTimeout
 	if s.res != nil {
-		defer s.res.beginDrain(s.cfg.ShutdownTimeout)() // stop queueing; flush what cannot finish inside the budget
+		// D16: /readyz fails and responses say Connection: close; for the readiness grace the listener stays open
+		// and requests are served, so a load balancer that has not noticed yet loses none. A second signal ends the
+		// process at once (cmd/gateway), whatever phase this is in. The shutdown timeout covers the grace too.
+		s.res.draining.Store(true)
+		if g := s.res.grace; g > 0 {
+			s.log.Info("gateway draining: not ready, still serving", "component", "gateway", "readiness_grace", g.String())
+			t := time.NewTimer(g)
+			select {
+			case err := <-errc:
+				t.Stop()
+				return err
+			case <-t.C:
+			}
+			s.log.Info("gateway readiness grace over: closing the listener and draining", "component", "gateway")
+		}
+		budget = max(s.cfg.ShutdownTimeout-time.Since(signalled), 0)
+		defer s.res.beginDrain(budget)() // stop queueing; flush what cannot finish inside the budget
 	}
-	sctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	sctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	if err := srv.Shutdown(sctx); err != nil {
 		_ = srv.Close()

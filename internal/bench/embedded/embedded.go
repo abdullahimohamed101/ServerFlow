@@ -306,6 +306,10 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	if c.resilience, _, err = ApplyResilience(&gcfg, cfg.Resilience); err != nil {
 		return fail(err)
 	}
+	// The embedded gateway is stopped by cancelling its context at the end of a run, with nobody to notice a failing
+	// /readyz: no readiness grace (Phase 15 D16), or every run would wait for it. A scenario can set one.
+	noGrace := time.Duration(0)
+	gcfg.Resilience.Drain.ReadinessGrace = &noGrace
 	if cfg.GatewayMutate != nil {
 		cfg.GatewayMutate(&gcfg)
 	}

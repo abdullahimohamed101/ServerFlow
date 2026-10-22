@@ -25,6 +25,8 @@ var resilienceFamilies = map[string]bool{
 	"circuit_breaker_state": true, "circuit_breakers_open": true,
 	// PR E: admission.
 	"admission_rejections_total": true, "inference_queue_duration_seconds": true, "admission_queue_depth": true,
+	// PR F: drain.
+	"gateway_draining": true,
 }
 
 // additionsCatalogue is seriesCatalogue restricted to the families PR D and PR E add.

@@ -81,6 +81,11 @@ type resilienceState struct {
 
 	deliver func(BreakerChange) // set by the server: observers and log
 
+	// grace is how long the gateway keeps serving after /readyz starts failing (D16) and draining is set at the
+	// first shutdown signal: /readyz fails, responses carry Connection: close.
+	grace    time.Duration
+	draining atomic.Bool
+
 	peeks atomic.Int64 // 503 bodies peeked so far (tests and diagnostics)
 
 	qmu      sync.Mutex
@@ -93,6 +98,7 @@ type resilienceState struct {
 func newResilienceState(cfg config.Config, log *slog.Logger, d resilienceDeps) *resilienceState {
 	g, r := cfg.Gateway, cfg.Resilience
 	rs := &resilienceState{cfg: r, log: log, now: time.Now}
+	rs.grace = r.Drain.EffectiveReadinessGrace(g.ShutdownTimeout)
 	if d.now != nil {
 		rs.now = d.now
 	}
