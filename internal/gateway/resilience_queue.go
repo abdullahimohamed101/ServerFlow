@@ -175,3 +175,7 @@ func (rs *resilienceState) beginDrain(shutdownTimeout time.Duration) (stop func(
 	t := time.AfterFunc(max(shutdownTimeout-drainFlushMargin, 0), func() { rs.waitq.Flush("") })
 	return func() { t.Stop() }
 }
+
+// draining reports whether the gateway has started its shutdown with the drain feature on: /readyz fails and
+// responses carry Connection: close from the first signal until the process ends. Always false with the feature off.
+func (s *Server) draining() bool { return s.res != nil && s.res.draining.Load() }
