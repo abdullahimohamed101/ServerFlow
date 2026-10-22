@@ -1107,7 +1107,10 @@ func TestNoDrainAnnounceZeroesTheAnnounceOfARollOnly(t *testing.T) {
 		d, _, _ := fakeDeps(t, 4, nil)
 		var got time.Duration
 		boot := d.Boot
-		d.Boot = func(ctx context.Context, cfg embedded.Config) (Cluster, error) { got = cfg.MockDrainAnnounce; return boot(ctx, cfg) }
+		d.Boot = func(ctx context.Context, cfg embedded.Config) (Cluster, error) {
+			got = cfg.MockDrainAnnounce
+			return boot(ctx, cfg)
+		}
 		o := testOptions(t, tc.scenario)
 		o.NoDrainAnnounce = tc.no
 		sc, _ := Lookup(tc.scenario)
