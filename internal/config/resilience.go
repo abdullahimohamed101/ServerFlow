@@ -133,11 +133,12 @@ const (
 	maxReadinessGrace = 5 * time.Minute
 )
 
-// defaultResilience returns the built-in settings. Mode is "off" until the last Phase 15 pull request flips the
-// shipped default to "on" (plan decision D26); every other value is the final default.
+// defaultResilience returns the built-in settings. Mode is "on" (plan decision D1, flipped by the last Phase 15
+// pull request, D26): the feature is effective in registry mode and a no-op with static workers; "off" is the kill
+// switch. Every other value is the final default.
 func defaultResilience() ResilienceConfig {
 	return ResilienceConfig{
-		Mode: ResilienceOff,
+		Mode: ResilienceOn,
 		Breaker: ResilienceBreakerConfig{
 			ConsecutiveFailures: 5,
 			FailureRatio:        0.5,
