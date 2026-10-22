@@ -288,19 +288,17 @@ k8s() {
     printf '\nquality: SKIPPING k8s (neither the pinned kubectl and kubeconform nor a running Docker). CI runs it.\n'
     return 0
   fi
-  local log t out
+  local log t
   step "kubectl kustomize (base and kind overlay)"
   local dir
   for dir in deploy/kubernetes/base deploy/kubernetes/overlays/kind; do
     scripts/k8s-tool.sh kubectl kustomize --load-restrictor=LoadRestrictionsNone "$dir" >/dev/null || fail "kubectl kustomize failed for $dir"
   done
   step "kubeconform -strict (Kubernetes $(scripts/k8s-tool.sh pin KUBERNETES_VERSION))"
-  # The rendered overlay goes into the repository's scratch directory (the container sees only the repository), then is removed.
-  mkdir -p .dev/k8s-check
-  out=.dev/k8s-check/overlay.yaml
-  scripts/k8s-tool.sh kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kubernetes/overlays/kind >"$out"
-  scripts/k8s-tool.sh kubeconform -strict -summary -kubernetes-version "$(scripts/k8s-tool.sh pin KUBERNETES_VERSION | sed 's/^v//')" "$out" || { rm -rf .dev/k8s-check; fail "kubeconform rejected the rendered overlay"; }
-  rm -rf .dev/k8s-check
+  # The render goes to kubeconform on standard input: its container (which has network access for the schemas) mounts nothing.
+  scripts/k8s-tool.sh kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kubernetes/overlays/kind \
+    | scripts/k8s-tool.sh kubeconform -strict -summary -kubernetes-version "$(scripts/k8s-tool.sh pin KUBERNETES_VERSION | sed 's/^v//')" - \
+    || fail "kubeconform rejected the rendered overlay"
   log="$(mktemp "${TMPDIR:-/tmp}/serverflow-k8s.XXXXXX")"
   step "k8s tests must run, not skip"
   if ! go test -race -count=1 -v ./tests/k8s/... >"$log" 2>&1; then
@@ -309,12 +307,15 @@ k8s() {
     printf 'quality: full log kept at %s\n' "$log" >&2
     exit 1
   fi
-  for t in TestRenderedPodsAreHardenedAndComplete TestPodSecurityPolicy TestResourcesPolicy TestProbePolicy TestLifecycleAndVolumes \
-    TestMemoryFitsTheEngineMinimum TestPolicyCatchesMutations TestGatewayDrainRelations TestThirdPartyImagesEqualCompose TestEveryServerFlowImageIsBuiltByTheScript \
-    TestNamespaceEnforcesRestricted TestOnlyAllowedKindsAndNoSecrets TestEveryObjectIsInTheNamespaceWithTheLabels TestServicesSelectPodsAndTargetDeclaredPorts \
-    TestNoSecretsCommitted TestBaseRendersToo TestKindConfig TestKindConfigCatchesMistakes TestToolPins \
+  for t in TestWorkflowsPinTheTools TestStaticJobAndKindJob TestWorkflowTokenHygiene TestThirdPartyImagesEqualCompose \
+    TestEveryServerFlowImageIsBuiltByTheScript TestKindConfig TestKindConfigCatchesMistakes TestToolPins TestPolicyCatchesMutations \
+    TestGatewayDrainRelations TestNamespaceEnforcesRestricted TestOnlyAllowedKindsAndNoSecrets TestEveryObjectIsInTheNamespaceWithTheLabels \
+    TestServicesSelectPodsAndTargetDeclaredPorts TestNoSecretsCommitted TestBaseRendersToo TestOverlayImageTagsAreExplicit \
+    TestRenderedPodsAreHardenedAndComplete TestPodSecurityPolicy TestResourcesPolicy TestProbePolicy TestLifecycleAndVolumes \
+    TestMemoryFitsTheEngineMinimum TestStateDirIsConfinedToDotDev TestDownAndResetScope TestUpRefusesAForeignCluster \
+    TestDestructiveCommandsAreWhitelisted TestSecretsGeneratorIgnoresTheEnvironmentsShellOptions TestToolRunnerIsConfined TestQualityGateListsEveryTest \
     TestContextCheckUnderStrictShell TestForeignContextIsRefused TestEveryKubectlCallIsGuarded TestScriptsUnderStrictShell TestMakefileTargets \
-    TestKustomizeCommandIsPinned TestSecretsNeverTouchACommandLine TestWorkflowsPinTheTools TestStaticJobAndKindJob; do
+    TestKustomizeCommandIsPinned TestSecretsNeverTouchACommandLine; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   if grep -q -- "--- SKIP" "$log"; then

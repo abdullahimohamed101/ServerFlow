@@ -80,6 +80,22 @@ not on loopback, and the script unsets `KUBECONFIG` so `~/.kube/config` is never
 `--name serverflow --kubeconfig ...` so kind does not write into `~/.kube/config` either. Tests run the script against a fake `kubectl`
 reporting other contexts and servers and assert that nothing but the two `config` reads is called.
 
+### What the scripts will and will not delete
+
+- `K8S_UP_DIR` (default `.dev/k8s`) is the state directory and `make k8s-reset` deletes it, so the script refuses any value that is not a directory
+  strictly inside `<repo>/.dev` (no `..`, `.` or empty components, not `.dev` itself, no symlink on the way). Tests use a throwaway directory there.
+- `down` and `reset` delete a kind cluster named `serverflow` only if this checkout created it: `up` writes `.dev/k8s/owns-cluster` before
+  `kind create`, and the dedicated kubeconfig also counts. A cluster of that name with neither is refused loudly (by `up` as well, which would otherwise
+  deploy into it); delete it yourself with `kind delete cluster --name serverflow` if it is yours. The only delete is
+  `kind delete cluster --name serverflow --kubeconfig .dev/k8s/kubeconfig`; the only recursive `rm` is the validated state directory. Tests run `down` and
+  `reset` against stub `kind` and `docker` binaries and check every call.
+- `serverflow/admin:dev` is built with the same tag Compose uses and is not labelled for this project (a build is a build, kind copies it into the node);
+  `make k8s-reset` and `down` therefore never remove images, and the plan's "Docker objects labelled for this project" (AC 12) holds for the kind node
+  containers (kind labels them `io.x-k8s.kind.cluster=serverflow`), not for that image.
+- The Secrets are applied with `kubectl apply --server-side`, so the object does not carry a `last-applied-configuration` annotation holding their data
+  (client-side apply would store it there, readable by anyone who can `get` the object). The server-side flag was not run against kind (see "What is verified");
+  the k3s run used client-side apply.
+
 ## Security posture
 
 Every container: numeric non-root user, `runAsNonRoot`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true` (writable
@@ -93,6 +109,17 @@ Secrets are generated into `.dev/` and exist in the cluster as Kubernetes Secret
 and is acceptable for a throwaway local cluster; a real deployment needs encryption at rest, an external secret store and RBAC that
 denies `get secrets`, none of which is built or claimed. No Secret and no secret-looking value is in any file under
 `deploy/kubernetes/` (tested, including the rendered output).
+
+`scripts/k8s-up.sh` never traces and starts the secret generator (`dev-up.sh secrets`) without the environment's shell options, because
+`SHELLOPTS=xtrace` in the caller's environment would make the generator print the passwords it creates (a test shows that it does when started by hand and that
+it does not through `k8s-up.sh`). A shell you started with `bash -x` or `set -x` and `export SHELLOPTS` yourself is your own risk; `dev-up.sh` itself still
+honours the environment, as before.
+
+The container fallbacks of `scripts/k8s-tool.sh` mount only `deploy/` and `observability/` read-only into the kubectl container (which has no network) and nothing
+into the kubeconform container (which has network for its schemas and receives the manifests on standard input), so `.dev/` and its secrets are never visible to them.
+
+Residual notes: `kc` and the preflight accept a PATH `kubectl` within one minor version of the node's Kubernetes (the static checks use exactly the pinned one);
+`DOCKER_HOST` and `DOCKER_CONTEXT` are not pinned, so the script uses whatever engine `docker` currently points at and prints its context.
 
 The control-plane token will cross the cluster network in plain HTTP (ADR-021 W1) once PR 3 adds the control plane; NetworkPolicy (PR 5)
 narrows who can reach it, it does not encrypt.

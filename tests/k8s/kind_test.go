@@ -19,6 +19,7 @@ type kindConfig struct {
 	} `yaml:"networking"`
 	Nodes []struct {
 		Role              string `yaml:"role"`
+		ExtraMounts       []any  `yaml:"extraMounts"`
 		Image             string `yaml:"image"`
 		ExtraPortMappings []struct {
 			ListenAddress string `yaml:"listenAddress"`
@@ -61,6 +62,9 @@ func kindViolations(c kindConfig, nodeImage string) []string {
 	}
 	if !digestRef.MatchString(c.Nodes[0].Image) {
 		v = append(v, "the node image must be pinned by tag and digest")
+	}
+	if len(c.Nodes[0].ExtraMounts) > 0 {
+		v = append(v, "no extraMounts: a hostPath into the node would expose the host's files")
 	}
 	hostPorts := map[int]bool{}
 	for _, m := range c.Nodes[0].ExtraPortMappings {
@@ -109,7 +113,10 @@ func TestKindConfigCatchesMistakes(t *testing.T) {
 			c.Nodes[0].ExtraPortMappings[1].HostPort = c.Nodes[0].ExtraPortMappings[0].HostPort
 		},
 		"low container port": func(c *kindConfig) { c.Nodes[0].ExtraPortMappings[2].ContainerPort = 8080 },
-		"renamed cluster":    func(c *kindConfig) { c.Name = "other" },
+		"extra mount of the host": func(c *kindConfig) {
+			c.Nodes[0].ExtraMounts = []any{map[string]any{"hostPath": "/", "containerPath": "/host"}}
+		},
+		"renamed cluster": func(c *kindConfig) { c.Name = "other" },
 	}
 	for name, f := range mut {
 		c := loadKind(t)

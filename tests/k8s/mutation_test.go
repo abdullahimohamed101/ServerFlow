@@ -100,6 +100,26 @@ func TestPolicyCatchesMutations(t *testing.T) {
 		}}},
 		{postgres, mutation{"label missing", "lacks the label", func(p *pod) { delete(p.Labels, "app.kubernetes.io/component") }}},
 		{postgres, mutation{"selector does not match", "selector label", func(p *pod) { p.W.Spec.Selector.MatchLabels["app.kubernetes.io/component"] = "other" }}},
+		{postgres, mutation{"container seccomp Unconfined overrides the pod's RuntimeDefault", "seccomp profile", func(p *pod) {
+			first(p).SecurityContext.SeccompProfile = &struct{ Type string }{"Unconfined"}
+		}}},
+		{postgres, mutation{"container runAsNonRoot false overrides the pod's true", "effective runAsNonRoot", func(p *pod) { first(p).SecurityContext.RunAsNonRoot = bl(false) }}},
+		{postgres, mutation{"hostPort", "hostPort", func(p *pod) { first(p).Ports[0].HostPort = 5432 }}},
+		{postgres, mutation{"container seLinuxOptions spc_t", "seLinuxOptions", func(p *pod) { first(p).SecurityContext.SELinuxOptions = map[string]any{"type": "spc_t"} }}},
+		{postgres, mutation{"pod seLinuxOptions", "seLinuxOptions", func(p *pod) { p.Spec.SecurityContext.SELinuxOptions = map[string]any{"level": "s0:c1"} }}},
+		{postgres, mutation{"nfs volume", "of the type nfs", func(p *pod) {
+			p.Spec.Volumes = append(p.Spec.Volumes, volume{Name: "n", Rest: map[string]any{"nfs": map[string]any{"server": "x", "path": "/"}}})
+		}}},
+		{postgres, mutation{"flexVolume", "of the type flexVolume", func(p *pod) {
+			p.Spec.Volumes = append(p.Spec.Volumes, volume{Name: "f", Rest: map[string]any{"flexVolume": map[string]any{"driver": "x"}}})
+		}}},
+		{postgres, mutation{"volume without a source", "has no source", func(p *pod) { p.Spec.Volumes = append(p.Spec.Volumes, volume{Name: "empty"}) }}},
+		{postgres, mutation{"unsafe sysctl", "not on the safe list", func(p *pod) {
+			p.Spec.SecurityContext.Sysctls = append(p.Spec.SecurityContext.Sysctls, struct {
+				Name  string `yaml:"name"`
+				Value string `yaml:"value"`
+			}{"kernel.core_pattern", "|/x"})
+		}}},
 		{"Job/migrate", mutation{"serverflow image latest", "other than latest", func(p *pod) { first(p).Image = "serverflow/admin:latest" }}},
 		{"Job/migrate", mutation{"unknown serverflow image", "not one of the six", func(p *pod) { first(p).Image = "serverflow/evil:dev" }}},
 		{"Job/migrate", mutation{"image the script does not build", "does not build and load", func(p *pod) { first(p).Image = "serverflow/gateway:dev" }}},

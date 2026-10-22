@@ -17,7 +17,9 @@
 # Safety (AC 12): every kubectl call goes through kc(), which passes the dedicated kubeconfig .dev/k8s/kubeconfig and the
 # context kind-serverflow explicitly and is preceded by guard_context, which refuses any other current context and any
 # API server that is not on loopback. KUBECONFIG, and so ~/.kube/config, is never read. Nothing is installed: kind and
-# kubectl must be on PATH at the versions in deploy/kubernetes/tools.env.
+# kubectl must be on PATH: kind at exactly the version in deploy/kubernetes/tools.env, kubectl within one minor version of
+# the node's Kubernetes (the static checks, scripts/k8s-tool.sh, use exactly the pinned kubectl). DOCKER_HOST and
+# DOCKER_CONTEXT are not pinned: the script uses whatever engine `docker` points at and prints its context.
 #
 # Secrets are the ones scripts/dev-up.sh generates into .dev/ (mode 0700/0600, gitignored). They reach the cluster only
 # through a pipe into `kubectl apply` and are never printed or placed on a command line.
@@ -25,8 +27,11 @@
 # Compatible with bash 3.2 (macOS /bin/bash) and bash 5 under `set -u`.
 # shellcheck disable=SC2016 # the kubectl exec scripts are single-quoted on purpose: the shell inside the pod expands the Secret's value
 set -euo pipefail
+# Never trace: a traced run would print every expanded variable. (SHELLOPTS is readonly, so it cannot be unset here; the
+# generator child below is started without it.)
+set +x +v
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
 # A kubeconfig or context from the environment must never steer a call of this script.
@@ -35,10 +40,29 @@ unset KUBECONFIG KUBECONTEXT || true
 CLUSTER=serverflow
 CONTEXT="kind-$CLUSTER"
 NAMESPACE=serverflow
-# K8S_UP_DIR only exists so tests can point the shell paths at a temporary directory (like DEV_UP_DIR in dev-up.sh).
-K8S_DIR="${K8S_UP_DIR:-.dev/k8s}"
-case "$K8S_DIR" in /*) ;; *) K8S_DIR="$ROOT/$K8S_DIR" ;; esac
+say() { printf 'k8s-up: %s\n' "$*"; }
+die() { printf 'k8s-up: %s\n' "$*" >&2; exit 1; }
+
+# K8S_UP_DIR (tests use it) names the state directory, and `reset` deletes it, so it must be a directory strictly inside
+# $ROOT/.dev: no `..` or `.` components, not .dev itself, not a symlink, no symlink on the way.
+resolve_state_dir() {
+  local d="$1" real a
+  case "$d" in /*) ;; *) d="$ROOT/$d" ;; esac
+  case "$d/" in */../* | */./*) die "refusing K8S_UP_DIR '$1': it must not contain '..' or '.' components" ;; esac
+  case "$d" in *//* | */) die "refusing K8S_UP_DIR '$1': it must not contain '..', '.' or empty components" ;; esac
+  [ ! -L "$d" ] || die "refusing K8S_UP_DIR '$1': it is a symlink"
+  [ ! -L "$ROOT/.dev" ] || die "refusing: $ROOT/.dev is a symlink"
+  case "$d" in "$ROOT/.dev/"?*) ;; *) die "refusing K8S_UP_DIR '$1': it must be inside $ROOT/.dev (and not .dev itself)" ;; esac
+  # The deepest part of the path that exists must not resolve through a symlink (mkdir -p would follow it out of .dev).
+  a="$d"
+  while [ ! -e "$a" ] && [ ! -L "$a" ]; do a="$(dirname "$a")"; done
+  real="$(cd -P "$a" && pwd -P)"
+  [ "$real" = "$a" ] || die "refusing K8S_UP_DIR '$1': $a resolves through a symlink to $real"
+  printf '%s' "$d"
+}
+K8S_DIR="$(resolve_state_dir "${K8S_UP_DIR:-.dev/k8s}")"
 KUBECONFIG_FILE="$K8S_DIR/kubeconfig"
+OWNER_MARK="$K8S_DIR/owns-cluster"
 DEV_DIR="${DEV_UP_DIR:-.dev}"
 OVERLAY=deploy/kubernetes/overlays/kind
 KIND_CONFIG=deploy/kubernetes/kind/cluster.yaml
@@ -49,9 +73,6 @@ IMAGES="admin"
 SECRETS="postgres dsn redis kafka"
 MIN_MEMORY_MB=4096
 MIN_DISK_MB=8192
-
-say() { printf 'k8s-up: %s\n' "$*"; }
-die() { printf 'k8s-up: %s\n' "$*" >&2; exit 1; }
 
 pin() { "$ROOT/scripts/k8s-tool.sh" pin "$1"; }
 
@@ -144,6 +165,7 @@ create_cluster() {
   mkdir -p "$K8S_DIR"
   chmod 700 "$K8S_DIR"
   if cluster_exists; then
+    [ -f "$OWNER_MARK" ] || die "a kind cluster named $CLUSTER exists but this checkout did not create it ($OWNER_MARK is missing); refusing to deploy into it. Delete it yourself (kind delete cluster --name $CLUSTER) if it is yours."
     say "the cluster $CLUSTER exists; refreshing its kubeconfig"
     kind export kubeconfig --name "$CLUSTER" --kubeconfig "$KUBECONFIG_FILE" >/dev/null
   else
@@ -151,6 +173,7 @@ create_cluster() {
     "$ROOT/scripts/ci-docker-pull.sh" "$(pin KIND_NODE_IMAGE)" || die "could not pull the kind node image"
     preflight_disk
     say "creating the kind cluster $CLUSTER (the first time takes a minute or two)"
+    : >"$OWNER_MARK"
     kind create cluster --name "$CLUSTER" --config "$KIND_CONFIG" --kubeconfig "$KUBECONFIG_FILE" --wait 180s >/dev/null 2>"$K8S_DIR/kind.log" || {
       tail -15 "$K8S_DIR/kind.log" >&2
       die "kind could not create the cluster (full log: $K8S_DIR/kind.log)"
@@ -206,7 +229,7 @@ create_secrets() {
   for n in $SECRETS; do
     f="$DEV_DIR/$n.env"
     [ -s "$f" ] || die "$f is missing or empty (scripts/dev-up.sh secrets creates it)"
-    kc -n "$NAMESPACE" create secret generic "$n" --from-env-file="$f" --dry-run=client -o yaml | kc apply -f - >/dev/null || die "could not create the Secret $n"
+    kc -n "$NAMESPACE" create secret generic "$n" --from-env-file="$f" --dry-run=client -o yaml | kc apply --server-side --field-manager=serverflow-k8s-up -f - >/dev/null || die "could not create the Secret $n"
   done
 }
 
@@ -239,12 +262,18 @@ wait_job() {
   done
 }
 
+# ensure_secrets: the generator Compose uses. It is started without the shell options of the environment (SHELLOPTS=xtrace would make
+# it print the passwords it generates) and prints nothing.
+ensure_secrets() {
+  env -u SHELLOPTS -u BASHOPTS -u BASH_ENV -u ENV -u BASH_XTRACEFD -u PS4 "$ROOT/scripts/dev-up.sh" secrets
+}
+
 cmd_up() {
   local t0 t1
   t0=$(date +%s)
   preflight_tools
   preflight_memory
-  "$ROOT/scripts/dev-up.sh" secrets
+  ensure_secrets
   create_cluster
   guard_context
   build_images
@@ -275,11 +304,14 @@ cmd_down() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed"
   command -v kind >/dev/null 2>&1 || die "kind is not installed"
   mkdir -p "$K8S_DIR"
-  # --kubeconfig keeps kind away from ~/.kube/config.
+  # --kubeconfig keeps kind away from ~/.kube/config. Only a cluster this checkout created is ever deleted.
   if cluster_exists; then
+    if [ ! -f "$OWNER_MARK" ] && [ ! -f "$KUBECONFIG_FILE" ]; then
+      die "a kind cluster named $CLUSTER exists, but neither $OWNER_MARK nor $KUBECONFIG_FILE shows that this checkout created it; refusing to delete it. If it is yours: kind delete cluster --name $CLUSTER"
+    fi
     kind delete cluster --name "$CLUSTER" --kubeconfig "$KUBECONFIG_FILE" >/dev/null || die "kind could not delete the cluster"
   fi
-  rm -f "$KUBECONFIG_FILE"
+  rm -f "$KUBECONFIG_FILE" "$OWNER_MARK"
   local left
   left="$(docker ps -aq --filter "label=io.x-k8s.kind.cluster=$CLUSTER" | wc -l | tr -d ' ')"
   [ "$left" = 0 ] || die "$left containers of the kind cluster $CLUSTER are still present"
@@ -288,7 +320,8 @@ cmd_down() {
 
 cmd_reset() {
   cmd_down
-  rm -rf "$K8S_DIR"
+  # K8S_DIR was validated at start: a directory strictly inside $ROOT/.dev, not a symlink.
+  [ -n "$K8S_DIR" ] && [ "$K8S_DIR" != "$ROOT/.dev" ] && rm -rf "$K8S_DIR"
   say "reset: $K8S_DIR removed (the serverflow/*:dev images and the secrets in $DEV_DIR stay; make dev-reset removes them)"
 }
 
@@ -405,6 +438,7 @@ case "$CMD" in
   status) cmd_status ;;
   smoke) cmd_smoke ;;
   render) render ;;
+  secrets) ensure_secrets ;;
   check) cmd_check ;;
   diagnose) cmd_diagnose ;;
   audit | roll-test) die "$CMD is not implemented yet (the audit arrives with the workloads in PR 3, the rolling-update test in PR 6)" ;;

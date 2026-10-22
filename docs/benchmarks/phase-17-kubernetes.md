@@ -46,7 +46,7 @@ ran as one privileged container with `--memory 2200m`, then `docker rm -fv`. It 
 | smoke D1-D7 including three pod restarts | passed 7 of 7 in a few minutes (not timed precisely) |
 | PodSecurity | namespace `restricted:v1.36` admitted all pods; a privileged pod was rejected with `violates PodSecurity "restricted:v1.36"` |
 | secrets hunt (non-Secret objects, events, logs, descriptions, node container logs, the render) | 0 matches for the generated values |
-| the VM's kernel | lacks `br_netfilter` by default; k3s could not reach ClusterIPs until the module was loaded (and unloaded again afterwards) |
+| the VM's kernel | lacks `br_netfilter` by default; k3s could not reach ClusterIPs until the module was loaded. **How:** `modprobe br_netfilter` from a throwaway *privileged* container with the VM's `/lib/modules` mounted read-only, which loads the module into the shared Colima VM's kernel (the VM the user's other containers run in). It was unloaded the same way after the run (`modprobe -r`); the coordinator has since said not to repeat this, and it was not repeated |
 
 ## Not measured yet (needs a kind cluster)
 

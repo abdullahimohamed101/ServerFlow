@@ -63,7 +63,7 @@ type fakeRun struct {
 func runWithFake(t *testing.T, bash, context, server string, args ...string) fakeRun {
 	t.Helper()
 	stubDir, log := fakeKubectl(t)
-	state := t.TempDir()
+	state := stateDir(t)
 	kubeconfig := filepath.Join(state, "kubeconfig")
 	if e := os.WriteFile(kubeconfig, []byte("# not read: the stub answers\n"), 0o600); e != nil {
 		t.Fatal(e)
@@ -152,7 +152,7 @@ func TestEveryKubectlCallIsGuarded(t *testing.T) {
 				t.Errorf("%sforbidden: %s", where, code)
 			}
 		}
-		if regexp.MustCompile(`\bkind (create|delete|export|get)\b`).MatchString(code) && !strings.HasPrefix(code, "say") {
+		if regexp.MustCompile(`\bkind (create|delete|export|get)\b`).MatchString(code) && !strings.HasPrefix(code, "say") && !strings.Contains(code, `die "`) {
 			isGet := strings.Contains(code, "kind get clusters")
 			if !isGet && (!strings.Contains(code, "--kubeconfig") || !strings.Contains(code, `--name "$CLUSTER"`)) {
 				t.Errorf("%skind must be given --name and --kubeconfig: %s", where, code)
@@ -278,7 +278,7 @@ func TestKustomizeCommandIsPinned(t *testing.T) {
 // TestSecretsNeverTouchACommandLine: the Secrets are created from a file by a pipe, and no script prints a .dev file.
 func TestSecretsNeverTouchACommandLine(t *testing.T) {
 	script := read(t, "scripts/k8s-up.sh")
-	if !strings.Contains(script, `--from-env-file="$f" --dry-run=client -o yaml | kc apply -f -`) {
+	if !strings.Contains(script, `--from-env-file="$f" --dry-run=client -o yaml | kc apply --server-side`) {
 		t.Error("Secrets must be created with --from-env-file and --dry-run=client piped into kubectl apply")
 	}
 	for i, line := range strings.Split(script, "\n") {

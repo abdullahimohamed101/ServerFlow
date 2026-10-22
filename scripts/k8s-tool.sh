@@ -6,8 +6,9 @@
 #   scripts/k8s-tool.sh pin NAME              print a value of deploy/kubernetes/tools.env
 #
 # A binary on PATH is used only when it reports exactly the pinned version (CI installs the pinned releases, checksum
-# verified); otherwise the pinned container image runs with the repository mounted read-only at /work, no capabilities
-# and, for kubectl, no network. Paths in ARGS are relative to the repository root, where this script starts them.
+# verified); otherwise the pinned container image runs with no capabilities. kubectl gets no network and sees only deploy/
+# and observability/ of the repository, read-only (never .dev/, where the secrets are); kubeconform gets no mount at all:
+# give it the manifests on standard input (`-` as the file). Paths in ARGS are relative to the repository root.
 # Compatible with bash 3.2.
 set -euo pipefail
 
@@ -22,12 +23,15 @@ pin() {
   printf '%s' "$v"
 }
 
-in_container() { # IMAGE NETWORK ARGS...
-  local image="$1" net="$2"
-  shift 2
+in_container() { # IMAGE NETWORK MOUNTSPEC ARGS...   MOUNTSPEC: "repo" (deploy/ and observability/, read-only) or "none"
+  local image="$1" net="$2" mounts="$3" mountargs=()
+  shift 3
+  if [ "$mounts" = repo ]; then
+    mountargs=(-v "$ROOT/deploy":/work/deploy:ro -v "$ROOT/observability":/work/observability:ro -w /work)
+  fi
   command -v docker >/dev/null 2>&1 || { printf 'k8s-tool: neither the pinned binary nor docker is available (see docs/operations/kubernetes-deployment.md)\n' >&2; exit 1; }
   exec docker run --rm -i --network "$net" --cap-drop ALL --security-opt no-new-privileges \
-    -v "$ROOT":/work:ro -w /work "$image" "$@"
+    ${mountargs[@]+"${mountargs[@]}"} "$image" "$@"
 }
 
 tool="${1:-}"
@@ -39,14 +43,14 @@ case "$tool" in
     if command -v kubectl >/dev/null 2>&1 && kubectl version --client 2>/dev/null | grep -q "Client Version: $want\$"; then
       exec kubectl "$@"
     fi
-    in_container "$(pin KUBECTL_IMAGE)" none "$@"
+    in_container "$(pin KUBECTL_IMAGE)" none repo "$@"
     ;;
   kubeconform)
     want="$(pin KUBECONFORM_VERSION)"
     if command -v kubeconform >/dev/null 2>&1 && [ "$(kubeconform -v 2>/dev/null)" = "$want" ]; then
       exec kubeconform "$@"
     fi
-    in_container "$(pin KUBECONFORM_IMAGE)" bridge "$@"
+    in_container "$(pin KUBECONFORM_IMAGE)" bridge none "$@"
     ;;
   *) echo "usage: scripts/k8s-tool.sh kubectl|kubeconform ARGS... | pin NAME" >&2; exit 2 ;;
 esac

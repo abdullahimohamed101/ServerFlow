@@ -50,7 +50,12 @@ type secCtx struct {
 	RunAsGroup               *int64                 `yaml:"runAsGroup"`
 	FSGroup                  *int64                 `yaml:"fsGroup"`
 	SeccompProfile           *struct{ Type string } `yaml:"seccompProfile"`
-	Capabilities             *struct {
+	SELinuxOptions           map[string]any         `yaml:"seLinuxOptions"`
+	Sysctls                  []struct {
+		Name  string `yaml:"name"`
+		Value string `yaml:"value"`
+	} `yaml:"sysctls"`
+	Capabilities *struct {
 		Add  []string `yaml:"add"`
 		Drop []string `yaml:"drop"`
 	} `yaml:"capabilities"`
@@ -65,6 +70,7 @@ type container struct {
 	Ports           []struct {
 		Name          string `yaml:"name"`
 		ContainerPort int    `yaml:"containerPort"`
+		HostPort      int    `yaml:"hostPort"`
 	} `yaml:"ports"`
 	Env     []envVar `yaml:"env"`
 	EnvFrom []struct {
@@ -92,7 +98,9 @@ type volume struct {
 		SizeLimit string `yaml:"sizeLimit"`
 	} `yaml:"emptyDir"`
 	HostPath *struct{ Path string } `yaml:"hostPath"`
-	Secret   *struct {
+	// Rest holds every other volume source (nfs, persistentVolumeClaim, projected, ...), keyed by its field name.
+	Rest   map[string]any `yaml:",inline"`
+	Secret *struct {
 		SecretName string `yaml:"secretName"`
 	} `yaml:"secret"`
 }

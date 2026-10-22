@@ -145,3 +145,19 @@ func execOut(t testing.TB, name string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
+// stateDir makes a throwaway state directory for scripts/k8s-up.sh inside the repository's gitignored .dev/ (the script
+// refuses any K8S_UP_DIR outside it) and removes it at the end of the test.
+func stateDir(t testing.TB) string {
+	t.Helper()
+	dev := filepath.Join(root(t), ".dev")
+	if err := os.MkdirAll(dev, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d, err := os.MkdirTemp(dev, "k8s-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
+	return d
+}

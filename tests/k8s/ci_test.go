@@ -9,13 +9,16 @@ import (
 )
 
 type workflow struct {
-	Jobs map[string]struct {
-		Name  string `yaml:"name"`
-		Steps []struct {
-			Name string `yaml:"name"`
-			Uses string `yaml:"uses"`
-			Run  string `yaml:"run"`
-			If   string `yaml:"if"`
+	Permissions map[string]string `yaml:"permissions"`
+	Jobs        map[string]struct {
+		Name        string            `yaml:"name"`
+		Permissions map[string]string `yaml:"permissions"`
+		Steps       []struct {
+			Name string         `yaml:"name"`
+			Uses string         `yaml:"uses"`
+			Run  string         `yaml:"run"`
+			If   string         `yaml:"if"`
+			With map[string]any `yaml:"with"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 	On any `yaml:"on"`
@@ -53,13 +56,17 @@ func TestWorkflowsPinTheTools(t *testing.T) {
 			if !strings.Contains(run, "deploy/kubernetes/tools.env") {
 				t.Errorf("%s/%s: versions and checksums must come from deploy/kubernetes/tools.env", f, name)
 			}
-			curls := regexp.MustCompile(`curl [^\n]*-o "\$RUNNER_TEMP/([a-z.-]+)"`).FindAllStringSubmatch(run, -1)
+			curls := regexp.MustCompile(`curl [^\n]*-o "\$RUNNER_TEMP/([^"]+)"`).FindAllStringSubmatch(run, -1)
 			if len(curls) == 0 {
 				t.Errorf("%s/%s: no tool download found", f, name)
 			}
 			for _, m := range curls {
-				if !regexp.MustCompile(`sha256sum --check -`).MatchString(run) || !strings.Contains(run, `$RUNNER_TEMP/`+m[1]) {
-					t.Errorf("%s/%s: %s is downloaded without a checksum", f, name, m[1])
+				checked := false
+				for _, l := range strings.Split(run, "\n") {
+					checked = checked || (strings.Contains(l, "sha256sum --check -") && strings.Contains(l, `$RUNNER_TEMP/`+m[1]))
+				}
+				if !checked {
+					t.Errorf("%s/%s: %s is downloaded without a `sha256sum --check` of that very file", f, name, m[1])
 				}
 			}
 			if strings.Count(run, "sha256sum --check -") < len(curls) {
@@ -141,5 +148,49 @@ func TestStaticJobAndKindJob(t *testing.T) {
 	}
 	if !strings.Contains(text, "secret appeared in the diagnostics") {
 		t.Error("the diagnostics artifact must be withheld if a generated secret appears in it")
+	}
+}
+
+// TestWorkflowTokenHygiene: the new jobs run with a read-only token, no persisted credentials, no pull_request_target, and a
+// diagnostics artifact that is withheld when a generated secret appears in it.
+func TestWorkflowTokenHygiene(t *testing.T) {
+	for _, f := range []string{".github/workflows/ci.yml", ".github/workflows/kubernetes.yml"} {
+		text := read(t, f)
+		w := loadWorkflow(t, f)
+		if strings.Contains(text, "pull_request_target") {
+			t.Errorf("%s uses pull_request_target (it runs with secrets on code from forks)", f)
+		}
+		if len(w.Permissions) != 1 || w.Permissions["contents"] != "read" {
+			t.Errorf("%s: the workflow permissions must be exactly contents: read, are %v", f, w.Permissions)
+		}
+		for name, j := range w.Jobs {
+			for perm, val := range j.Permissions {
+				if perm != "contents" || val != "read" {
+					t.Errorf("%s/%s: job permission %s: %s is broader than contents: read", f, name, perm, val)
+				}
+			}
+			for _, st := range j.Steps {
+				if strings.HasPrefix(st.Uses, "actions/checkout@") {
+					if v, ok := st.With["persist-credentials"]; !ok || v != false {
+						t.Errorf("%s/%s: checkout must set persist-credentials: false (is %v)", f, name, v)
+					}
+				}
+			}
+		}
+		if regexp.MustCompile(`(?i)persist-credentials:\s*true`).MatchString(text) {
+			t.Errorf("%s persists credentials", f)
+		}
+	}
+	k := read(t, ".github/workflows/kubernetes.yml")
+	filter := `if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/k8s-diagnose.txt"; then`
+	i, j, u := strings.Index(k, filter), strings.Index(k, `rm -f "$RUNNER_TEMP/k8s-diagnose.txt"`), strings.Index(k, "actions/upload-artifact@")
+	if i < 0 || j < i || u < j {
+		t.Error("the diagnostics must be filtered (grep for the generated values, remove the file on a hit) before the artifact upload")
+	}
+	if !strings.Contains(k, `sed -n 's/^[A-Z_]*=//p' "$f"`) || !strings.Contains(k, "grep -E '.{12,}'") {
+		t.Error("the needles of the secret filter are no longer built from .dev/*.env")
+	}
+	if regexp.MustCompile(`(?m)^\s*(grep -qF[^\n]*\|\||if \[ -z)`).MatchString(k) {
+		t.Error("the secret filter must not be disabled with || true")
 	}
 }

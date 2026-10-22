@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -90,6 +91,11 @@ func TestServicesSelectPodsAndTargetDeclaredPorts(t *testing.T) {
 	}
 	for _, s := range m.Services {
 		name := s.Metadata.Name
+		for _, sp := range s.Spec.Ports {
+			if sp.NodePort != 0 {
+				t.Errorf("service %s port %s sets nodePort %d; there are no NodePorts until PR 3", name, sp.Name, sp.NodePort)
+			}
+		}
 		if s.Spec.Type != "ClusterIP" {
 			t.Errorf("service %s is %q; only ClusterIP exists until PR 3", name, s.Spec.Type)
 		}
@@ -208,5 +214,27 @@ func TestBaseRendersToo(t *testing.T) {
 	}
 	if strings.Contains(string(render(t, "deploy/kubernetes/base")), "serverflow/admin:") {
 		t.Error("the base must leave the tag to the overlay")
+	}
+}
+
+// TestOverlayImageTagsAreExplicit reads the overlay file itself (no render needed): a ServerFlow image gets a tag that is not
+// latest, so a mutation of it fails even where no container runtime is available.
+func TestOverlayImageTagsAreExplicit(t *testing.T) {
+	var k struct {
+		Images []struct {
+			Name   string `yaml:"name"`
+			NewTag string `yaml:"newTag"`
+		} `yaml:"images"`
+	}
+	if err := yaml.Unmarshal([]byte(read(t, overlay+"/kustomization.yaml")), &k); err != nil {
+		t.Fatal(err)
+	}
+	if len(k.Images) == 0 {
+		t.Fatal("the overlay sets no image tags")
+	}
+	for _, im := range k.Images {
+		if !strings.HasPrefix(im.Name, "serverflow/") || im.NewTag == "" || im.NewTag == "latest" || !regexp.MustCompile(`^[A-Za-z0-9._-]+$`).MatchString(im.NewTag) {
+			t.Errorf("overlay image %s: tag %q must be explicit and not latest", im.Name, im.NewTag)
+		}
 	}
 }

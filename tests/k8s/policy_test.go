@@ -42,9 +42,25 @@ func checkSecurity(p pod) []string {
 		if vol.HostPath != nil {
 			add("volume %s is a hostPath", vol.Name)
 		}
+		if vol.EmptyDir == nil && vol.Secret == nil && vol.HostPath == nil && len(vol.Rest) == 0 {
+			add("volume %s has no source", vol.Name)
+		}
+		for kind := range vol.Rest {
+			if !allowedVolumeTypes[kind] {
+				add("volume %s is of the type %s; allowed: emptyDir, persistentVolumeClaim, secret, configMap, projected, downwardAPI", vol.Name, kind)
+			}
+		}
 	}
-	podSeccomp := s.SecurityContext != nil && s.SecurityContext.SeccompProfile != nil && s.SecurityContext.SeccompProfile.Type == "RuntimeDefault"
-	podNonRoot := s.SecurityContext != nil && boolIs(s.SecurityContext.RunAsNonRoot, true)
+	if s.SecurityContext != nil {
+		if len(s.SecurityContext.SELinuxOptions) > 0 {
+			add("the pod sets seLinuxOptions; none are allowed")
+		}
+		for _, sc := range s.SecurityContext.Sysctls {
+			if !safeSysctls[sc.Name] {
+				add("sysctl %s is not on the safe list", sc.Name)
+			}
+		}
+	}
 	for _, c := range p.all() {
 		who := "container " + c.Name
 		sc := c.SecurityContext
@@ -67,14 +83,34 @@ func checkSecurity(p pod) []string {
 		if sc.Capabilities != nil && len(sc.Capabilities.Add) > 0 {
 			add("%s adds capabilities %v", who, sc.Capabilities.Add)
 		}
-		if !podNonRoot && !boolIs(sc.RunAsNonRoot, true) {
-			add("%s must run as non-root (runAsNonRoot: true)", who)
+		// A container-level value overrides the pod-level one, so the pod's cannot excuse a container: the effective value counts.
+		effNonRoot := s.SecurityContext != nil && boolIs(s.SecurityContext.RunAsNonRoot, true)
+		if sc.RunAsNonRoot != nil {
+			effNonRoot = *sc.RunAsNonRoot
+		}
+		if !effNonRoot {
+			add("%s must run as non-root (effective runAsNonRoot: true)", who)
+		}
+		if len(sc.SELinuxOptions) > 0 {
+			add("%s sets seLinuxOptions; none are allowed", who)
+		}
+		for _, port := range c.Ports {
+			if port.HostPort != 0 {
+				add("%s declares hostPort %d", who, port.HostPort)
+			}
 		}
 		if uid, ok := nonRootUser(p, c); !ok || uid == 0 {
 			add("%s needs an explicit non-zero runAsUser", who)
 		}
-		if !podSeccomp && (sc.SeccompProfile == nil || sc.SeccompProfile.Type != "RuntimeDefault") {
-			add("%s must use the RuntimeDefault seccomp profile", who)
+		effSeccomp := ""
+		if s.SecurityContext != nil && s.SecurityContext.SeccompProfile != nil {
+			effSeccomp = s.SecurityContext.SeccompProfile.Type
+		}
+		if sc.SeccompProfile != nil {
+			effSeccomp = sc.SeccompProfile.Type
+		}
+		if effSeccomp != "RuntimeDefault" {
+			add("%s must use the RuntimeDefault seccomp profile (effective: %q)", who, effSeccomp)
 		}
 		if strings.HasSuffix(c.Image, ":latest") {
 			add("%s uses :latest", who)
@@ -82,6 +118,16 @@ func checkSecurity(p pod) []string {
 	}
 	return v
 }
+
+// safeSysctls are the namespaced sysctls Kubernetes calls safe; anything else is refused.
+var safeSysctls = map[string]bool{
+	"kernel.shm_rmid_forced": true, "net.ipv4.ip_local_port_range": true, "net.ipv4.ip_unprivileged_port_start": true,
+	"net.ipv4.tcp_syncookies": true, "net.ipv4.ping_group_range": true, "net.ipv4.ip_local_reserved_ports": true,
+	"net.ipv4.tcp_keepalive_time": true, "net.ipv4.tcp_fin_timeout": true, "net.ipv4.tcp_keepalive_intvl": true, "net.ipv4.tcp_keepalive_probes": true,
+}
+
+// allowedVolumeTypes are the volume sources Pod Security `restricted` permits.
+var allowedVolumeTypes = map[string]bool{"persistentVolumeClaim": true, "configMap": true, "projected": true, "downwardAPI": true}
 
 // checkResources: every container has requests and a memory limit; no CPU limit (CFS throttling is latency, D18).
 func checkResources(p pod) []string {
