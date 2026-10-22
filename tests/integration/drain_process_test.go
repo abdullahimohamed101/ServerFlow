@@ -492,8 +492,19 @@ func TestProcessGatewayRollBehindALoadBalancer(t *testing.T) {
 			var gws [2]*proc
 			var addrs [2]string
 			start := func(i int) {
-				addrs[i] = freePort(t)
-				gws[i] = startDrainGateway(t, cpAddr, addrs[i], tc.grace, 20*time.Second)
+				// A fresh port per attempt: under load the clients' ephemeral ports can collide with the one chosen,
+				// and a port another process holds stays held (startProc would retry the same one).
+				for attempt := 1; ; attempt++ {
+					addrs[i] = freePort(t)
+					p, failure, retryable := launchProc(t, "gateway", "gateway starting", drainGatewayEnv(cpAddr, addrs[i], tc.grace, 20*time.Second), nil)
+					if p != nil {
+						gws[i] = p
+						break
+					}
+					if !retryable || attempt == 5 {
+						t.Fatal(failure)
+					}
+				}
 				lb.set(i, addrs[i])
 			}
 			start(0)
