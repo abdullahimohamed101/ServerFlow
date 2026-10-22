@@ -31,9 +31,26 @@ Registry findings: `registry.k8s.io` answers anonymously with a redirect to Goog
 `kubeconform` after an anonymous token (the CI job downloads the release binaries instead, so neither registry is used in CI); `mirror.gcr.io`
 serves `kindest/node` anonymously. Docker Hub is not used for anything.
 
-## Not measured yet (needs a cluster)
+## A real API server, once: k3s v1.36.4 in a capped container (not kind)
+
+To exercise the manifests and script logic without a kind cluster (the VM has 3.81 GiB and the plan forbids resizing it), `rancher/k3s:v1.36.4-k3s1`
+ran as one privileged container with `--memory 2200m`, then `docker rm -fv`. It is **not** kind (flannel and `local-path` instead of kindnet and
+`standard`), so it is evidence about the manifests, not about kind.
+
+| Measurement | Result |
+| --- | --- |
+| k3s alone after start | 432 MiB (container memory) |
+| k3s with PostgreSQL, Redis, Redpanda and idle jobs finished | 717-724 MiB total, 2.1 GiB cap not approached (3.9 % CPU at rest) |
+| StatefulSets from `apply` to Ready (images already pulled) | under a minute for all three (observed, not timed precisely) |
+| `migrate` Job | completed in 2 s, `redpanda-init` in 3 s |
+| smoke D1-D7 including three pod restarts | passed 7 of 7 in a few minutes (not timed precisely) |
+| PodSecurity | namespace `restricted:v1.36` admitted all pods; a privileged pod was rejected with `violates PodSecurity "restricted:v1.36"` |
+| secrets hunt (non-Secret objects, events, logs, descriptions, node container logs, the render) | 0 matches for the generated values |
+| the VM's kernel | lacks `br_netfilter` by default; k3s could not reach ClusterIPs until the module was loaded (and unloaded again afterwards) |
+
+## Not measured yet (needs a kind cluster)
 
 The Colima VM here has 3.81 GiB, below the 4 GB the scripts demand, and the plan's decision is not to resize it or create a second profile, so none of
-the following was run locally: cold and warm `make k8s-up`, kind node memory and the disk a loaded cluster uses, whether `kind load docker-image` works
+the following was run locally on kind: cold and warm `make k8s-up`, kind node memory and the disk a loaded cluster uses, whether `kind load docker-image` works
 with Docker 29's image store (the `docker save` fallback is written, untested), the CI job's duration against the 30-minute budget, the data tier's
 real memory use against its limits. They are recorded by the first advisory CI run and by the PRs that follow.

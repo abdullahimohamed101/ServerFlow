@@ -72,7 +72,14 @@ func TestPolicyCatchesMutations(t *testing.T) {
 			first(p).StartupProbe.FailureThreshold = 1
 			first(p).StartupProbe.PeriodSeconds = 1
 		}}},
-		{postgres, mutation{"unbounded emptyDir", "no sizeLimit", func(p *pod) { p.Spec.Volumes[0].EmptyDir.SizeLimit = "" }}},
+		{postgres, mutation{"unbounded emptyDir", "no sizeLimit", func(p *pod) {
+			for i := range p.Spec.Volumes {
+				if p.Spec.Volumes[i].EmptyDir != nil {
+					p.Spec.Volumes[i].EmptyDir.SizeLimit = ""
+					return
+				}
+			}
+		}}},
 		{postgres, mutation{"mount of an unknown volume", "does not define", func(p *pod) {
 			first(p).VolumeMounts = append(first(p).VolumeMounts, struct {
 				Name      string `yaml:"name"`

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -252,12 +251,3 @@ func memMiB(q string) (int, bool) {
 func boolIs(p *bool, want bool) bool { return p != nil && *p == want }
 
 func fmtv(format string, a ...any) string { return fmt.Sprintf(format, a...) }
-
-func hasPrefixAny(s string, prefixes ...string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
-}

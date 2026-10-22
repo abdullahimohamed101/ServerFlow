@@ -116,18 +116,29 @@ Verified in this pull request (no cluster): the manifests render with the pinned
 overlay against the Kubernetes 1.36.4 schemas; `tests/k8s` states the hardening, probe, resource, label, image-pin and secret policies and
 proves each fails when broken; the scripts are shellcheck-clean, run under bash 3.2 and 5 with `set -u`, and refuse a foreign context.
 
-**Not verified until the advisory job `k8s kind data tier` (`.github/workflows/kubernetes.yml`) has run on GitHub:** that kind creates the
-cluster; that `kind load docker-image` works with the runner's Docker; that the node pulls the three third-party images from
-`mirror.gcr.io`; that PodSecurity `restricted` admits every pod; that PostgreSQL, Redis and Redpanda actually start and become Ready with these
-security contexts (read-only root, uid 70/999/101, emptyDir mounts); that the Jobs complete; and that D1-D7 pass. Also unverified:
-`linux/amd64` (the development Mac is arm64; CI is the amd64 proof), other Kubernetes minors, multi-node behaviour, and every managed
-Kubernetes difference (`docs/plans/active/phase-17-kubernetes.md`, "What cannot be verified here").
+**Also verified once, on a real API server that is not kind:** the same manifests, applied by the same `scripts/k8s-up.sh` functions (`apply_phase`,
+`create_secrets`, `wait_statefulset`, `wait_job`, `cmd_smoke`, sourced from a scratch copy of the script and driven by a `kubectl` shim) against a
+`rancher/k3s:v1.36.4-k3s1` container (Kubernetes v1.36.4, arm64, memory capped at 2.2 GB, then deleted). Result: the namespace with Pod Security
+`restricted` admitted PostgreSQL, Redis and Redpanda with these security contexts and a privileged test pod was rejected; the three StatefulSets
+became Ready, the PVCs bound, `migrate` and `redpanda-init` completed, smoke checks D1-D7 passed (7 of 7), re-applying changed nothing, and a search of
+every non-Secret object, event, pod log, pod description and the node's container logs for the generated secret values found none (searched, never
+printed). This is evidence about the manifests and the script logic. It is **not** a kind run: k3s differs from kind (flannel instead of kindnet,
+`local-path` instead of kind's `standard` StorageClass), and it needed the VM's `br_netfilter` kernel module, which Colima's VM does not load: without
+it a k3s container there cannot reach any ClusterIP (pod-to-Service traffic times out; the Jobs failed with `cannot reach the database` and the script's
+failure output was checked to be secret-free). kind's kindnet does not use a bridge, so it may not be affected; that is unverified.
+
+**Not verified until the advisory job `k8s kind data tier` (`.github/workflows/kubernetes.yml`) has run on GitHub:** that kind itself creates the
+cluster with this configuration; that `kind load docker-image` works with the runner's Docker; that the node pulls the three third-party images from
+`mirror.gcr.io` on a runner; that kind's `standard` StorageClass binds the claims; the amd64 builds of everything (the development Mac is arm64; CI is
+the amd64 proof). Also unverified: other Kubernetes minors, multi-node behaviour, and every managed Kubernetes difference
+(`docs/plans/active/phase-17-kubernetes.md`, "What cannot be verified here").
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
 | `the container engine has N MB of memory; ... need at least 4096` | the engine is too small (Colima default); use a larger engine, see Prerequisites |
+| pods cannot reach any Service (`nc: Operation timed out` on a ClusterIP, `cannot reach the database`) | the engine's kernel lacks `br_netfilter` (seen in Colima's VM with k3s); pods reach each other by IP but Service NAT fails on the pod bridge; use an engine whose kernel has the module |
 | `kind v0.33.0 is not installed` / version mismatch | install the pinned release yourself; the script never installs anything |
 | `refusing to use the kube context` | something pointed `.dev/k8s/kubeconfig` at another cluster; `make k8s-down && make k8s-up` recreates it |
 | `port N is already in use` | the host ports are fixed in `deploy/kubernetes/kind/cluster.yaml` (they differ from Compose's); stop what uses it |

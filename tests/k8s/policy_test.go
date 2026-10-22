@@ -67,13 +67,13 @@ func checkSecurity(p pod) []string {
 		if sc.Capabilities != nil && len(sc.Capabilities.Add) > 0 {
 			add("%s adds capabilities %v", who, sc.Capabilities.Add)
 		}
-		if !(podNonRoot || boolIs(sc.RunAsNonRoot, true)) {
+		if !podNonRoot && !boolIs(sc.RunAsNonRoot, true) {
 			add("%s must run as non-root (runAsNonRoot: true)", who)
 		}
 		if uid, ok := nonRootUser(p, c); !ok || uid == 0 {
 			add("%s needs an explicit non-zero runAsUser", who)
 		}
-		if !(podSeccomp || (sc.SeccompProfile != nil && sc.SeccompProfile.Type == "RuntimeDefault")) {
+		if !podSeccomp && (sc.SeccompProfile == nil || sc.SeccompProfile.Type != "RuntimeDefault") {
 			add("%s must use the RuntimeDefault seccomp profile", who)
 		}
 		if strings.HasSuffix(c.Image, ":latest") {

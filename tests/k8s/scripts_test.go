@@ -53,11 +53,18 @@ exit 0
 	return dir, log
 }
 
-func runWithFake(t *testing.T, bash, context, server string, args ...string) (out string, err error, calls string, kubeconfig string) {
+type fakeRun struct {
+	out        string
+	calls      string
+	kubeconfig string
+	err        error
+}
+
+func runWithFake(t *testing.T, bash, context, server string, args ...string) fakeRun {
 	t.Helper()
 	stubDir, log := fakeKubectl(t)
 	state := t.TempDir()
-	kubeconfig = filepath.Join(state, "kubeconfig")
+	kubeconfig := filepath.Join(state, "kubeconfig")
 	if e := os.WriteFile(kubeconfig, []byte("# not read: the stub answers\n"), 0o600); e != nil {
 		t.Fatal(e)
 	}
@@ -65,11 +72,12 @@ func runWithFake(t *testing.T, bash, context, server string, args ...string) (ou
 	cmd.Env = []string{
 		"PATH=" + stubDir + ":/usr/bin:/bin", "HOME=" + t.TempDir(), "K8S_UP_DIR=" + state,
 		"FAKE_LOG=" + log, "FAKE_CONTEXT=" + context, "FAKE_SERVER=" + server,
+		"K8S_UP_WAIT=2", // if a guard regression lets a command through, its waits end at once instead of hanging the test
 		"KUBECONFIG=/nonexistent/a-foreign-kubeconfig", // must never steer the script
 	}
 	b, err := cmd.CombinedOutput()
 	c, _ := os.ReadFile(log)
-	return string(b), err, string(c), kubeconfig
+	return fakeRun{out: string(b), calls: string(c), kubeconfig: kubeconfig, err: err}
 }
 
 // TestForeignContextIsRefused (AC 12): with another context current, or a server that is not on loopback, the cluster commands
@@ -89,29 +97,29 @@ func TestForeignContextIsRefused(t *testing.T) {
 				{"kind-serverflow", "http://127.0.0.1:6443"},
 				{"kind-serverflow", ""},
 			} {
-				out, err, calls, _ := runWithFake(t, bash, bad.context, bad.server, cmdName)
-				if err == nil {
-					t.Errorf("%s %s: context %q server %q was accepted\n%s", bash, cmdName, bad.context, bad.server, out)
+				r := runWithFake(t, bash, bad.context, bad.server, cmdName)
+				if r.err == nil {
+					t.Errorf("%s %s: context %q server %q was accepted\n%s", bash, cmdName, bad.context, bad.server, r.out)
 				}
-				if !strings.Contains(out, "refusing") && !strings.Contains(out, "cannot read") {
-					t.Errorf("%s %s: no refusal message for context %q server %q: %s", bash, cmdName, bad.context, bad.server, out)
+				if !strings.Contains(r.out, "refusing") && !strings.Contains(r.out, "cannot read") {
+					t.Errorf("%s %s: no refusal message for context %q server %q: %s", bash, cmdName, bad.context, bad.server, r.out)
 				}
-				for _, line := range strings.Split(strings.TrimSpace(calls), "\n") {
+				for _, line := range strings.Split(strings.TrimSpace(r.calls), "\n") {
 					if line != "" && !strings.Contains(line, " config ") {
 						t.Errorf("%s %s: a refused run still called kubectl %q", bash, cmdName, line)
 					}
 				}
 			}
 		}
-		out, err, calls, kubeconfig := runWithFake(t, bash, "kind-serverflow", "https://127.0.0.1:41234", "status")
-		if err != nil {
-			t.Fatalf("%s: the allowed context failed: %v\n%s", bash, err, out)
+		r := runWithFake(t, bash, "kind-serverflow", "https://127.0.0.1:41234", "status")
+		if r.err != nil {
+			t.Fatalf("%s: the allowed context failed: %v\n%s", bash, r.err, r.out)
 		}
-		if !strings.Contains(calls, "--kubeconfig "+kubeconfig+" --context kind-serverflow") || !strings.Contains(calls, " -n serverflow get ") {
-			t.Errorf("%s: the status call did not pass the dedicated kubeconfig and context: %q", bash, calls)
+		if !strings.Contains(r.calls, "--kubeconfig "+r.kubeconfig+" --context kind-serverflow") || !strings.Contains(r.calls, " -n serverflow get ") {
+			t.Errorf("%s: the status call did not pass the dedicated kubeconfig and context: %q", bash, r.calls)
 		}
-		for _, line := range strings.Split(strings.TrimSpace(calls), "\n") {
-			if !strings.Contains(line, "--kubeconfig "+kubeconfig) {
+		for _, line := range strings.Split(strings.TrimSpace(r.calls), "\n") {
+			if !strings.Contains(line, "--kubeconfig "+r.kubeconfig) {
 				t.Errorf("%s: a kubectl call without the dedicated kubeconfig: %q", bash, line)
 			}
 			if !strings.HasSuffix(line, "|KUBECONFIG=unset") {
@@ -146,7 +154,7 @@ func TestEveryKubectlCallIsGuarded(t *testing.T) {
 		}
 		if regexp.MustCompile(`\bkind (create|delete|export|get)\b`).MatchString(code) && !strings.HasPrefix(code, "say") {
 			isGet := strings.Contains(code, "kind get clusters")
-			if !isGet && !(strings.Contains(code, "--kubeconfig") && strings.Contains(code, `--name "$CLUSTER"`)) {
+			if !isGet && (!strings.Contains(code, "--kubeconfig") || !strings.Contains(code, `--name "$CLUSTER"`)) {
 				t.Errorf("%skind must be given --name and --kubeconfig: %s", where, code)
 			}
 		}
@@ -243,6 +251,24 @@ func TestKustomizeCommandIsPinned(t *testing.T) {
 			}
 		}
 	}
+	// Every kustomize call carries the flag (directly or through the script's variable): a render without it fails on the
+	// first file read from observability/, and worse, it would pass today because nothing reads such a file yet.
+	for _, f := range []string{"scripts/k8s-up.sh", "scripts/quality.sh", "Makefile", ".github/workflows/ci.yml", ".github/workflows/kubernetes.yml"} {
+		for i, line := range strings.Split(read(t, f), "\n") {
+			if hasAnyPrefix(strings.TrimSpace(line), "#", "step ", "say ", "echo ") || !strings.Contains(line, "kubectl kustomize") && !strings.Contains(line, "kubectl\" kustomize") {
+				continue
+			}
+			if !strings.Contains(line, "--load-restrictor=LoadRestrictionsNone") && !strings.Contains(line, `"$LOAD_RESTRICTOR"`) {
+				t.Errorf("%s:%d renders without the load restrictor: %s", f, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	if !regexp.MustCompile(`(?m)^LOAD_RESTRICTOR=--load-restrictor=LoadRestrictionsNone$`).MatchString(read(t, "scripts/k8s-up.sh")) {
+		t.Error("k8s-up.sh must define LOAD_RESTRICTOR=--load-restrictor=LoadRestrictionsNone")
+	}
+	if !regexp.MustCompile(`render\(\) \{[^\n]*kubectl kustomize "\$LOAD_RESTRICTOR" "\$OVERLAY"`).MatchString(read(t, "scripts/k8s-up.sh")) {
+		t.Error("render() must call kubectl kustomize with $LOAD_RESTRICTOR")
+	}
 	// The script applies a phase at a time from the render, never a directory.
 	if !regexp.MustCompile(`render \| kc apply -f - -l "serverflow.dev/phase=\$1"`).MatchString(read(t, "scripts/k8s-up.sh")) {
 		t.Error("apply_phase must pipe the render into kc apply with the phase selector")
@@ -263,11 +289,20 @@ func TestSecretsNeverTouchACommandLine(t *testing.T) {
 		if regexp.MustCompile(`--from-literal|\bcat\b[^|]*\.env|\$\(<\s*"?\$DEV_DIR|echo[^\n]*PASSWORD`).MatchString(code) {
 			t.Errorf("k8s-up.sh:%d could expose a secret: %s", i+1, code)
 		}
-		if regexp.MustCompile(`\bset -x\b|\bset -o xtrace\b|\bbash -x\b`).MatchString(code) {
+		if regexp.MustCompile(`\bset\s+-[a-zA-Z]*x|\bset\s+-o\s+xtrace\b|\bbash\s+-[a-zA-Z]*x`).MatchString(code) {
 			t.Errorf("k8s-up.sh:%d traces commands, which would print secrets", i+1)
 		}
 	}
 	if !strings.Contains(script, `"$ROOT/scripts/dev-up.sh" secrets`) {
 		t.Error("secrets must come from scripts/dev-up.sh secrets (one generator for both stacks)")
 	}
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
