@@ -16,7 +16,7 @@ import (
 // Process-level tests of the worker agent's status endpoint (Phase 17 PR 1, ADR-022 D6) with the real
 // binaries: control plane, mock worker and agent.
 
-func startStatusAgent(t *testing.T, cpAddr, token, id, mockAddr, statusAddr string) *proc {
+func startStatusAgent(t *testing.T, cpAddr, token, id, mockAddr, statusAddr string, extraEnv ...string) *proc {
 	t.Helper()
 	env := append(clusterEnv(cpAddr, token),
 		"SERVERFLOW_WORKER_ID="+id, "SERVERFLOW_WORKER_MODEL="+model,
@@ -24,7 +24,7 @@ func startStatusAgent(t *testing.T, cpAddr, token, id, mockAddr, statusAddr stri
 	if statusAddr != "" {
 		env = append(env, "SERVERFLOW_WORKER_STATUS_LISTEN="+statusAddr)
 	}
-	return startProc(t, "worker-agent", "worker-agent starting", env)
+	return startProc(t, "worker-agent", "worker-agent starting", append(env, extraEnv...))
 }
 
 // probe asks the status endpoint once; err is set when nothing answers.
@@ -60,7 +60,8 @@ func waitProbe(t *testing.T, addr, path string, wantCode int, d time.Duration) s
 func TestProcessAgentStatusFollowsRegistrationAndDrain(t *testing.T) {
 	cpAddr, mock, status := freePort(t), freePort(t), freePort(t)
 	startMockProc(t, mock)
-	agent := startStatusAgent(t, cpAddr, clusterToken, "w1", mock, status) // no control plane yet
+	// worker.unhealthy_timeout is 2.5 s for the agent here: readiness must outlive a lost control plane that long.
+	agent := startStatusAgent(t, cpAddr, clusterToken, "w1", mock, status, "SERVERFLOW_WORKER_UNHEALTHY_TIMEOUT=2500ms") // no control plane yet
 
 	waitProbe(t, status, "/healthz", 200, 5*time.Second)
 	if body := waitProbe(t, status, "/readyz", 503, 5*time.Second); body != "not registered" {
@@ -76,7 +77,11 @@ func TestProcessAgentStatusFollowsRegistrationAndDrain(t *testing.T) {
 
 	// The control plane dies: the agent stays alive, and is ready until the registry would stop routing to it.
 	cp.kill9()
-	waitProbe(t, status, "/readyz", 503, 5*time.Second) // worker.unhealthy_timeout is 1s in these tests
+	killed := time.Now()
+	waitProbe(t, status, "/readyz", 503, 6*time.Second)
+	if lapse := time.Since(killed); lapse < 1500*time.Millisecond {
+		t.Fatalf("readiness lapsed %v after the control plane died; it must follow worker.unhealthy_timeout (2.5s)", lapse)
+	}
 	if code, _, _ := probe(status, "/healthz"); code != 200 {
 		t.Fatal("a control plane outage must not fail liveness")
 	}
