@@ -655,7 +655,7 @@ func TestProcessASecondSignalForcesTheAgentToQuitWhileTheControlPlaneIsFrozen(t 
 	_ = agent.cmd.Process.Signal(syscall.SIGTERM) // the agent tries to deregister and waits
 	time.Sleep(500 * time.Millisecond)
 	if agent.dead.Load() {
-		t.Fatal("the agent should be waiting for the frozen control plane")
+		t.Fatalf("the agent should be waiting for the frozen control plane; stderr: %s", agent.stderr.String())
 	}
 	start := time.Now()
 	_ = agent.cmd.Process.Signal(syscall.SIGTERM)
