@@ -454,3 +454,16 @@ func TestDereferencedWrappersAndNestedConfigsNeverPrintThePassword(t *testing.T)
 		}
 	}
 }
+
+// A wrapper that no constructor built has no Config; printing or logging it must not panic.
+func TestZeroValueWrappersFormatWithoutPanicking(t *testing.T) {
+	for name, v := range map[string]any{"Producer": &Producer{}, "Consumer": &Consumer{}, "Admin": &Admin{}} {
+		var logs bytes.Buffer
+		slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "v", v)
+		slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "v", v)
+		out := fmt.Sprintf("%v|%+v|%#v|%s|%d", v, v, v, v, v) + logs.String()
+		if !strings.Contains(out, "kafka."+name) {
+			t.Errorf("%s: unexpected output %q", name, out)
+		}
+	}
+}

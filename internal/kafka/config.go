@@ -251,4 +251,11 @@ type sealedConfig struct{ get func() *Config }
 
 func seal(c Config) sealedConfig { return sealedConfig{get: func() *Config { return &c }} }
 
-func (s sealedConfig) c() *Config { return s.get() }
+// c returns the Config; a zero wrapper (&Producer{} and so on, never built by a constructor) has none and gets an empty one,
+// so formatting or logging it cannot panic.
+func (s sealedConfig) c() *Config {
+	if s.get == nil {
+		return &Config{}
+	}
+	return s.get()
+}
