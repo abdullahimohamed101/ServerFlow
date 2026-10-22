@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -723,5 +724,24 @@ func TestShedLogLinesAreRateLimitedPerReason(t *testing.T) {
 	}
 	if ok, n := l.allow("queue_full", t0.Add(1100*time.Millisecond)); !ok || n != 5 {
 		t.Fatalf("after a second the line reports the %d held back", n)
+	}
+}
+
+// The queue's events cost the metrics observer no allocation in the steady state, like every request-path method.
+func TestTheQueueEventsAllocateNothingInTheSteadyState(t *testing.T) {
+	m := newMetrics()
+	m.setStrategy("least-active")
+	m.configure(config.Default().Metrics)
+	cfg := config.Default()
+	cfg.Resilience.Mode = config.ResilienceOn
+	m.enableResilience(newResilienceState(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)), resilienceDeps{}))
+	step := func() {
+		m.QueueWaited(bg, QueueWait{RequestID: "r", Model: "qwen-7b", Waited: 200 * time.Millisecond, Result: QueueServed})
+		m.AttemptStarted(bg, AttemptStart{RequestID: "r", Number: 1, WorkerID: "w1", Model: "qwen-7b", Strategy: "least-active", SinceRequestStart: 300 * time.Millisecond, QueueWait: 200 * time.Millisecond, WorkerState: "READY"})
+		m.RequestRejected(bg, Rejection{RequestID: "r", Kind: RejectOverload, Reason: OverloadQueueFull, Status: 503, Model: "qwen-7b"})
+	}
+	step() // resolve the children
+	if n := testing.AllocsPerRun(200, step); n != 0 {
+		t.Fatalf("%v allocations per queue event sequence", n)
 	}
 }

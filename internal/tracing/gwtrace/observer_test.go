@@ -553,3 +553,64 @@ func TestBreakerProbeAndRetryDeniedAreAllowListed(t *testing.T) {
 		t.Errorf("retry.denied reasons %v", reasons)
 	}
 }
+
+// Phase 15 PR E: a request that waited in the admission queue gets a queue.wait event on its root span with the wait
+// in milliseconds and a bounded result; an overload rejection is a closed reject kind. Every key is on the allow-list.
+func TestQueueWaitIsASpanEventWithBoundedAttributes(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	o := gwtrace.New(e.prov, gwtrace.Options{})
+	for i, result := range []string{gateway.QueueServed, gateway.QueueTimeout, "something free-form"} {
+		id := "req_" + string(rune('1'+i))
+		ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: id, Method: "POST", Path: "/v1/chat/completions", Time: time.Now()})
+		o.RequestAdmitted(ctx, gateway.Admission{RequestID: id, Model: model})
+		o.QueueWaited(ctx, gateway.QueueWait{RequestID: id, Model: model, Waited: 1234 * time.Millisecond, Result: result})
+		if result == gateway.QueueTimeout {
+			o.RequestRejected(ctx, gateway.Rejection{RequestID: id, Kind: gateway.RejectOverload, Reason: gateway.OverloadQueueTimeout, Status: 503, Model: model})
+			o.RequestCompleted(ctx, gateway.Completion{RequestID: id, Model: model, Status: 503, ErrorCode: "NO_CAPACITY", Handled: true})
+			continue
+		}
+		o.RequestCompleted(ctx, gateway.Completion{RequestID: id, Model: model, Status: 200, Handled: true})
+	}
+	spans := e.spans()
+	tracingtest.RequireAllowListed(t, spans)
+	var results []string
+	for _, s := range byName(spans, tracing.SpanReceive) {
+		for _, ev := range s.Events {
+			if ev.Name != tracing.EventQueueWait {
+				continue
+			}
+			var ms int64
+			for _, kv := range ev.Attributes {
+				switch kv.Key {
+				case tracing.KeyQueueWaitMillis:
+					ms = kv.Value.AsInt64()
+				case tracing.KeyQueueResult:
+					results = append(results, kv.Value.AsString())
+				}
+			}
+			if ms != 1234 {
+				t.Errorf("wait_ms %d", ms)
+			}
+		}
+		if s.Name == tracing.SpanReceive {
+			if k, ok := attrOf(s, tracing.KeyRejectKind); ok && k.AsString() != "overload" {
+				t.Errorf("reject kind %q", k.AsString())
+			}
+		}
+	}
+	if strings.Join(sorted(results), ",") != "other,served,timeout" {
+		t.Errorf("queue results %v", results)
+	}
+}
+
+func sorted(in []string) []string {
+	out := append([]string(nil), in...)
+	for i := range out {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}

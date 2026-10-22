@@ -106,3 +106,22 @@ func BenchmarkMetricsObserverEvents(b *testing.B) {
 	b.Run("one_worker", run([]string{"w1"}))
 	b.Run("sixteen_workers", run([]string{"w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16"}))
 }
+
+// BenchmarkMetricsObserverQueueEvents is the cost of the queue's events on the metrics observer with resilience on:
+// a request that waited and was served (QueueWaited, then an AttemptStarted carrying the wait) and a shed. Phase 15
+// requires no allocations in the steady state.
+func BenchmarkMetricsObserverQueueEvents(b *testing.B) {
+	m := newMetrics()
+	cfg := config.Default()
+	cfg.Resilience.Mode = config.ResilienceOn
+	m.enableResilience(newResilienceState(cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)), resilienceDeps{}))
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			m.QueueWaited(ctx, QueueWait{RequestID: "r", Model: "qwen-7b", Waited: 200_000_000, Result: QueueServed})
+			m.AttemptStarted(ctx, AttemptStart{RequestID: "r", Number: 1, WorkerID: "w1", Model: "qwen-7b", Strategy: "least-active", SinceRequestStart: 300_000_000, QueueWait: 200_000_000, WorkerState: "READY"})
+			m.RequestRejected(ctx, Rejection{RequestID: "r", Kind: RejectOverload, Reason: OverloadQueueFull, Status: 503, Model: "qwen-7b"})
+		}
+	})
+}

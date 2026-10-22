@@ -545,3 +545,36 @@ func TestResilienceValuesFitSchemaV1(t *testing.T) {
 		}
 	}
 }
+
+// Phase 15 PR E: a request shed by admission control after it was admitted (the queue timed out, the queue was full
+// before the limiter, the gateway drained) is one failed event with failure_class no_capacity and no attempts; the
+// reason lives in metrics and logs only (schema v1 unchanged). A request refused before admission (the global cap,
+// which answers before the body is read) emits nothing, like every refusal before admission.
+func TestAShedRequestIsOneFailedNoCapacityEvent(t *testing.T) {
+	sink := &eventstest.RecordingSink{}
+	o := newObs(t, sink, 10)
+	id := rid(200)
+	ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: id})
+	o.RequestAdmitted(ctx, gateway.Admission{RequestID: id, Model: "m"})
+	o.QueueWaited(ctx, gateway.QueueWait{RequestID: id, Model: "m", Waited: 3 * time.Second, Result: gateway.QueueTimeout})
+	o.RequestRejected(ctx, gateway.Rejection{RequestID: id, Kind: gateway.RejectOverload, Reason: gateway.OverloadQueueTimeout, Status: 503, Model: "m"})
+	o.RequestCompleted(ctx, gateway.Completion{RequestID: id, Model: "m", Status: 503, ErrorCode: "NO_CAPACITY", Handled: true})
+	eventually(t, func() bool { return len(sink.Records()) == 2 }, "received and failed")
+	evs, ok := sink.Events()
+	if !ok || len(evs) != 2 {
+		t.Fatalf("%d events, decoded %v", len(evs), ok)
+	}
+	last := evs[1]
+	if last.EventType != protocol.EventFailed || last.Terminal.FailureClass != protocol.FailureNoCapacity || len(last.Terminal.Attempts) != 0 || last.Terminal.HTTPStatus != 503 {
+		t.Fatalf("%+v", last.Terminal)
+	}
+
+	refused := rid(201)
+	ctx = o.RequestStarted(context.Background(), gateway.RequestStart{ID: refused})
+	o.RequestRejected(ctx, gateway.Rejection{RequestID: refused, Kind: gateway.RejectOverload, Reason: gateway.OverloadGlobalLimit, Status: 503})
+	o.RequestCompleted(ctx, gateway.Completion{RequestID: refused, Status: 503, ErrorCode: "NO_CAPACITY", Handled: true})
+	time.Sleep(50 * time.Millisecond)
+	if n := len(sink.Records()); n != 2 {
+		t.Fatalf("a request refused before admission emitted %d more events", n-2)
+	}
+}
