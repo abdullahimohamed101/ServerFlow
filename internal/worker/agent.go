@@ -87,7 +87,7 @@ type Agent struct {
 // New returns an agent. It is not safe for concurrent use.
 func New(cfg Config, backend Backend, cp ControlPlane, log *slog.Logger) *Agent {
 	a := &Agent{cfg: cfg, backend: backend, cp: cp, interval: cfg.Interval, now: time.Now, log: log.With("component", "worker-agent", "worker_id", cfg.WorkerID)}
-	a.st.aliveUntil = a.now().Add(livenessIntervals * cfg.Interval) // the first step has not finished yet
+	a.st.aliveUntil = a.now().Add(a.liveWindow(0)) // the first step has not finished yet
 	return a
 }
 
@@ -99,7 +99,9 @@ func (a *Agent) Superseded() bool { return a.superseded }
 
 // callTimeout bounds each backend probe and control plane call to half a
 // heartbeat interval (with a floor), so a step cannot outlast its interval.
-func (a *Agent) callTimeout() time.Duration { return max(a.interval/2, minCallTimeout) }
+func (a *Agent) callTimeout() time.Duration { return callTimeoutFor(a.interval) }
+
+func callTimeoutFor(interval time.Duration) time.Duration { return max(interval/2, minCallTimeout) }
 
 // Step runs one cycle: probe the backend, register if needed, send a heartbeat.
 // It returns how long to wait before the next cycle.

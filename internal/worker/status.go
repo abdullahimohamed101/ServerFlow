@@ -22,10 +22,27 @@ import (
 //	GET /readyz   200 only when the agent holds a registration, the control plane accepted a heartbeat within
 //	              ReadyTimeout, and the backend answered in the last step. 503 otherwise, always while draining.
 
-// livenessIntervals is how many heartbeat intervals past its schedule the loop may be before /healthz fails. The
-// schedule is the delay Step asked for (a failing step backs off up to ten intervals), plus this much; a step can
-// itself take up to one and a half intervals (three calls of half an interval each).
-const livenessIntervals = 3
+// liveWindow is how long after a step ended (or after start-up) the heartbeat loop may stay silent before /healthz
+// fails: the wait it announced (next), one interval of margin for scheduling and GC, and the longest the following
+// step can take on its own. That last part is derived, not guessed, because a step is made of calls that are each
+// bounded by callTimeout (half an interval, never under minCallTimeout) and a control plane that times out every call
+// makes a step take all of them:
+//
+//   - registered: backend probe + heartbeat, at most 3 x callTimeout to be generous (a heartbeat the control plane
+//     rejects is followed by an immediate retry in the next step, not in this one);
+//   - not registered: backend probe + register, then the heartbeat, which runs at the interval the control plane
+//     suggested; that is at most maxIntervalFactor x the configured one, so the last call may take half of that.
+//
+// With the defaults (2 s) this is 7 s in the steady state, more than the 3 x interval the plan names; with a very
+// small interval the 250 ms floor of callTimeout dominates, which a bare multiple of the interval did not cover.
+func (a *Agent) liveWindow(next time.Duration) time.Duration {
+	ct := callTimeoutFor(a.interval)
+	step := 3 * ct
+	if !a.registered {
+		step = 2*ct + max(ct, callTimeoutFor(maxIntervalFactor*a.cfg.Interval))
+	}
+	return next + a.interval + step
+}
 
 // Reasons /readyz and /healthz give for a 503. They are fixed strings, never built from data.
 const (
@@ -53,7 +70,7 @@ func (a *Agent) publish(next time.Duration) {
 	now := a.now()
 	a.st.mu.Lock()
 	defer a.st.mu.Unlock()
-	a.st.aliveUntil = now.Add(max(livenessIntervals*a.interval, next+2*a.interval))
+	a.st.aliveUntil = now.Add(a.liveWindow(next))
 	a.st.lastAccepted, a.st.registered, a.st.superseded, a.st.backendOK = a.lastAccepted, a.registered, a.superseded, a.backendOK
 }
 

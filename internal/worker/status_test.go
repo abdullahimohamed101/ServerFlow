@@ -37,11 +37,10 @@ func newStatusAgent(t *testing.T) (*Agent, *fakeBackend, *fakeCP, *fakeClock) {
 	t.Helper()
 	be := &fakeBackend{status: BackendStatus{State: protocol.StateReady, MaxConcurrency: 4, QueueSize: 32}}
 	cp := &fakeCP{}
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	clk := &fakeClock{t: time.Now()} // taken just before New, whose start-up grace is computed from the real clock
 	a := New(Config{WorkerID: "secret-worker-id", Model: "qwen-7b", AdvertiseURL: "http://10.9.8.7:9001", Interval: interval, ReadyTimeout: readyTimeout},
 		be, cp, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	a.now = clk.Now
-	a.st.aliveUntil = clk.Now().Add(3 * interval) // New ran with the real clock
 	return a, be, cp, clk
 }
 
@@ -152,8 +151,11 @@ func TestStatusIsNotReadyOnceSuperseded(t *testing.T) {
 func TestLivenessFailsWhenTheHeartbeatLoopStalls(t *testing.T) {
 	a, _, _, clk := newStatusAgent(t)
 	a.Step(context.Background())
-	clk.Advance(3 * interval)
-	wantStatus(t, a, true, true, "") // on the edge: still alive (readiness is within its timeout too)
+	// Steady state, interval 2 s: the announced wait (2 s) + one interval of margin + 3 call timeouts of 1 s = 7 s.
+	clk.Advance(7 * time.Second)
+	if !a.Status().Live {
+		t.Fatal("on the edge of the window the loop is still alive")
+	}
 	clk.Advance(time.Millisecond)
 	s := a.Status()
 	if s.Live || s.LiveReason != reasonStalled || s.Ready || s.ReadyReason != reasonStalled {
@@ -163,11 +165,14 @@ func TestLivenessFailsWhenTheHeartbeatLoopStalls(t *testing.T) {
 	wantStatus(t, a, true, true, "")
 }
 
-func TestLivenessBeforeTheFirstStepTolerates3Intervals(t *testing.T) {
+// Goes through the real New(): before any step has finished the agent is not registered, so the window is one
+// interval (2 s) + backend probe and register (1 s each) + a heartbeat at an interval the control plane may stretch
+// to 10 x (20 s, so a 10 s call timeout) = 14 s.
+func TestLivenessBeforeTheFirstStepUsesTheStartupWindow(t *testing.T) {
 	a, _, _, clk := newStatusAgent(t)
-	clk.Advance(3 * interval)
+	clk.Advance(14 * time.Second)
 	if !a.Status().Live {
-		t.Fatal("startup is allowed 3 intervals to finish the first step")
+		t.Fatal("startup is allowed the worst case of a first step")
 	}
 	clk.Advance(time.Millisecond)
 	if a.Status().Live {
@@ -185,13 +190,14 @@ func TestLivenessAllowsTheBackoffTheLoopAsksFor(t *testing.T) {
 	if d != maxBackoffIntervals*interval {
 		t.Fatalf("test setup: expected the maximum backoff, got %v", d)
 	}
-	clk.Advance(d + 2*interval) // the step is late by two intervals: still alive
+	// Not registered: the announced 20 s + a 2 s margin + 2 x 1 s + a heartbeat of up to 10 s = 34 s.
+	clk.Advance(34 * time.Second)
 	if !a.Status().Live {
-		t.Fatal("a loop that is within 2 intervals of the schedule it announced is alive")
+		t.Fatal("a loop within the window of the schedule it announced is alive")
 	}
 	clk.Advance(time.Millisecond)
 	if a.Status().Live {
-		t.Fatal("more than 2 intervals late is a stall even in backoff")
+		t.Fatal("beyond the window is a stall even in backoff")
 	}
 }
 
@@ -529,5 +535,98 @@ func TestStatusServerRefusesOversizedHeaders(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("a 64 KiB header must be refused, got %d", resp.StatusCode)
+	}
+}
+
+// --- liveness under slow calls, with the real clock ------------------------------------------------
+
+// hangingCP times out every call it is asked to make (it waits for the per-call deadline), after an optional
+// successful registration.
+type hangingCP struct {
+	registerOK  bool
+	suggestSecs float64
+}
+
+func (c *hangingCP) Register(ctx context.Context, _ protocol.WorkerInfo) (protocol.RegisterResponse, error) {
+	if c.registerOK {
+		return protocol.RegisterResponse{RegistrationID: "r", HeartbeatIntervalSeconds: c.suggestSecs}, nil
+	}
+	<-ctx.Done()
+	return protocol.RegisterResponse{}, ctx.Err()
+}
+func (c *hangingCP) Heartbeat(ctx context.Context, _ string, _ protocol.Heartbeat) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (c *hangingCP) Deregister(ctx context.Context, _, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A control plane that times out every call must never make the loop look dead, whatever the interval: one step
+// then takes several call timeouts, and the 250 ms floor of a call timeout does not shrink with the interval.
+func TestLivenessNeverFlapsWhileEveryControlPlaneCallTimesOut(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		interval   time.Duration
+		registerOK bool
+		suggest    float64
+	}{
+		{"40ms, registration times out", 40 * time.Millisecond, false, 0},
+		{"100ms, registration times out", 100 * time.Millisecond, false, 0},
+		{"40ms, heartbeats time out", 40 * time.Millisecond, true, 0},
+		{"configured 500ms, control plane suggests 1ms (clamped to 50ms)", 500 * time.Millisecond, true, 0.001},
+		{"200ms, heartbeats time out", 200 * time.Millisecond, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			be := &fakeBackend{status: BackendStatus{State: protocol.StateReady, MaxConcurrency: 4, QueueSize: 32}}
+			a := New(Config{WorkerID: "w1", Model: "m", AdvertiseURL: "http://127.0.0.1:1", Interval: tc.interval},
+				be, &hangingCP{registerOK: tc.registerOK, suggestSecs: tc.suggest}, quiet())
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { _ = a.Run(ctx); close(done) }()
+			defer func() { cancel(); <-done }()
+			end := time.Now().Add(4 * time.Second)
+			polls := 0
+			for time.Now().Before(end) {
+				if s := a.Status(); !s.Live {
+					t.Fatalf("liveness failed after %d polls although the loop is running (%+v)", polls, s)
+				}
+				polls++
+				time.Sleep(time.Millisecond)
+			}
+		})
+	}
+}
+
+// blockedBackend never answers and ignores its context: a step that cannot end, the way a hung loop looks.
+type blockedBackend struct{ release chan struct{} }
+
+func (b *blockedBackend) Status(context.Context) (BackendStatus, error) {
+	<-b.release
+	return BackendStatus{}, errors.New("released")
+}
+
+// The window is finite: a loop that is really stuck turns /healthz false within a bounded time.
+func TestLivenessTurnsFalseWhenTheLoopIsReallyStuck(t *testing.T) {
+	bb := &blockedBackend{release: make(chan struct{})}
+	a := New(Config{WorkerID: "w1", Model: "m", AdvertiseURL: "http://127.0.0.1:1", Interval: 40 * time.Millisecond}, bb, &fakeCP{}, quiet())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = a.Run(ctx); close(done) }()
+	defer func() { cancel(); close(bb.release); <-done }()
+	if !a.Status().Live {
+		t.Fatal("a freshly started agent is alive")
+	}
+	// Start-up window at 40 ms: 40 + 2 x 250 + 250 = 790 ms. Allow 3 s before calling it stuck-true.
+	deadline := time.Now().Add(3 * time.Second)
+	for a.Status().Live {
+		if time.Now().After(deadline) {
+			t.Fatal("liveness stayed true for a loop that never finishes its first step")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if s := a.Status(); s.Ready || s.ReadyReason != reasonStalled {
+		t.Fatalf("a stuck loop is not ready either: %+v", s)
 	}
 }
