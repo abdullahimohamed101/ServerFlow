@@ -438,3 +438,31 @@ func TestPruneRecountsTheEligibleWorkersAndRelaxesTheCap(t *testing.T) {
 		t.Fatalf("%d of the two remaining workers are open, want 1 (floor(0.5 x 2))", open)
 	}
 }
+
+// Relaxing one model's cap must not touch another model's ejection: model a keeps its one open breaker while model b's two
+// ejected workers become eligible and one of them is closed.
+func TestRelaxingOneModelsCapLeavesAnotherModelsEjectionAlone(t *testing.T) {
+	r := newRig(t, capParams())
+	r.members = []Member{
+		{Key: key("a1"), Model: "a", Eligible: true}, {Key: key("a2"), Model: "a", Eligible: true},
+		{Key: key("b1"), Model: "b", Eligible: false}, {Key: key("b2"), Model: "b", Eligible: false},
+	}
+	r.bs.Sync(r.members)
+	r.sendN("a1", Fault, 5)
+	r.sendN("b1", Fault, 5)
+	r.sendN("b2", Fault, 5)
+	for i := range r.members {
+		r.members[i].Eligible = true
+	}
+	r.bs.Sync(r.members)
+	r.want("a1", Open)
+	open := 0
+	for _, id := range []string{"b1", "b2"} {
+		if r.bs.State(key(id)) != Closed {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("%d of model b's workers stay open, want 1", open)
+	}
+}
