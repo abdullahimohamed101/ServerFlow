@@ -7,7 +7,9 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -33,6 +35,19 @@ type Config struct {
 	Metrics    MetricsConfig    `yaml:"metrics"`
 
 	configFilePath string
+}
+
+// Format implements fmt.Formatter for the whole configuration. Its sections that hold a secret redact themselves, but
+// fmt calls no method at all on a pointer it prints under a verb the pointer does not fit (%s on a *Config inside a
+// slice, say) and would then print every field raw. Having a Formatter of its own makes *Config safe under every verb.
+// The output is what fmt printed before: the fields of the type, each section formatting itself.
+func (c Config) Format(f fmt.State, verb rune) {
+	type plain Config // no methods, so no recursion
+	out := fmt.Sprintf(fmt.FormatString(f, verb), plain(c))
+	if verb == 'v' && f.Flag('#') {
+		out = strings.Replace(out, "config.plain", "config.Config", 1)
+	}
+	_, _ = io.WriteString(f, out)
 }
 
 // Default returns the built-in defaults for every component. Callers
