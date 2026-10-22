@@ -114,8 +114,8 @@ func TestNoiseIsClampedOnBothSides(t *testing.T) {
 		f := lognormal(r, maxCV)
 		lo, hi = math.Min(lo, f), math.Max(hi, f)
 	}
-	if hi != noiseClamp || lo != 1/noiseClamp {
-		t.Errorf("extremes of the noise factor = [%v, %v], want exactly [%v, %v]", lo, hi, 1/noiseClamp, noiseClamp)
+	if hi != 20 || lo != 1.0/20 {
+		t.Errorf("extremes of the noise factor = [%v, %v], want exactly [0.05, 20]", lo, hi)
 	}
 }
 
@@ -217,6 +217,9 @@ func TestIterationsAlwaysTakeTime(t *testing.T) {
 	if len(ts) != 20 {
 		t.Fatalf("%d tokens", len(ts))
 	}
+	if ts[0] < minIteration {
+		t.Errorf("a prefill took %v; every iteration must take at least %v", ts[0], minIteration)
+	}
 	for i := 1; i < len(ts); i++ {
 		if ts[i]-ts[i-1] < minIteration {
 			t.Fatalf("iterations %d and %d are %v apart; virtual time must advance by at least %v", i-1, i, ts[i]-ts[i-1], minIteration)
@@ -242,5 +245,26 @@ func TestUtilisationCountsPrefillingSequencesToo(t *testing.T) {
 	st := e.Stats()
 	if st.Prefilling != 1 || st.Running != 0 || st.GPUUtilization != 25 {
 		t.Errorf("stats = %+v, want 1 prefilling, 0 running, 25%% utilisation", st)
+	}
+}
+
+func TestPlannedOutputIsBoundedWhateverMaxTokensIs(t *testing.T) {
+	p := quiet()
+	p.OutputFraction = 0.9
+	e := newEngine(t, p, 1, 4)
+	info, _ := mustSubmit(t, e, 0, Request{InputTokens: 1, MaxTokens: math.MaxInt64})
+	if info.OutputTokens < 1 || info.OutputTokens > maxOutput {
+		t.Errorf("planned output %d for max_tokens MaxInt64, want 1..%d", info.OutputTokens, maxOutput)
+	}
+}
+
+func TestMillisecondsSaturateAtADay(t *testing.T) {
+	for _, v := range []float64{1e30, math.MaxFloat64, 1e15} {
+		if got := ms(v); got != maxIteration {
+			t.Errorf("ms(%v) = %v, want %v", v, got, maxIteration)
+		}
+	}
+	if got := ms(1.5); got != 1500*time.Microsecond {
+		t.Errorf("ms(1.5) = %v", got)
 	}
 }
