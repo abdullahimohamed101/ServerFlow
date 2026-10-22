@@ -40,7 +40,7 @@ asserts it never reaches a label, a log line or a span.
 
 ### [PR A] Evidence that nothing changed
 
-A differential test replays a fixed request script through seven gateway set-ups (static and registry modes, limiter on and off, every existing strategy) and compares status, body, headers, what the workers
+A differential test replays a fixed request script through seven gateway set-ups (static mode with and without a limiter; registry mode with round-robin with and without a limiter, least-active and least-queue over several workers, and random over a single worker, so its choice is deterministic) and compares status, body, headers, what the workers
 received, what the limiter was charged, the structured logs and the Prometheus series with fixtures recorded once from unmodified master (`scripts/record-differential.sh`; the fixtures were committed before any
 production code changed). Go version, build info, IDs, ports and timing are normalised so CI on another toolchain does not differ.
 
