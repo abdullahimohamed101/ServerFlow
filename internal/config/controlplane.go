@@ -1,7 +1,9 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 )
 
@@ -20,6 +22,37 @@ type ControlPlaneConfig struct {
 	Token                  string `yaml:"token"`
 	MaxWorkers             int    `yaml:"max_workers"`
 	AllowInsecureTransport bool   `yaml:"allow_insecure_transport"`
+}
+
+// String formats the config without the token. GoString, Format, LogValue and MarshalJSON do the same, so no verb,
+// log line or JSON dump of a ControlPlaneConfig (or of the whole Config) can print it.
+func (c ControlPlaneConfig) String() string {
+	tok := "<unset>"
+	if c.Token != "" {
+		tok = "<redacted>"
+	}
+	return fmt.Sprintf("{addr:%s token:%s max_workers:%d allow_insecure_transport:%t}", c.Addr, tok, c.MaxWorkers, c.AllowInsecureTransport)
+}
+
+// GoString implements fmt.GoStringer.
+func (c ControlPlaneConfig) GoString() string { return "config.ControlPlaneConfig" + c.String() }
+
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (c ControlPlaneConfig) Format(f fmt.State, verb rune) {
+	writeRedacted(f, verb, c.String(), c.GoString())
+}
+
+// LogValue implements slog.LogValuer.
+func (c ControlPlaneConfig) LogValue() slog.Value { return slog.StringValue(c.String()) }
+
+// MarshalJSON redacts the token.
+func (c ControlPlaneConfig) MarshalJSON() ([]byte, error) {
+	type plain ControlPlaneConfig // no methods, so no recursion
+	p := plain(c)
+	if p.Token != "" {
+		p.Token = "<redacted>"
+	}
+	return json.Marshal(p)
 }
 
 // cleartextTokenError is the one message both client guards return. It never includes the URL or the token.

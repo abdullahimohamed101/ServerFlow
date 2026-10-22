@@ -100,6 +100,11 @@ func (e EventsConfig) String() string {
 // GoString implements fmt.GoStringer.
 func (e EventsConfig) GoString() string { return "config.EventsConfig" + e.String() }
 
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (e EventsConfig) Format(f fmt.State, verb rune) {
+	writeRedacted(f, verb, e.String(), e.GoString())
+}
+
 // LogValue implements slog.LogValuer.
 func (e EventsConfig) LogValue() slog.Value { return slog.StringValue(e.String()) }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -201,6 +202,42 @@ func TestValidateConsumer(t *testing.T) {
 		mut(&c)
 		if err := c.ValidateConsumer(); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A dereferenced EventsConfig (a value, a copy out of a pointer, an element of a slice or map, a field of a struct)
+// must stay redacted under every verb. Before EventsConfig had a Formatter, %d printed the raw fields because String
+// is not consulted for it.
+func TestDereferencedEventsConfigIsRedactedUnderEveryVerb(t *testing.T) {
+	e := Default().Events
+	e.Mode = EventsOn
+	e.SASLMechanism, e.SASLUsername, e.SASLPassword = SASLScram256, "svc", canaryPassword
+	p := &e
+	type wrapper struct{ Events EventsConfig }
+	shapes := map[string]any{
+		"value": e, "deref": *p, "pointer": p, "slice": []EventsConfig{e}, "pointer slice": []*EventsConfig{p},
+		"map": map[string]EventsConfig{"k": e}, "exported field": wrapper{e}, "pointer to wrapper": &wrapper{e},
+	}
+	for name, v := range shapes {
+		var out strings.Builder
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%t", "%10.3v", "%-20s"} {
+			fmt.Fprintf(&out, verb+"|", v)
+		}
+		js, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out.Write(js)
+		var logs bytes.Buffer
+		slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "v", v)
+		slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "v", v)
+		out.WriteString(logs.String())
+		got := out.String()
+		for _, secret := range []string{canaryPassword, hex.EncodeToString([]byte(canaryPassword))} {
+			if strings.Contains(got, secret) {
+				t.Errorf("%s leaks the password: %.400s", name, got)
+			}
 		}
 	}
 }

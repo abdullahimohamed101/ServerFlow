@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -398,5 +399,71 @@ func TestProducerClientUsesAcksAllIdempotenceAndABoundedDeliveryTime(t *testing.
 	}
 	if tx, _ := p.cl.OptValue(kgo.TransactionalID).(string); tx != "" {
 		t.Fatal("no transactions (ADR-019)")
+	}
+}
+
+// Dereferencing a wrapper bypasses its pointer-receiver Format, and fmt calls no methods on unexported struct fields,
+// so a copied wrapper used to print the raw Config it held (the wrappers now hold a *Config). Config itself used to
+// print the raw password under %d, a verb String is not consulted for. The password must stay out of the dereferenced
+// wrappers, the Config value, slices and maps of them, under every verb, JSON and slog.
+func TestDereferencedWrappersAndNestedConfigsNeverPrintThePassword(t *testing.T) {
+	cfg := Config{Brokers: []string{"127.0.0.1:1"}, ClientID: "t", Topic: "t", GroupID: "g", MaxBufferedRecords: 5, SASLMechanism: "plain", SASLUsername: "svc", SASLPassword: canary}
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	c, err := NewConsumer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	a, err := NewAdmin(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	// Copying a wrapper that is still running would race with its goroutines, so stop them first (the config stays).
+	_ = p.Close()
+	c.Close()
+	a.Close()
+	// reflect avoids `go vet` copylocks complaints about copying the atomics inside Producer and Consumer.
+	deref := func(v any) any { return reflect.ValueOf(v).Elem().Interface() }
+	shapes := map[string]any{
+		"*Producer deref": deref(p), "*Consumer deref": deref(c), "*Admin deref": deref(a),
+		"Config value": cfg, "&Config": &cfg, "[]Config": []Config{cfg}, "[]*Config": []*Config{&cfg}, "map": map[string]Config{"k": cfg},
+		"[]*Producer": []*Producer{p}, "map of *Consumer": map[string]*Consumer{"k": c},
+	}
+	for name, v := range shapes {
+		var out strings.Builder
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%t", "%e", "%b", "%o", "%c", "%U", "%10.3v", "%-20s"} {
+			fmt.Fprintf(&out, verb+"|", v)
+		}
+		js, _ := json.Marshal(v)
+		out.Write(js)
+		var logs bytes.Buffer
+		slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "v", v)
+		slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "v", v)
+		out.WriteString(logs.String())
+		got := out.String()
+		for _, secret := range []string{canary, hex.EncodeToString([]byte(canary))} {
+			if strings.Contains(got, secret) {
+				t.Errorf("%s leaks the password: %s", name, got)
+			}
+		}
+	}
+}
+
+// A wrapper that no constructor built has no Config; printing or logging it must not panic.
+func TestZeroValueWrappersFormatWithoutPanicking(t *testing.T) {
+	for name, v := range map[string]any{"Producer": &Producer{}, "Consumer": &Consumer{}, "Admin": &Admin{}} {
+		var logs bytes.Buffer
+		slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "v", v)
+		slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "v", v)
+		out := fmt.Sprintf("%v|%+v|%#v|%s|%d", v, v, v, v, v) + logs.String()
+		if !strings.Contains(out, "kafka."+name) {
+			t.Errorf("%s: unexpected output %q", name, out)
+		}
 	}
 }
