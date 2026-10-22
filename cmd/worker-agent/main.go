@@ -21,7 +21,10 @@ import (
 	"serverflow/internal/worker"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout       = 5 * time.Second
+	statusShutdownTimeout = 250 * time.Millisecond
+)
 
 func main() {
 	var configPath string
@@ -82,7 +85,11 @@ func main() {
 	defer cancel()
 	agent.Shutdown(sctx)
 	if status != nil {
-		status.Shutdown(sctx) // shares the 5 s budget: it never lengthens the shutdown
+		// A probe is never worth waiting for: whatever is still in flight after a moment is cut. The deadline is
+		// inside the agent's 5 s budget, so the endpoint never lengthens the shutdown beyond a quarter of a second.
+		stctx, stcancel := context.WithTimeout(sctx, statusShutdownTimeout)
+		defer stcancel()
+		status.Shutdown(stctx)
 	}
 	logger.Info("worker-agent stopped", "component", "worker-agent", "worker_id", cfg.Worker.ID)
 }

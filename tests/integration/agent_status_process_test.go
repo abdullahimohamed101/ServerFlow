@@ -3,6 +3,7 @@ package integration
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -29,7 +30,7 @@ func startStatusAgent(t *testing.T, cpAddr, token, id, mockAddr, statusAddr stri
 
 // probe asks the status endpoint once; err is set when nothing answers.
 func probe(addr, path string) (int, string, error) {
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://" + addr + path)
+	resp, err := (&http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}).Get("http://" + addr + path)
 	if err != nil {
 		return 0, "", err
 	}
@@ -93,6 +94,7 @@ func TestProcessAgentStatusFollowsRegistrationAndDrain(t *testing.T) {
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
 	signalled := time.Now()
 	sigterm(t, agent)
+	var firstDraining, lastDraining time.Time
 	sawDraining, left := false, false // left: the first non-200 answer; after it a 200 would be a regression
 	var lastReady time.Duration
 	deadline := time.Now().Add(5 * time.Second)
@@ -108,13 +110,19 @@ func TestProcessAgentStatusFollowsRegistrationAndDrain(t *testing.T) {
 				left = true
 			}
 			if body == "draining" {
-				sawDraining = true
+				if !sawDraining {
+					firstDraining = time.Now()
+				}
+				sawDraining, lastDraining = true, time.Now()
 			}
 		}
 		if hc, _, err := probe(status, "/healthz"); err == nil && hc != 200 {
 			t.Fatalf("/healthz must stay 200 during the shutdown, got %d", hc)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if span := lastDraining.Sub(firstDraining); span < 150*time.Millisecond {
+		t.Fatalf("the endpoint answered draining for only %v: it must stay up while the agent deregisters", span)
 	}
 	if lastReady > 250*time.Millisecond {
 		t.Fatalf("/readyz was still 200 %v after SIGTERM", lastReady)
@@ -221,5 +229,30 @@ func TestProcessAgentRefusesAStatusAddressThatIsNotLoopbackOrIsTaken(t *testing.
 	code, out := runBin(t, "worker-agent", append(append([]string{}, base...), "SERVERFLOW_WORKER_STATUS_LISTEN="+taken))
 	if code != 1 || !strings.Contains(out, "status endpoint") {
 		t.Errorf("a taken port must stop the agent: exit %d, output %q", code, out)
+	}
+}
+
+// A probe connection that stalls must not hold the agent's exit back: the endpoint is cut within a quarter of a
+// second of the end of the agent's own shutdown.
+func TestProcessAStalledStatusClientDoesNotDelayTheAgentsExit(t *testing.T) {
+	cpAddr, mock, status := freePort(t), freePort(t), freePort(t)
+	startControlPlaneProc(t, cpAddr, clusterToken)
+	startMockProc(t, mock)
+	agent := startStatusAgent(t, cpAddr, clusterToken, "w1", mock, status)
+	waitProbe(t, status, "/readyz", 200, 15*time.Second)
+	conn, err := net.Dial("tcp", status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = conn.Write([]byte("GET /readyz HTTP/1.1\r\nHost: x\r\n")) // never finished
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	sigterm(t, agent)
+	if err := agent.wait(t, 5*time.Second); err != nil {
+		t.Fatalf("exit: %v\n%s", err, agent.stderr.String())
+	}
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Fatalf("a stalled status client delayed the exit to %v", took)
 	}
 }

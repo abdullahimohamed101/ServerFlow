@@ -97,7 +97,7 @@ func (a *Agent) Status() Status {
 		s.Ready, s.ReadyReason = false, reasonUnregistered
 	case !a.st.backendOK:
 		s.Ready, s.ReadyReason = false, reasonBackendDown
-	case a.st.lastAccepted.IsZero() || now.Sub(a.st.lastAccepted) > readyTimeout:
+	case now.Sub(a.st.lastAccepted) > readyTimeout:
 		s.Ready, s.ReadyReason = false, reasonStaleBeat
 	}
 	return s

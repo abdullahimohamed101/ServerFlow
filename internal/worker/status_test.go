@@ -41,7 +41,7 @@ func newStatusAgent(t *testing.T) (*Agent, *fakeBackend, *fakeCP, *fakeClock) {
 	a := New(Config{WorkerID: "secret-worker-id", Model: "qwen-7b", AdvertiseURL: "http://10.9.8.7:9001", Interval: interval, ReadyTimeout: readyTimeout},
 		be, cp, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	a.now = clk.Now
-	a.st.aliveUntil = clk.Now().Add(livenessIntervals * interval) // New ran with the real clock
+	a.st.aliveUntil = clk.Now().Add(3 * interval) // New ran with the real clock
 	return a, be, cp, clk
 }
 
@@ -152,7 +152,7 @@ func TestStatusIsNotReadyOnceSuperseded(t *testing.T) {
 func TestLivenessFailsWhenTheHeartbeatLoopStalls(t *testing.T) {
 	a, _, _, clk := newStatusAgent(t)
 	a.Step(context.Background())
-	clk.Advance(livenessIntervals * interval)
+	clk.Advance(3 * interval)
 	wantStatus(t, a, true, true, "") // on the edge: still alive (readiness is within its timeout too)
 	clk.Advance(time.Millisecond)
 	s := a.Status()
@@ -165,7 +165,7 @@ func TestLivenessFailsWhenTheHeartbeatLoopStalls(t *testing.T) {
 
 func TestLivenessBeforeTheFirstStepTolerates3Intervals(t *testing.T) {
 	a, _, _, clk := newStatusAgent(t)
-	clk.Advance(livenessIntervals * interval)
+	clk.Advance(3 * interval)
 	if !a.Status().Live {
 		t.Fatal("startup is allowed 3 intervals to finish the first step")
 	}
@@ -510,5 +510,24 @@ func TestStatusEndpointAnswersDrainingThroughoutShutdownAndClosesLast(t *testing
 	}
 	if _, err := net.DialTimeout("tcp", s.Addr(), 200*time.Millisecond); err == nil {
 		t.Fatal("the endpoint must be closed at the end")
+	}
+}
+
+func TestStatusServerRefusesOversizedHeaders(t *testing.T) {
+	a, _, _, _ := newStatusAgent(t)
+	s, err := StartStatusServer("127.0.0.1:0", a, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Shutdown(context.Background()) })
+	req, _ := http.NewRequest("GET", "http://"+s.Addr()+"/healthz", nil)
+	req.Header.Set("X-Padding", strings.Repeat("a", 64<<10))
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		return // the server may also just drop the connection
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("a 64 KiB header must be refused, got %d", resp.StatusCode)
 	}
 }
