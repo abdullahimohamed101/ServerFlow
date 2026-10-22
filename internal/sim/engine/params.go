@@ -146,7 +146,7 @@ func ParseParams(r io.Reader) (Params, error) {
 	if f.Version != SchemaVersion {
 		return Params{}, fmt.Errorf("parameter file: version %d is not supported (want %d)", f.Version, SchemaVersion)
 	}
-	if err := f.Params.Validate(); err != nil {
+	if err := f.Validate(); err != nil {
 		return Params{}, fmt.Errorf("parameter file: %w", err)
 	}
 	return f.Params, nil

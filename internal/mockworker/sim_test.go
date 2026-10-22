@@ -348,3 +348,16 @@ func TestParseFlagsSimRejectsConflicts(t *testing.T) {
 		t.Errorf("simple with ttft: %v", err)
 	}
 }
+
+// With a one-token output the midstream cut lands before the only token (min(2, n-1) = 0).
+func TestSimMidstreamFailureOnAOneTokenOutput(t *testing.T) {
+	e := simEnv(t, func(c *Config) { c.FailureRate, c.FailureMode, c.OutputTokens = 1, ModeMidstream, 1 })
+	resp := e.mustPost(t, chatBody(true, "hi", ""))
+	events, err := readSSE(resp.Body, time.Now())
+	if err == nil || errors.Is(err, io.EOF) {
+		t.Fatalf("the stream ended cleanly with %d events", len(events))
+	}
+	if len(events) != 0 {
+		t.Errorf("%d events before the abort, want none", len(events))
+	}
+}

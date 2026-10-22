@@ -540,7 +540,7 @@ func play(t testing.TB, cfg Config, steps []step) ([]Event, *Engine, []int64) {
 func digest(evs []Event) [32]byte {
 	h := sha256.New()
 	for _, ev := range evs {
-		fmt.Fprintf(h, "%d %d %d %d %s\n", ev.At, ev.ID, ev.Kind, ev.Index, ev.Finish)
+		_, _ = fmt.Fprintf(h, "%d %d %d %d %s\n", ev.At, ev.ID, ev.Kind, ev.Index, ev.Finish)
 	}
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
@@ -684,4 +684,47 @@ func FuzzEngine(f *testing.F) {
 		rng := rand.New(rand.NewPCG(uint64(seed), 5))
 		play(t, cfg, script(rng, 40))
 	})
+}
+
+// Chunked prefill pays the fixed cost once per prefill, not once per chunk.
+func TestChunkedPrefillChargesTheFixedCostOnce(t *testing.T) {
+	p := quiet()
+	p.PrefillChunkTokens = 500
+	e := newEngine(t, p, 4, 0)
+	info, evs := mustSubmit(t, e, 0, Request{InputTokens: 2000, MaxTokens: 3})
+	evs = append(evs, runUntil(t, e, time.Hour)...)
+	approx(t, "ttft of a chunked prefill on an idle worker", tokenTimes(evs, info.ID)[0], ms(2+0.01*2000))
+}
+
+// A request that fits exactly is admitted: the boundary is "prompt + 1 <= free", not "<".
+func TestAdmissionAndDecodeGrowthAcceptAnExactFit(t *testing.T) {
+	p := quiet()
+	p.KVBudgetTokens = 100
+	e := newEngine(t, p, 8, 4)
+	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
+	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
+	// Run to the point where both have been admitted (the second at the end of the first's prefill).
+	for at, ok := e.NextEvent(); ok && e.Stats().Active < 2; at, ok = e.NextEvent() {
+		if _, err := e.Advance(at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st := e.Stats(); st.Active != 2 || st.QueueDepth != 0 || st.KVUsedTokens != 100 {
+		t.Fatalf("two requests needing 50 of 100 KV tokens each should both run: %+v", st)
+	}
+}
+
+func TestDecodeStepThatExactlyFillsTheBudgetDoesNotPreempt(t *testing.T) {
+	p := quiet()
+	p.KVBudgetTokens = 102 // two sequences at 50 tokens each, plus one token each for the step
+	e := newEngine(t, p, 8, 4)
+	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
+	mustSubmit(t, e, 0, Request{InputTokens: 49, MaxTokens: 2})
+	runUntil(t, e, time.Hour)
+	if got := e.Stats().Preemptions; got != 0 {
+		t.Errorf("preemptions = %d, want 0: the step fits exactly", got)
+	}
+	if got := e.Stats().Completed; got != 2 {
+		t.Errorf("completed = %d, want 2", got)
+	}
 }
