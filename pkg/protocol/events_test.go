@@ -327,3 +327,94 @@ func refEventID(request, typ, attempt string) string {
 	sum := sha256.Sum256([]byte(request + "\x00" + typ + "\x00" + attempt))
 	return hex.EncodeToString(sum[:])[:32]
 }
+
+// ttft_ms is capped at MaxEventMillis in both places it appears (first_token and the terminal events), inclusive, and
+// negative values are refused. The cap is enforced by Validate, by Encode and again by Decode, whatever number the
+// JSON carries.
+func TestTTFTCapIsInclusiveEverywhere(t *testing.T) {
+	cases := []struct {
+		name string
+		ms   int64
+		ok   bool
+	}{
+		{"zero", 0, true},
+		{"one", 1, true},
+		{"typical", 41, true},
+		{"just under the cap", MaxEventMillis - 1, true},
+		{"the cap", MaxEventMillis, true},
+		{"just over the cap", MaxEventMillis + 1, false},
+		{"minus one", -1, false},
+		{"max int64", math.MaxInt64, false},
+		{"min int64", math.MinInt64, false},
+	}
+	for _, c := range cases {
+		first := fixtureEvents()["first_token"]
+		first.FirstToken = &FirstTokenData{TTFTMS: c.ms}
+		done := fixtureEvents()["completed"]
+		term := *done.Terminal
+		term.TTFTMS = c.ms
+		done.Terminal = &term
+		for kind, e := range map[string]Event{"first_token": first, "completed": done} {
+			verr := e.Validate()
+			b, eerr := Encode(e)
+			if c.ok {
+				if verr != nil || eerr != nil {
+					t.Errorf("%s/%s: refused: validate %v, encode %v", kind, c.name, verr, eerr)
+					continue
+				}
+				back, err := Decode(b)
+				if err != nil {
+					t.Errorf("%s/%s: Decode refused what Encode produced: %v", kind, c.name, err)
+					continue
+				}
+				got := int64(0)
+				if kind == "first_token" {
+					got = back.FirstToken.TTFTMS
+				} else {
+					got = back.Terminal.TTFTMS
+				}
+				if got != c.ms {
+					t.Errorf("%s/%s: round trip changed %d to %d", kind, c.name, c.ms, got)
+				}
+			} else if verr == nil || eerr == nil {
+				t.Errorf("%s/%s: accepted (validate %v, encode %v)", kind, c.name, verr, eerr)
+			}
+		}
+	}
+}
+
+// Decode must refuse an over-cap or mistyped ttft_ms in a hand-written payload, not only in a struct built by this code.
+func TestDecodeRefusesAnOutOfRangeOrMistypedTTFT(t *testing.T) {
+	enc, err := Encode(fixtureEvents()["first_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(enc), `"ttft_ms":41`) {
+		t.Fatalf("fixture shape changed: %s", enc)
+	}
+	for name, repl := range map[string]string{
+		"over the cap":    `"ttft_ms":1000000000001`,
+		"negative":        `"ttft_ms":-1`,
+		"fraction":        `"ttft_ms":4.5`,
+		"exponent":        `"ttft_ms":1e3`,
+		"string":          `"ttft_ms":"41"`,
+		"null":            `"ttft_ms":null`,
+		"beyond int64":    `"ttft_ms":99999999999999999999`,
+		"escaped key":     `"ttft_ms":-5`,
+		"huge exponent":   `"ttft_ms":1e400`,
+		"unicode digits":  `"ttft_ms":"41"`,
+		"escaped quote":   `"ttft_ms":"4\"1"`,
+		"nested garbage":  `"ttft_ms":{"a":1}`,
+		"array":           `"ttft_ms":[41]`,
+		"boolean":         `"ttft_ms":true`,
+		"leading zeros":   `"ttft_ms":0041`,
+		"plus":            `"ttft_ms":+41`,
+		"hex":             `"ttft_ms":0x29`,
+		"trailing period": `"ttft_ms":41.`,
+	} {
+		b := []byte(strings.Replace(string(enc), `"ttft_ms":41`, repl, 1))
+		if _, err := Decode(b); err == nil && name != "null" {
+			t.Errorf("%s: Decode accepted %s", name, b)
+		}
+	}
+}
