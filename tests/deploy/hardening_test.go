@@ -113,6 +113,13 @@ func TestHealthchecksAreBoundedAndAimedAtTheService(t *testing.T) {
 	cpAddr := fmt.Sprint(asMap(t, svcs["control-plane"]["environment"], "cp env")["SERVERFLOW_CONTROL_PLANE_ADDR"])
 	want["control-plane"] = "http://127.0.0.1:" + cpAddr[strings.LastIndex(cpAddr, ":")+1:] + "/healthz"
 	for _, n := range []string{"1", "2", "3"} {
+		// The agents' status endpoint (ADR-022 D6): readiness is registration, so a healthy agent is a registered one.
+		agentEnv := asMap(t, svcs["worker-agent-"+n]["environment"], "agent env")
+		listen := fmt.Sprint(agentEnv["SERVERFLOW_WORKER_STATUS_LISTEN"])
+		if !strings.HasPrefix(listen, "127.0.0.1:") {
+			t.Errorf("worker-agent-%s must enable its status endpoint on a loopback address, got %q", n, listen)
+		}
+		want["worker-agent-"+n] = "http://" + listen + "/readyz"
 		var port string
 		for _, a := range strList(svcs["mock-worker-"+n]["command"]) {
 			if v, ok := strings.CutPrefix(a, "--addr="); ok {
