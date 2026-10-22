@@ -79,11 +79,12 @@ func (s *Server) reserveFirstAttempt(r *http.Request, ireq *protocol.InferenceRe
 	selecting := time.Now()
 	target, waiter, rerr := s.router.RouteOrWait(r.Context(), ireq, info.tenantID)
 	info.selectStart, info.selectDuration = selecting, time.Since(selecting)
-	s.res.flush()
 	if waiter != nil {
+		// Nothing may sit between the enqueue and the wait: the waiter would be handed a slot nobody takes.
 		target, rerr = s.awaitSlot(r, ireq, info, waiter)
 		selecting = time.Now() // the scheduling decision is the one after the wait; the wait has its own series
 	}
+	s.res.flush() // transitions the routing itself caused (a cool-down that ended)
 	if rerr != nil {
 		return nil, rerr
 	}

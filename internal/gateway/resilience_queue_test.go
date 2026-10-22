@@ -745,3 +745,80 @@ func TestTheQueueEventsAllocateNothingInTheSteadyState(t *testing.T) {
 		t.Fatalf("%v allocations per queue event sequence", n)
 	}
 }
+
+// The first-byte deadline covers the wait (D6): a request that waited most of its deadline in the queue has what is
+// left for its attempt, and is cut with 504 UPSTREAM_TIMEOUT when the worker is slow.
+func TestTheFirstByteDeadlineIncludesTheQueueWait(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, func(c *config.Config) { c.Resilience.Retry.FirstByteDeadline = 2 * time.Second })
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	waiter := e.chatAsync(context.Background(), "r1")
+	e.awaitDepth(t, 1)
+	e.clock.Advance(1700 * time.Millisecond) // the deadline's clock: 300 ms are left once the wait is over
+	g.release(t, 1)
+	awaitResult(t, held)
+	g.awaitArrivals(t, 2)
+	began := time.Now()
+	r := awaitResult(t, waiter) // the worker never answers r1: only the deadline can end it
+	if r.resp.StatusCode != 504 || errorCode(t, r.body) != "UPSTREAM_TIMEOUT" {
+		t.Fatalf("%d %s", r.resp.StatusCode, r.body)
+	}
+	if took := time.Since(began); took > 1500*time.Millisecond {
+		t.Fatalf("the attempt ran %v: the 300 ms that remained after the wait was not applied", took)
+	}
+	e.settle(t, "w1")
+}
+
+// Serve begins the queue's drain when its context ends: new arrivals stop queueing, and a waiter that cannot finish
+// before the shutdown budget is spent is answered 503 NO_CAPACITY (draining) instead of being cut.
+func TestServeFlushesTheQueueNearTheEndOfTheShutdownBudget(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, queueCfg(8, 20*time.Second), func(c *config.Config) { c.Gateway.ShutdownTimeout = 900 * time.Millisecond })
+	e.gw.cfg.ShutdownTimeout = 900 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	served := make(chan error, 1)
+	go func() { served <- e.gw.Serve(ctx, ln) }()
+	url := "http://" + ln.Addr().String()
+	post := func(content string) <-chan chatResult {
+		out := make(chan chatResult, 1)
+		go func() {
+			body := `{"model":"qwen-7b","messages":[{"role":"user","content":"` + content + `"}]}`
+			resp, err := (&http.Client{Timeout: 20 * time.Second}).Post(url+chatCompletionsPath, "application/json", strings.NewReader(body))
+			if err != nil {
+				out <- chatResult{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			b, _ := io.ReadAll(resp.Body)
+			out <- chatResult{resp: resp, body: string(b)}
+		}()
+		return out
+	}
+	held := post("r0")
+	g.awaitArrivals(t, 1)
+	waiter := post("w")
+	e.awaitDepth(t, 1)
+	began := time.Now()
+	cancel()
+	r := awaitResult(t, waiter)
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || !strings.Contains(r.body, "shutting down") {
+		t.Fatalf("%d %s", r.resp.StatusCode, r.body)
+	}
+	if took := time.Since(began); took < 400*time.Millisecond || took > 2*time.Second {
+		t.Fatalf("the waiter was flushed after %v, want near 900ms minus the flush margin", took)
+	}
+	if r.resp.Header.Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After %q", r.resp.Header.Get("Retry-After"))
+	}
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	<-held
+}

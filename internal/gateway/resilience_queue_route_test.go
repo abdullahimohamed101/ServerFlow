@@ -396,3 +396,43 @@ func contentOf(r *http.Request) string {
 	}
 	return v.Messages[0].Content
 }
+
+// Joining a busy queue needs a worker that could serve: with every worker ineligible the arrival is refused at once
+// instead of waiting behind waiters that cannot be served either, and its body does not claim a worker count.
+func TestAnArrivalAtABusyQueueWithNoEligibleWorkerIsRefusedAtOnce(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	drained := g.snap(4)
+	drained.State = protocol.StateDraining
+	drained.Eligible = false
+	e := newResEnv(t, []protocol.WorkerSnapshot{drained}, noBreaker)
+	stand, err := e.rs.waitq.Enqueue("qwen-7b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.rs.waitq.Leave(stand)
+	began := time.Now()
+	r := awaitResult(t, e.chatAsync(context.Background(), "x"))
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || time.Since(began) > time.Second {
+		t.Fatalf("%d %s after %v", r.resp.StatusCode, r.body, time.Since(began))
+	}
+	if e.rs.waitq.Depth("qwen-7b") != 1 {
+		t.Fatal("it must not have queued")
+	}
+}
+
+// A queue that is full reports no worker count it does not know: eligible_workers is left out.
+func TestAShedBodyLeavesOutAnUnknownWorkerCount(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, queueCfg(1, 3*time.Second))
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	q1 := e.chatAsync(context.Background(), "q1")
+	e.awaitDepth(t, 1)
+	r := awaitResult(t, e.chatAsync(context.Background(), "over"))
+	if r.resp.StatusCode != 503 || strings.Contains(r.body, "eligible_workers") {
+		t.Fatalf("%d %s", r.resp.StatusCode, r.body)
+	}
+	g.release(t, 2)
+	awaitResult(t, held)
+	awaitResult(t, q1)
+}

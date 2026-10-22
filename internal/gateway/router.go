@@ -243,7 +243,9 @@ func (r *router) freeSlots(model string) int {
 func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot, broke int, wait *waitOpts) (*protocol.WorkerSnapshot, resilience.Ticket, *resilience.Waiter, *routeError) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if wait != nil && len(workers) > 0 && r.res.waitq.Busy(req.Model) {
+	if wait != nil && anySchedulable(workers) && r.res.waitq.Busy(req.Model) {
+		// Others are waiting for this model and a worker could serve it: join the queue, behind them. (With nobody
+		// eligible there is nothing to wait for and the scheduler answers as it always did.)
 		w, rerr := r.enqueueLocked(req, wait, routeError{})
 		return nil, resilience.Ticket{}, w, rerr
 	}
@@ -303,6 +305,17 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 	return chosen, ticket, nil, nil
 }
 
+// anySchedulable reports whether the registry (and the breakers, which mark workers ineligible in the copy) offer
+// at least one worker, full or not.
+func anySchedulable(workers []protocol.WorkerSnapshot) bool {
+	for i := range workers {
+		if schedulable(&workers[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // enqueueLocked puts the request in the model's queue (the caller holds r.mu). counts is what the scheduler found
 // when it decided to wait (zero when the queue was already busy). A queue that cannot take the request sheds it
 // (full, tenant share, draining); a model that has no queue (depth 0, or beyond the model cap) keeps the plain
@@ -319,7 +332,11 @@ func (r *router) enqueueLocked(req *protocol.InferenceRequest, wait *waitOpts, c
 	}
 	reason := resilience.ShedReason(err)
 	counts.shed = reason
-	counts.Error = api.ErrOverloaded(reason, req.Model, counts.Eligible, q.RetryAfterSeconds(reason))
+	eligible := counts.Eligible
+	if eligible == 0 && counts.AtCapacity == 0 {
+		eligible = -1 // the queue was already busy: the scheduler was not asked, so the count is unknown
+	}
+	counts.Error = api.ErrOverloaded(reason, req.Model, eligible, q.RetryAfterSeconds(reason))
 	return nil, &counts
 }
 
