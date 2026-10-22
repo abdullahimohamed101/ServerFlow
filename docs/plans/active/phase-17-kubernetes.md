@@ -241,3 +241,11 @@ PR 1 and PR 2 are independent and can proceed in parallel; 3 needs both; 4 and 5
 4. PR 4 and PR 5 in either order; PR 5 ends with the enforcement verdict.
 5. PR 6: the measurement, negative control, worker roll, observations; tune D13/D19 values only with evidence and record them.
 6. PR 7: ADR-022, docs, mutation checks, independent `verify-change` with the brief above, `review-change` with attention to Secrets handling, the key-capture pod, the status listener and NetworkPolicy, fixes, a narrower second verification, `harden-change`, and stop for approval; move this plan to `docs/plans/completed/` with Implementation Notes (deviations, evidence per acceptance criterion, what was not verified).
+
+## Decisions on the open questions (coordinator, under delegated authority, 2026-10-23)
+
+The user was away and asked the coordinator to follow its own recommendations; the user can override any of these when reviewing the PRs.
+
+1. **Tooling:** no `brew install` on the host. Local verification uses containers only (`kubectl`/`kubeconform` images, a Docker-in-Colima cluster if one fits the VM); the advisory kind job in GitHub Actions is the place where kind actually runs. Anything the local machine cannot run is stated as unverified in the PR.
+2. **Colima:** the `default` profile is not resized and no second profile is created without the user. With a 4 GiB VM, cluster-level checks run in CI.
+3. Kustomize only. 4. Gateway readiness on `/readyz`. 5. The agent status endpoint (PR 1) is accepted. 6. Identical mock workers. 7. NetworkPolicy: document the enforcement verdict, no Calico. 8. PVCs for PostgreSQL and Redpanda. 9. No registry or publishing. 10. CI: advisory kind job on relevant PRs, master and nightly. 11. Versions resolved with evidence in PR 2. 12. Pass rule: zero failures in at least 3,000 requests, with a negative control.
