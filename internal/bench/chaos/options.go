@@ -48,6 +48,10 @@ type Options struct {
 	// without the feature.
 	Resilience string
 
+	// NoDrainAnnounce makes a rolling-drain scenario drain with no announce period (the worker refuses at the
+	// moment it drains), to show what the announce saves. It changes nothing for the other scenarios.
+	NoDrainAnnounce bool
+
 	// MaxErrorRate is the baseline window's error rate above which the run is invalid. MinRequests is the
 	// fewest requests a window may hold (0: DefaultMinRequests(Scale)).
 	MaxErrorRate float64
@@ -130,9 +134,10 @@ func ParseFlags(args []string) (o Options, list bool, err error) {
 	fs.Float64Var(&o.StreamRatio, "stream-ratio", 0.5, "fraction of requests that stream")
 	fs.Int64Var(&o.Seed, "seed", 1, "random seed; the same seed offers the same load")
 	fs.IntVar(&o.Repeat, "repeat", 1, "run each scenario this many times (3 for a comparison: the spread rule needs it)")
-	fs.StringVar(&o.Resilience, "resilience", "", "on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap; the drain arrives in PR F); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
+	fs.StringVar(&o.Resilience, "resilience", "", "on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap and, since PR F, the gateway drain; the embedded gateway has no readiness grace); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
 	fs.Float64Var(&o.MaxErrorRate, "max-error-rate", DefaultMaxErrorRate, "baseline window error rate above which the run is invalid")
 	fs.IntVar(&o.MinRequests, "min-requests", 0, "fewest requests a window may hold (default: 100 times --scale, at least 20)")
+	fs.BoolVar(&o.NoDrainAnnounce, "no-drain-announce", false, "drain-roll only: drain the workers with no announce period (they refuse at once), to compare against the announce")
 	fs.BoolVar(&o.AllowDirty, "allow-dirty", false, "waive the clean-working-tree check of the validity gate (development runs)")
 	fs.StringVar(&o.OutDir, "out", "benchmark/runs", "directory for run_NNN result directories")
 	fs.BoolVar(&o.SaveRequests, "save-requests", false, "also write requests.jsonl with every request (large)")

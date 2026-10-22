@@ -40,7 +40,7 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.DurationVar(&o.MockTTFT, "mock-ttft", embedded.DefaultTTFT, "embedded mock worker base time to first token")
 	fs.IntVar(&o.MockConcurrent, "mock-concurrency", embedded.DefaultMaxConcurrency, "embedded mock worker concurrent requests")
 	fs.IntVar(&o.MockQueue, "mock-queue", embedded.DefaultQueueSize, "embedded mock worker queue size")
-	fs.StringVar(&o.Resilience, "resilience", "", "embedded gateway: on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap; the drain arrives in PR F); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
+	fs.StringVar(&o.Resilience, "resilience", "", "embedded gateway: on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap and, since PR F, the gateway drain; the embedded gateway has no readiness grace); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
 	fs.StringVar(&o.GPUType, "gpu-type", "", "GPU type to record for --target (embedded mock workers have none)")
 
 	fs.StringVar(&o.Workload, "workload", workload.Mixed, "workload: uniform-short, uniform-long, mixed, burst, hot-model, multi-tenant")
