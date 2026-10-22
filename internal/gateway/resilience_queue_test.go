@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"serverflow/internal/api"
 	"serverflow/internal/config"
 	"serverflow/pkg/protocol"
 )
@@ -662,9 +664,13 @@ func TestDrainingStopsQueueingAndFlushesTheWaiters(t *testing.T) {
 
 	stop := e.rs.beginDrain(drainFlushMargin + 200*time.Millisecond)
 	defer stop()
+	lateBegan := time.Now()
 	r := awaitResult(t, e.chatAsync(context.Background(), "late"))
 	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || retryAfter(t, r) != "1" {
 		t.Fatalf("an arrival that would have to wait is shed as draining: %d %s", r.resp.StatusCode, r.body)
+	}
+	if took := time.Since(lateBegan); took > 150*time.Millisecond {
+		t.Fatalf("the arrival waited %v: a closed queue refuses at once, it does not wait for the flush", took)
 	}
 	began := time.Now()
 	w := awaitResult(t, waiter)
@@ -852,5 +858,23 @@ func TestManyCancelledWaitersLeaveNothingBehind(t *testing.T) {
 	eventually(t, 10*time.Second, func() bool { return runtime.NumGoroutine() <= base+30 }, fmt.Sprintf("goroutines back near %d", base))
 	if got := g.arrivals(); len(got) != 1 {
 		t.Fatalf("a cancelled waiter reached the worker: %v", got)
+	}
+}
+
+// A shed for a client that has already left is recorded as a departed client, not as a rejection.
+func TestAShedForADepartedClientIsNotARejection(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, chatCompletionsPath, nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	info := &reqInfo{}
+	e.gw.shed(rec, req, info, OverloadQueueTimeout, api.ErrOverloaded(OverloadQueueTimeout, "qwen-7b", -1, 1))
+	if !info.clientClosed || rec.Body.Len() != 0 {
+		t.Fatalf("clientClosed %v, body %q", info.clientClosed, rec.Body.String())
+	}
+	if _, ok := sample(t, e.gw.metrics, "admission_rejections_total"); ok {
+		t.Fatal("a departed client was counted as shed")
 	}
 }
