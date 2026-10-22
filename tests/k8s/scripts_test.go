@@ -235,7 +235,7 @@ func TestKustomizeCommandIsPinned(t *testing.T) {
 	}
 	for _, f := range []string{"scripts/k8s-up.sh", "scripts/k8s-tool.sh", "scripts/quality.sh", "Makefile", ".github/workflows/ci.yml", ".github/workflows/kubernetes.yml", "docs/operations/kubernetes-deployment.md"} {
 		for i, line := range strings.Split(read(t, f), "\n") {
-			if regexp.MustCompile(`apply\s+(-\S+\s+)*-k\b`).MatchString(line) && !strings.Contains(line, "not") && !strings.Contains(line, "never") && !strings.Contains(line, "no ") {
+			if regexp.MustCompile(`apply\s+(-\S+\s+)*-k\b`).MatchString(line) && !regexp.MustCompile(`(?i)\b(not|never|no)\b`).MatchString(line) {
 				t.Errorf("%s:%d uses kubectl apply -k: %s", f, i+1, strings.TrimSpace(line))
 			}
 			if strings.Contains(line, "kustomize build") && !strings.HasPrefix(strings.TrimSpace(line), "#") {
