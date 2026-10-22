@@ -27,6 +27,7 @@ var equalsDefault = map[string]string{
 	"SERVERFLOW_REDIS_ADDRESS":        "the default address is the service name redis:6379; compose pins it so a changed default cannot silently break the stack",
 	"SERVERFLOW_TRACING_SAMPLE_RATIO": "compose passes TRACING_SAMPLE_RATIO from .env; its default 1.0 equals the config default",
 	"SERVERFLOW_SCHEDULER_STRATEGY":   "SF_STRATEGY from .env; its default round-robin equals the config default",
+	"SERVERFLOW_RESILIENCE_MODE":      "SF_RESILIENCE_MODE from .env; its default on equals the config default (the compose line makes the kill switch visible)",
 }
 
 func clearServerflowEnv(t *testing.T) {

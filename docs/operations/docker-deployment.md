@@ -80,6 +80,7 @@ belong here (they are generated).
 | `GATEWAYS` | `1` | gateway replicas (1-8); more than 1 puts nginx in front |
 | `GATEWAY_PORT`, `CONTROL_PLANE_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`, `JAEGER_UI_PORT` | `18080`, `19090`, `19091`, `13000`, `16686` | host ports (127.0.0.1). Empty `CONTROL_PLANE_PORT=` does not publish the control plane. |
 | `SF_STRATEGY` | `round-robin` | `random`, `round-robin`, `least-active`, `least-queue` |
+| `SF_RESILIENCE_MODE` | `on` | `on` or `off`: the gateway's fault tolerance (circuit breakers, retry budget, bounded queue and shedding, drain; ADR-020, `docs/operations/resilience.md`). `off` is the kill switch; recreate the gateway after changing it. |
 | `WORKER_CONCURRENCY`, `WORKER_QUEUE` | `8`, `64` | mock worker slots and queue (12 benchmark clients overload smaller ones) |
 | `MOCK_n_TPS`, `MOCK_n_TTFT` | 100/60/20, 100ms/150ms/300ms | speed and time to first token of worker n |
 | `MOCK_n_FAILURE_RATE`, `MOCK_n_FAILURE_MODE`, `MOCK_n_STARTUP_DELAY`, `MOCK_n_SEED` | 0, `error`, 0s, n | failure injection (modes: `error`, `unavailable`, `drop`, `midstream`) |

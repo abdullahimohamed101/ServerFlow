@@ -112,6 +112,7 @@ func TestDevUpCheckEnv(t *testing.T) {
 		{"lowercase variable", "gateways=3"},
 		{"not a pair", canary},
 		{"strategy", "SF_STRATEGY=" + canary},
+		{"resilience mode", "SF_RESILIENCE_MODE=" + canary},
 		{"failure mode", "MOCK_1_FAILURE_MODE=" + canary},
 		{"failure rate above one", "MOCK_1_FAILURE_RATE=1.5"},
 		{"tps zero", "MOCK_1_TPS=0"},
