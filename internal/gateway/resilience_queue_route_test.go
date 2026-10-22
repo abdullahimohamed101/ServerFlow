@@ -1,0 +1,398 @@
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"serverflow/internal/config"
+	"serverflow/internal/resilience"
+	"serverflow/pkg/protocol"
+)
+
+// Phase 15 PR E: how the queue meets the router. A slot is handed to the head waiter only when its worker is still
+// a valid choice; a request waits only when the model is served and every eligible worker is full; the queue key is
+// always a registry-confirmed model; and a randomized run checks the whole thing against a simple model.
+
+// twoGateWorkers returns an environment with two single-slot gate workers, w-1 and w-2, each with one request in
+// flight, and one waiter queued. The caller decides what happens to the workers before releasing them.
+func twoGateWorkers(t *testing.T, mutate ...func(*config.Config)) (e *resEnv, w1, w2 *gateWorker, waiter <-chan chatResult, held1, held2 <-chan chatResult) {
+	t.Helper()
+	w1, w2 = newGateWorker(t, "w-1"), newGateWorker(t, "w-2")
+	e = newResEnv(t, []protocol.WorkerSnapshot{w1.snap(1), w2.snap(1)}, append([]func(*config.Config){noBreaker}, mutate...)...)
+	held1 = e.chatAsync(context.Background(), "h1")
+	w1.awaitArrivals(t, 1) // round-robin starts at w-1
+	held2 = e.chatAsync(context.Background(), "h2")
+	w2.awaitArrivals(t, 1)
+	waiter = e.chatAsync(context.Background(), "waiter")
+	e.awaitDepth(t, 1)
+	return
+}
+
+// A slot freed on a worker that is no longer eligible in the registry's view is not handed over: the waiter keeps
+// its place, and is served by the first slot that frees on a worker that is.
+func TestASlotOfAWorkerThatIsNoLongerEligibleIsNotHandedOver(t *testing.T) {
+	e, w1, w2, waiter, held1, held2 := twoGateWorkers(t)
+	drained := w1.snap(1)
+	drained.State = protocol.StateDraining
+	drained.Eligible = false
+	e.lister.set([]protocol.WorkerSnapshot{drained, w2.snap(1)}, nil)
+	e.refresh(t)
+
+	w1.release(t, 1)
+	awaitResult(t, held1)
+	time.Sleep(150 * time.Millisecond)
+	if n := len(w1.arrivals()); n != 1 {
+		t.Fatalf("the draining worker was handed the waiter: %v", w1.arrivals())
+	}
+	if e.rs.waitq.Depth("qwen-7b") != 1 {
+		t.Fatal("the waiter must keep waiting")
+	}
+	w2.release(t, 1)
+	awaitResult(t, held2)
+	w2.awaitArrivals(t, 2)
+	w2.release(t, 1)
+	if r := awaitResult(t, waiter); r.resp.StatusCode != 200 || whoAnswered(t, r.body) != "w-2" {
+		t.Fatalf("%d %s", r.resp.StatusCode, r.body)
+	}
+	e.settle(t, "w-1", "w-2")
+}
+
+// The same for a worker whose breaker is open: the hand-off consults the breaker, so ejection cannot be bypassed.
+func TestASlotOfAWorkerWithAnOpenBreakerIsNotHandedOver(t *testing.T) {
+	w1, w2 := newGateWorker(t, "w-1"), newGateWorker(t, "w-2")
+	e := newResEnv(t, []protocol.WorkerSnapshot{w1.snap(1), w2.snap(1)}) // real breakers: 3 faults open one
+	held1 := e.chatAsync(context.Background(), "h1")
+	w1.awaitArrivals(t, 1)
+	held2 := e.chatAsync(context.Background(), "h2")
+	w2.awaitArrivals(t, 1)
+	waiter := e.chatAsync(context.Background(), "waiter")
+	e.awaitDepth(t, 1)
+	k := e.key("w-1")
+	for i := 0; i < 3; i++ {
+		tk, ok := e.rs.breakers.Acquire(k)
+		if !ok {
+			t.Fatalf("acquire %d", i)
+		}
+		e.rs.breakers.Record(tk, resilience.Fault)
+	}
+	if e.state("w-1") != resilience.Open {
+		t.Fatalf("the breaker is %v", e.state("w-1"))
+	}
+
+	w1.release(t, 1)
+	awaitResult(t, held1)
+	time.Sleep(150 * time.Millisecond)
+	if n := len(w1.arrivals()); n != 1 {
+		t.Fatalf("the ejected worker was handed the waiter: %v", w1.arrivals())
+	}
+	w2.release(t, 1)
+	awaitResult(t, held2)
+	w2.awaitArrivals(t, 2)
+	w2.release(t, 1)
+	if r := awaitResult(t, waiter); r.resp.StatusCode != 200 || whoAnswered(t, r.body) != "w-2" {
+		t.Fatalf("%d %s", r.resp.StatusCode, r.body)
+	}
+	e.settle(t, "w-1", "w-2")
+}
+
+// A request waits only when the model is served and every eligible worker is full. With no eligible worker (all
+// draining) or an unusable view it is refused at once, as it always was.
+func TestARequestDoesNotWaitWhenThereIsNothingToWaitFor(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	drained := g.snap(1)
+	drained.State = protocol.StateDraining
+	drained.Eligible = false
+	e := newResEnv(t, []protocol.WorkerSnapshot{drained}, noBreaker)
+	began := time.Now()
+	r := awaitResult(t, e.chatAsync(context.Background(), "x"))
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || time.Since(began) > time.Second {
+		t.Fatalf("no eligible worker is an immediate 503: %d %s after %v", r.resp.StatusCode, r.body, time.Since(began))
+	}
+	want(t, e.gw.metrics, 1, "scheduler_decisions_total", "result=no_capacity")
+	if len(e.rec.queueWaits()) != 0 {
+		t.Fatal("it did not wait")
+	}
+
+	e.gw.router.cache.cur.Store(nil) // no snapshot at all
+	r = awaitResult(t, e.chatAsync(context.Background(), "y"))
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "WORKER_UNAVAILABLE" {
+		t.Fatalf("an unusable view is an immediate WORKER_UNAVAILABLE: %d %s", r.resp.StatusCode, r.body)
+	}
+	if e.rs.waitq.Depth("qwen-7b") != 0 {
+		t.Fatal("nothing queued")
+	}
+}
+
+// A model beyond the model cap (metrics.max_models) has no queue: it is refused at once as before, while the model
+// that already has one is unaffected.
+func TestAModelBeyondTheModelCapHasNoQueue(t *testing.T) {
+	g1, g2 := newGateWorker(t, "w1"), newGateWorker(t, "w2")
+	s1 := g1.snap(1)
+	s2 := g2.snapshot("other-model")
+	s2.MaxConcurrency = 1
+	e := newResEnv(t, []protocol.WorkerSnapshot{s1, s2}, noBreaker, func(c *config.Config) { c.Metrics.MaxModels = 1 })
+
+	held := e.chatAsync(context.Background(), "r0")
+	g1.awaitArrivals(t, 1)
+	queued := e.chatAsync(context.Background(), "q1")
+	e.awaitDepth(t, 1) // qwen-7b took the only queue
+
+	// other-model is served, its worker is full, and no queue is left for it.
+	heldOther := postModel(e, "other-model", "o0")
+	g2.awaitArrivals(t, 1)
+	began := time.Now()
+	r := awaitResult(t, postModel(e, "other-model", "o1"))
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || time.Since(began) > time.Second {
+		t.Fatalf("%d %s after %v", r.resp.StatusCode, r.body, time.Since(began))
+	}
+	if got := e.rs.waitq.Models(); len(got) != 1 || got[0] != "qwen-7b" {
+		t.Fatalf("queues: %v", got)
+	}
+	g1.release(t, 2)
+	g2.release(t, 1)
+	awaitResult(t, held)
+	awaitResult(t, queued)
+	awaitResult(t, heldOther)
+}
+
+func postModel(e *resEnv, model, content string) <-chan chatResult {
+	out := make(chan chatResult, 1)
+	go func() {
+		body := `{"model":"` + model + `","messages":[{"role":"user","content":"` + content + `"}]}`
+		resp, err := e.client.Post(e.url+chatCompletionsPath, "application/json", strings.NewReader(body))
+		if err != nil {
+			out <- chatResult{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		out <- chatResult{resp: resp, body: string(b)}
+	}()
+	return out
+}
+
+// The tenant, model and worker ID are all registry or authentication values; a hostile model name stays a 404.
+func TestAHostileModelNameIsRefusedWithoutQueueingOrSeries(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g)
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	q := e.chatAsync(context.Background(), "q1")
+	e.awaitDepth(t, 1)
+	for i := 0; i < 20; i++ {
+		resp, _ := e.chat(t, fmt.Sprintf("no-such-model-%d", i))
+		if resp.StatusCode != 404 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+	}
+	if got := e.rs.waitq.Models(); len(got) != 1 || got[0] != "qwen-7b" {
+		t.Fatalf("queues exist for %v", got)
+	}
+	if _, ok := sample(t, e.gw.metrics, "admission_rejections_total"); ok {
+		t.Fatal("an unknown model is not an admission shed")
+	}
+	g.release(t, 2)
+	awaitResult(t, held)
+	awaitResult(t, q)
+}
+
+// perReqWorker answers each request when the test releases that request by name, so a model-based test knows which
+// request leaves when.
+type perReqWorker struct {
+	*scriptWorker
+	mu    sync.Mutex
+	gates map[string]chan struct{}
+	order []string
+	done  chan struct{}
+}
+
+func newPerReqWorker(t *testing.T, id string) *perReqWorker {
+	t.Helper()
+	p := &perReqWorker{gates: map[string]chan struct{}{}, done: make(chan struct{})}
+	p.scriptWorker = newScriptWorker(t, id, func(w http.ResponseWriter, r *http.Request) {
+		c := contentOf(r)
+		p.mu.Lock()
+		p.order = append(p.order, c)
+		ch := p.gateLocked(c)
+		p.mu.Unlock()
+		select {
+		case <-ch:
+		case <-p.done:
+			return
+		case <-r.Context().Done():
+			return
+		}
+		okJSON(id)(w, r)
+	})
+	t.Cleanup(func() { close(p.done) })
+	return p
+}
+
+func (p *perReqWorker) gateLocked(c string) chan struct{} {
+	ch, ok := p.gates[c]
+	if !ok {
+		ch = make(chan struct{})
+		p.gates[c] = ch
+	}
+	return ch
+}
+
+func (p *perReqWorker) release(c string) {
+	p.mu.Lock()
+	ch := p.gateLocked(c)
+	p.mu.Unlock()
+	close(ch)
+}
+
+func (p *perReqWorker) served() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.order...)
+}
+
+// The randomized check: arrivals, completions, cancellations and refreshes in random order against a model of what
+// must happen (capacity never exceeded, strict FIFO, depth bound, nothing lost), for several seeds.
+func TestTheQueueMatchesAModelUnderRandomArrivalsCompletionsAndCancellations(t *testing.T) {
+	for seed := int64(1); seed <= 6; seed++ {
+		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) { runQueueModel(t, seed) })
+	}
+}
+
+func runQueueModel(t *testing.T, seed int64) {
+	const (
+		conc  = 3
+		depth = 5
+		steps = 70
+	)
+	rng := rand.New(rand.NewSource(seed))
+	w := newPerReqWorker(t, "w1")
+	snap := w.snapshot("qwen-7b")
+	snap.MaxConcurrency = conc
+	e := newResEnv(t, []protocol.WorkerSnapshot{snap}, noBreaker, queueCfg(depth, 30*time.Second),
+		func(c *config.Config) { c.Resilience.Queue.MaxTenantShare = 0 })
+
+	type req struct {
+		id     string
+		cancel context.CancelFunc
+		res    <-chan chatResult
+	}
+	var inflight, queue []*req
+	results := map[string]<-chan chatResult{}
+	next := 0
+	var wantServed []string
+
+	checkState := func(label string) {
+		t.Helper()
+		eventually(t, 5*time.Second, func() bool { return e.rs.waitq.Depth("qwen-7b") == len(queue) }, fmt.Sprintf("%s: depth %d", label, len(queue)))
+		eventually(t, 5*time.Second, func() bool { return len(w.served()) == len(wantServed) }, fmt.Sprintf("%s: %d served", label, len(wantServed)))
+		got := w.served()
+		for i := range wantServed {
+			if got[i] != wantServed[i] {
+				t.Fatalf("%s: service order %v, model %v", label, got, wantServed)
+			}
+		}
+		if n := e.gw.router.InFlight("w1"); n != len(inflight) || n > conc {
+			t.Fatalf("%s: %d slots in flight, model %d, capacity %d", label, n, len(inflight), conc)
+		}
+	}
+
+	for step := 0; step < steps; step++ {
+		switch a := rng.Intn(10); {
+		case a < 5: // arrival
+			id := fmt.Sprintf("s%d-r%d", seed, next)
+			next++
+			ctx, cancel := context.WithCancel(context.Background())
+			r := &req{id: id, cancel: cancel, res: e.chatAsync(ctx, id)}
+			results[id] = r.res
+			switch {
+			case len(inflight) < conc && len(queue) == 0:
+				inflight = append(inflight, r)
+				wantServed = append(wantServed, id)
+			case len(queue) < depth:
+				queue = append(queue, r)
+			default:
+				res := awaitResult(t, r.res) // shed by the depth bound: it answers at once; nothing joins the model
+				cancel()
+				if res.resp.StatusCode != 503 {
+					t.Fatalf("seed %d step %d: over the depth bound, status %d", seed, step, res.resp.StatusCode)
+				}
+				delete(results, id)
+			}
+		case a < 8: // a running request completes
+			if len(inflight) == 0 {
+				continue
+			}
+			i := rng.Intn(len(inflight))
+			done := inflight[i]
+			inflight = append(inflight[:i], inflight[i+1:]...)
+			w.release(done.id)
+			if r := awaitResult(t, done.res); r.resp.StatusCode != 200 {
+				t.Fatalf("seed %d step %d: %s answered %d", seed, step, done.id, r.resp.StatusCode)
+			}
+			delete(results, done.id)
+			if len(queue) > 0 { // the freed slot goes to the head
+				head := queue[0]
+				queue = queue[1:]
+				inflight = append(inflight, head)
+				wantServed = append(wantServed, head.id)
+			}
+		case a < 9: // a waiter's client leaves
+			if len(queue) == 0 {
+				continue
+			}
+			i := rng.Intn(len(queue))
+			gone := queue[i]
+			queue = append(queue[:i], queue[i+1:]...)
+			gone.cancel()
+			<-gone.res
+			delete(results, gone.id)
+		default: // a registry refresh with unchanged numbers
+			e.refresh(t)
+		}
+		checkState(fmt.Sprintf("seed %d step %d", seed, step))
+	}
+
+	// Drain: everything still running completes, and the queue empties in order.
+	for len(inflight) > 0 || len(queue) > 0 {
+		done := inflight[0]
+		inflight = inflight[1:]
+		w.release(done.id)
+		awaitResult(t, done.res)
+		delete(results, done.id)
+		if len(queue) > 0 {
+			head := queue[0]
+			queue = queue[1:]
+			inflight = append(inflight, head)
+			wantServed = append(wantServed, head.id)
+		}
+		checkState(fmt.Sprintf("seed %d drain", seed))
+	}
+	e.settle(t, "w1")
+	if d := e.rs.waitq.Depth("qwen-7b"); d != 0 || e.rs.admission.Active() != 0 {
+		t.Fatalf("seed %d: depth %d, global %d at the end", seed, d, e.rs.admission.Active())
+	}
+	if len(results) != 0 {
+		t.Fatalf("seed %d: %d requests never answered", seed, len(results))
+	}
+}
+
+// contentOf returns the first message's content of a chat request body at a worker.
+func contentOf(r *http.Request) string {
+	b, _ := io.ReadAll(r.Body)
+	var v struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	_ = json.Unmarshal(b, &v)
+	if len(v.Messages) == 0 {
+		return ""
+	}
+	return v.Messages[0].Content
+}

@@ -23,9 +23,11 @@ var resilienceFamilies = map[string]bool{
 	"circuit_breaker_transitions_total": true, "circuit_breaker_probes_total": true, "retries_denied_total": true,
 	"breaker_trips_suppressed_total": true, "inference_deadline_exceeded_total": true,
 	"circuit_breaker_state": true, "circuit_breakers_open": true,
+	// PR E: admission.
+	"admission_rejections_total": true, "inference_queue_duration_seconds": true, "admission_queue_depth": true,
 }
 
-// additionsCatalogue is seriesCatalogue restricted to the families PR D adds.
+// additionsCatalogue is seriesCatalogue restricted to the families PR D and PR E add.
 func additionsCatalogue(t *testing.T, s *Server) string {
 	t.Helper()
 	var keep []string
@@ -64,6 +66,13 @@ func driveResilienceEvents(m *metrics) {
 	m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w-1", Model: "qwen-7b", Outcome: AttemptFailed, RetryDenied: RetryDeniedBudget})
 	m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w-1", Model: "qwen-7b", Outcome: AttemptFailed, RetryDenied: RetryDeniedDeadline})
 	m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w-1", Model: "qwen-7b", Outcome: AttemptFailed, Class: classDeadline})
+	for _, reason := range []string{OverloadGlobalLimit, OverloadQueueFull, OverloadQueueTimeout, OverloadDraining} {
+		m.RequestRejected(bg, Rejection{Kind: RejectOverload, Reason: reason, Status: 503, Model: "qwen-7b"})
+	}
+	m.RequestRejected(bg, Rejection{Kind: RejectOverload, Reason: OverloadGlobalLimit, Status: 503}) // before the body: no model
+	for _, r := range []string{QueueServed, QueueTimeout, QueueClientGone, QueueDrained} {
+		m.QueueWaited(bg, QueueWait{Model: "qwen-7b", Waited: 250 * time.Millisecond, Result: r})
+	}
 }
 
 // With the feature off, in static mode, or with static workers and mode on, no resilience series exists: /metrics
@@ -203,6 +212,10 @@ func TestResilienceSeriesCeilingWithAThousandWorkersAndModels(t *testing.T) {
 		m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w", Model: model, Outcome: AttemptFailed, RetryDenied: RetryDeniedBudget})
 		m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w", Model: model, Outcome: AttemptFailed, RetryDenied: RetryDeniedDeadline})
 		m.AttemptEnded(bg, AttemptEnd{Number: 1, WorkerID: "w", Model: model, Outcome: AttemptFailed, Class: classDeadline})
+		for _, reason := range []string{OverloadGlobalLimit, OverloadQueueFull, OverloadQueueTimeout, OverloadDraining} {
+			m.RequestRejected(bg, Rejection{Kind: RejectOverload, Reason: reason, Status: 503, Model: model})
+		}
+		m.QueueWaited(bg, QueueWait{Model: model, Waited: time.Second, Result: QueueServed})
 	}
 	fams, err := m.reg.Gather()
 	if err != nil {
