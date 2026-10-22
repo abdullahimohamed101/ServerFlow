@@ -53,6 +53,12 @@ func main() {
 		"failure_rate", cfg.FailureRate, "failure_mode", string(cfg.FailureMode), "seed", cfg.Seed,
 		"startup_delay", cfg.StartupDelay.String(), "drain_announce", cfg.DrainAnnounce.String())
 
+	if cfg.UsesSim() {
+		p := cfg.SimParams()
+		logger.Info("simulator engine enabled: timings come from a model, not a measurement", "component", "mock-worker",
+			"model_engine", mockworker.ModelEngineSim, "profile", p.Name, "provenance", p.Provenance, "params_sha256", p.Hash())
+	}
+
 	var opts []mockworker.Option
 	var tracer *tracing.Provider
 	if cfg.OTLPEndpoint != "" {
