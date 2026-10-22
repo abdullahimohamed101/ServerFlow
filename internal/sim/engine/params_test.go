@@ -154,17 +154,18 @@ func TestParseParamsIsStrict(t *testing.T) {
 	b, _ := good.MarshalFile()
 	ok := string(b)
 	cases := map[string]string{
-		"unknown extra key":   strings.Replace(ok, `"name"`, `"bogus": 1, "name"`, 1),
-		"case-variant key":    strings.Replace(ok, `"step_base_ms"`, `"Step_Base_Ms"`, 1),
-		"duplicate key":       strings.Replace(ok, `"name"`, `"step_base_ms": 5, "name"`, 1),
-		"null value":          strings.Replace(ok, `"step_noise_cv": 0`, `"step_noise_cv": null`, 1),
-		"null provenance":     strings.Replace(ok, `"provenance": "assumed`, `"provenance": null, "x": "assumed`, 1),
-		"missing field":       strings.Replace(ok, `"output_cv": 0,`, ``, 1),
-		"missing version":     strings.Replace(ok, `"version": 1,`, ``, 1),
-		"empty provenance":    strings.NewReplacer(good.Provenance, "").Replace(ok),
-		"string for a number": strings.Replace(ok, `"weights_mb": 14000`, `"weights_mb": "14000"`, 1),
-		"array not object":    `[]`,
-		"huge name":           strings.Replace(ok, `"default"`, `"`+strings.Repeat("a", 300)+`"`, 1),
+		"unknown extra key":      strings.Replace(ok, `"name"`, `"bogus": 1, "name"`, 1),
+		"case-variant key":       strings.Replace(ok, `"step_base_ms"`, `"Step_Base_Ms"`, 1),
+		"case-variant duplicate": strings.Replace(ok, `"name"`, `"STEP_BASE_MS": 5, "name"`, 1),
+		"duplicate key":          strings.Replace(ok, `"name"`, `"step_base_ms": 5, "name"`, 1),
+		"null value":             strings.Replace(ok, `"step_noise_cv": 0`, `"step_noise_cv": null`, 1),
+		"null provenance":        strings.Replace(ok, `"provenance": "assumed`, `"provenance": null, "x": "assumed`, 1),
+		"missing field":          strings.Replace(ok, `"output_cv": 0,`, ``, 1),
+		"missing version":        strings.Replace(ok, `"version": 1,`, ``, 1),
+		"empty provenance":       strings.NewReplacer(good.Provenance, "").Replace(ok),
+		"string for a number":    strings.Replace(ok, `"weights_mb": 14000`, `"weights_mb": "14000"`, 1),
+		"array not object":       `[]`,
+		"huge name":              strings.Replace(ok, `"default"`, `"`+strings.Repeat("a", 300)+`"`, 1),
 	}
 	for name, in := range cases {
 		if _, err := ParseParams(strings.NewReader(in)); err == nil {
