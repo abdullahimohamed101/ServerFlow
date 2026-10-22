@@ -176,6 +176,9 @@ type diffRequest struct {
 	method string
 	path   string
 	body   string
+	hdr    map[string]string
+	// bare requests do not get the variant's default headers (for example no API key).
+	bare bool
 }
 
 func chatReq(name, body string) diffRequest {
@@ -240,6 +243,10 @@ type diffVariant struct {
 	limiter bool
 	// build returns the gateway, its logs and the lister-independent hit log.
 	build func(t *testing.T, hits *hitLog, lim *fakeLimiter) (*Server, *lockedBuffer)
+	// script overrides the request script (nil: diffScript). headers, when set, supplies headers for every
+	// request that is not bare; it is called per request, after build.
+	script  func() []diffRequest
+	headers func() map[string]string
 }
 
 func registryVariant(name, strategy string, reported []int, limiter bool) diffVariant {
@@ -350,12 +357,24 @@ func runDifferential(t *testing.T, v diffVariant) diffRecord {
 	logs.mu.Unlock()
 	hits.drain()
 	costSeen := 0
-	for _, rq := range diffScript() {
+	script := diffScript
+	if v.script != nil {
+		script = v.script
+	}
+	for _, rq := range script() {
 		req, err := http.NewRequest(rq.method, srv.URL+rq.path, strings.NewReader(rq.body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if v.headers != nil && !rq.bare {
+			for k, val := range v.headers() {
+				req.Header.Set(k, val)
+			}
+		}
+		for k, val := range rq.hdr {
+			req.Header.Set(k, val)
+		}
 		if rq.name == "client-request-id" {
 			req.Header.Set("X-Request-ID", "client-supplied-1")
 		}
@@ -409,7 +428,7 @@ func settledLogs(t *testing.T, logs *lockedBuffer) []string {
 
 func TestDifferentialAgainstRecordedFixtures(t *testing.T) {
 	dir := filepath.Join("testdata", "differential")
-	for _, v := range diffVariants() {
+	for _, v := range append(diffVariants(), wideVariants()...) {
 		t.Run(v.name, func(t *testing.T) {
 			got := runDifferential(t, v)
 			var buf bytes.Buffer
