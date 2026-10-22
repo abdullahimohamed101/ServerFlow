@@ -53,6 +53,11 @@ func TestTransportErrorsAreRetryableOnlyWhenNoOutputCanHaveStarted(t *testing.T)
 		{"something unknown", errors.New("boom"), "", false},
 		{"nil", nil, "", false},
 		{"a file error", os.ErrNotExist, "", false},
+		{"net/http closed an idle connection", errors.New("http: server closed idle connection"), classReset, true},
+		{"the same, wrapped like http.Client does", &url.Error{Op: "Post", URL: "http://x", Err: errors.New("http: server closed idle connection")}, classReset, true},
+		{"another closed error: a closed network connection", errors.New("use of closed network connection"), "", false},
+		{"another closed error: http2", errors.New("http2: client conn is closed"), "", false},
+		{"the idle text with a suffix is not the same error", errors.New("http: server closed idle connection (extra)"), "", false},
 	}
 	for _, c := range cases {
 		class, retry := p.transportError(c.err)
