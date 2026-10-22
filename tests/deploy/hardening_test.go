@@ -199,3 +199,19 @@ func TestTraceInsecureFlagOnlyBesideATracingEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentHealthchecksKeepTheirTiming pins the agents' healthcheck numbers (the shared anchor's): a typo that
+// makes one agent unhealthy after a single missed check, or never, must not pass because the range check in
+// TestHealthchecksAreBoundedAndAimedAtTheService is loose. A healthy agent is a registered one (ADR-022 D6), and
+// dev-up refuses to finish while a container is unhealthy.
+func TestAgentHealthchecksKeepTheirTiming(t *testing.T) {
+	svcs := services(t, "docker-compose.yml")
+	for _, n := range []string{"1", "2", "3"} {
+		name := "worker-agent-" + n
+		hc := asMap(t, svcs[name]["healthcheck"], name+" healthcheck")
+		if dur(t, hc["interval"]) != 5*time.Second || dur(t, hc["timeout"]) != 4*time.Second || dur(t, hc["start_period"]) != 2*time.Second || hc["retries"] != 6 {
+			t.Errorf("%s healthcheck timing = interval %v timeout %v start_period %v retries %v, want 5s 4s 2s 6", name,
+				hc["interval"], hc["timeout"], hc["start_period"], hc["retries"])
+		}
+	}
+}

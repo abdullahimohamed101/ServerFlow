@@ -123,8 +123,10 @@ A snapshot never includes the registration ID.
   backend back off up to ten intervals.
 - **Status endpoint** (Phase 17, ADR-022 D6; off unless `worker.status_listen` is set, for example `127.0.0.1:9102`):
   a loopback-only listener for a probe running beside the agent (the `healthcheck` binary: Docker's healthcheck, a
-  Kubernetes exec probe). `GET /healthz` is 200 while the heartbeat loop wakes on schedule (the delay it announced,
-  backoff included, plus two intervals; three intervals before the first step ends) and says nothing about the control
+  Kubernetes exec probe). `GET /healthz` is 200 while the heartbeat loop wakes on schedule: the wait it announced
+  (backoff included), plus one interval, plus the longest the next step can take by itself (three call timeouts, each
+  half an interval but at least 250 ms; 7 s at the default 2 s interval, 14 s before the first step ends). A control
+  plane that times out every call therefore cannot make it fail. It says nothing about the control
   plane or the backend, so an outage of either never restarts agents. `GET /readyz` is 200 only when the agent holds a
   registration, the control plane accepted a heartbeat within `worker.unhealthy_timeout`, and the backend answered in
   the last step; otherwise 503 with a fixed reason (`not registered`, `backend unreachable`, `no recent accepted
