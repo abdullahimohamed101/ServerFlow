@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
-	"serverflow/internal/ratelimit"
+	"serverflow/internal/cost"
 	"serverflow/pkg/protocol"
 )
 
@@ -135,6 +135,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Carried for the scheduler and later phases; quotas and priority are not enforced yet.
 		ireq.TenantID, ireq.Priority = p.TenantID, p.Policy.Priority
 	}
+	// One estimate per request, made here whether or not a limiter is configured (ADR-022): the rate limiter
+	// charges exactly the sum, and the scheduler's work accounting reads the two parts.
+	ireq.EstInputTokens, ireq.EstOutputTokens = cost.Estimate(ireq.Messages, ireq.Prompt, len(body), ireq.MaxTokens, s.cfg.MaxTokensLimit)
 
 	if s.router != nil && s.refuseUnknownModel(w, r, info, ireq) {
 		return
@@ -148,7 +151,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// After parsing (the token cost needs the body) and the model checks, before any worker is touched.
 		// The slot is given back on every way out of this function: a normal return, an error, a client that
 		// left, and a panic.
-		release, ok := s.admit(w, r, info, ratelimit.EstimateRequestCost(ireq.Messages, ireq.Prompt, len(body), ireq.MaxTokens, s.cfg.MaxTokensLimit), ireq.Model)
+		release, ok := s.admit(w, r, info, ireq.EstInputTokens+ireq.EstOutputTokens, ireq.Model)
 		if !ok {
 			return
 		}
