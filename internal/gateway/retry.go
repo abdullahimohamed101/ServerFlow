@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -55,6 +56,9 @@ func (p retryPolicy) status(code int) (class string, retryable bool) {
 	return "", false
 }
 
+// errServerClosedIdleText is the message of net/http's errServerClosedIdle.
+const errServerClosedIdleText = "http: server closed idle connection"
+
 // transportError classifies an error from sending the request, before any response headers.
 func (p retryPolicy) transportError(err error) (class string, retryable bool) {
 	if err == nil || errors.Is(err, context.Canceled) {
@@ -66,6 +70,12 @@ func (p retryPolicy) transportError(err error) (class string, retryable bool) {
 	case errors.Is(err, syscall.ECONNREFUSED), errors.As(err, &dnsErr), errors.As(err, &opErr) && opErr.Op == "dial":
 		return classConnect, true // includes a dial timeout and a refused address: nothing was sent
 	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return classReset, true
+	case strings.Contains(err.Error(), errServerClosedIdleText):
+		// net/http's own report of the same thing: the worker closed the idle keep-alive connection the request was
+		// about to use (a worker that stops listening closes its idle connections), so nothing was processed.
+		// The error value is unexported, hence the text; a test pins it against the real transport. The transport
+		// does not replay a POST by itself.
 		return classReset, true
 	}
 	return "", false // header timeouts, TLS errors, anything unknown

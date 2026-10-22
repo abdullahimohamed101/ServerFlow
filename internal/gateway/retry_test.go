@@ -8,8 +8,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -105,5 +110,68 @@ func TestFirstChunkFailuresAreRetryableExceptTimeoutsAndCancellation(t *testing.
 		if retry != tc.retry || (retry && class != classEmptyStream) || (!retry && class != "") {
 			t.Errorf("%s: got (%q, %v)", name, class, retry)
 		}
+	}
+}
+
+// closeWatchConn tells when the transport closed the connection.
+type closeWatchConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeWatchConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+// A worker that stops listening closes its idle keep-alive connections. When that lands between the transport
+// choosing a pooled connection and writing the request, net/http returns an unexported "server closed idle
+// connection" error and, for a POST, does not replay it. The worker processed nothing, so the gateway retries it
+// like any other close before headers. This produces the real error to pin its text and its classification.
+func TestAServerClosedIdleConnectionIsRetryable(t *testing.T) {
+	var serverSide atomic.Pointer[net.Conn]
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	srv.Config.ConnState = func(c net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			serverSide.Store(&c)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	var cc *closeWatchConn
+	tr := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		cc = &closeWatchConn{Conn: c, closed: make(chan struct{})}
+		return cc, err
+	}}
+	defer tr.CloseIdleConnections()
+	post := func(ctx context.Context) (*http.Response, error) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader("{}"))
+		return tr.RoundTrip(req)
+	}
+	resp, err := post(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close() // the connection is idle in the pool
+	first := cc
+	// The peer closes it exactly while the next request has been given that connection and has not yet used it.
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		if info.Reused {
+			_ = (*serverSide.Load()).Close()
+			<-first.closed
+		}
+	}}
+	_, err = post(httptrace.WithClientTrace(context.Background(), trace))
+	if err == nil {
+		t.Fatal("the request on the closed connection must fail")
+	}
+	if class, retry := newRetryPolicy(2, []int{502, 503}).transportError(&url.Error{Op: "Post", URL: srv.URL, Err: err}); class != classReset || !retry {
+		t.Fatalf("%q (%v): got (%q, %v), want a retryable reset", err, err, class, retry)
+	}
+	if !strings.Contains(err.Error(), errServerClosedIdleText) {
+		t.Fatalf("net/http now reports %q: update errServerClosedIdleText", err)
 	}
 }
