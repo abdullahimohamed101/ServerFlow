@@ -281,3 +281,22 @@ func TestCloseAfterDrainAndReplaceLeaksNoGoroutines(t *testing.T) {
 		t.Fatalf("goroutines: %d before, %d after Close\n%s", before, after, buf[:runtime.Stack(buf, true)])
 	}
 }
+
+// The embedded gateway is stopped by cancelling its context with nobody to notice a failing /readyz, so it has no
+// readiness grace by default (Phase 15 D16): a run must not wait for one. A scenario's own edit comes later and wins.
+func TestTheEmbeddedGatewayHasNoReadinessGraceUnlessAScenarioSetsOne(t *testing.T) {
+	var seen *time.Duration
+	startCluster(t, Config{Workers: 1, Resilience: "on", GatewayMutate: func(g *config.Config) { seen = g.Resilience.Drain.ReadinessGrace }})
+	if seen == nil || *seen != 0 {
+		t.Fatalf("readiness grace %v, want an explicit 0", seen)
+	}
+	var wanted *time.Duration
+	startCluster(t, Config{Workers: 1, Resilience: "on", GatewayMutate: func(g *config.Config) {
+		d := 700 * time.Millisecond
+		g.Resilience.Drain.ReadinessGrace = &d
+		wanted = g.Resilience.Drain.ReadinessGrace
+	}})
+	if wanted == nil || *wanted != 700*time.Millisecond {
+		t.Fatalf("a scenario's grace must be allowed: %v", wanted)
+	}
+}

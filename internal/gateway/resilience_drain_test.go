@@ -271,6 +271,31 @@ func TestDrainWaitersAndArrivalsKeepQueueingDuringTheGrace(t *testing.T) {
 	s.waitDone(t, 5*time.Second)
 }
 
+// A listener that fails during the grace ends Serve with that error at once (it does not wait out the grace).
+func TestDrainListenerFailureDuringTheGraceEndsServe(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, drainCfg(30*time.Second, 20*time.Second))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- e.gw.Serve(ctx, ln) }()
+	cancel()
+	eventually(t, time.Second, func() bool { return e.rs.draining.Load() }, "draining")
+	_ = ln.Close() // the accept loop fails
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a listener failure must be reported")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve waited out the grace after its listener failed")
+	}
+}
+
 // What the background work keeps alive (the registry refresh) runs through the grace and the drain and stops only
 // when Serve returns, so routing does not go stale while a drain is under way.
 func TestDrainKeepsBackgroundWorkRunningUntilServeReturns(t *testing.T) {
