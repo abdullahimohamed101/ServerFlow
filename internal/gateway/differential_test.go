@@ -176,7 +176,6 @@ type diffRequest struct {
 	method string
 	path   string
 	body   string
-	hdr    map[string]string
 }
 
 func chatReq(name, body string) diffRequest {
