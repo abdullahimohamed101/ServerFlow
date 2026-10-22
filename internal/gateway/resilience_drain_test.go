@@ -271,6 +271,37 @@ func TestDrainWaitersAndArrivalsKeepQueueingDuringTheGrace(t *testing.T) {
 	s.waitDone(t, 5*time.Second)
 }
 
+// A waiter that cannot finish is answered before the shutdown budget ends (counted from the signal, grace included),
+// not cut by it: the flush happens 250 ms before the end of the budget.
+func TestDrainFlushesWaitersBeforeTheBudgetEnds(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	e := queueEnv(t, g, queueCfg(8, 30*time.Second), drainCfg(1600*time.Millisecond, 400*time.Millisecond))
+	s := e.serve(t)
+	held := s.post("held")
+	g.awaitArrivals(t, 1)
+	waiter := s.post("waiter")
+	e.awaitDepth(t, 1)
+	began := time.Now()
+	s.cancel()
+	r := awaitResult(t, waiter)
+	took := time.Since(began)
+	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || !strings.Contains(r.body, "shutting down") {
+		t.Fatalf("the waiter got %d %s after %v, want the draining shed", r.resp.StatusCode, r.body, took)
+	}
+	if took < 1000*time.Millisecond || took > 1550*time.Millisecond {
+		t.Fatalf("the waiter was flushed after %v, want about 1350 ms (1600 ms budget minus the 250 ms margin)", took)
+	}
+	select {
+	case err := <-s.done: // the held request outlives the budget: Serve reports the timeout
+		if err == nil {
+			t.Fatal("a drain cut short by the budget must say so")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+	<-held
+}
+
 // A listener that fails during the grace ends Serve with that error at once (it does not wait out the grace).
 func TestDrainListenerFailureDuringTheGraceEndsServe(t *testing.T) {
 	g := newGateWorker(t, "w1")
