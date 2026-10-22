@@ -525,3 +525,28 @@ func TestAHandOffChecksTheRegistrationOfTheWorker(t *testing.T) {
 		t.Fatalf("the stand-in waiter received the slot and left: depth %d", g)
 	}
 }
+
+// When a freed slot cannot be handed over (its worker registered again meanwhile), a waiter is asked to route at
+// once: it is served on the new registration without waiting for the next refresh.
+func TestADeclinedHandOffWakesAWaiterToRouteItself(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	old := g.snap(1)
+	old.RegisteredAt = time.Unix(1_700_000_000, 0)
+	e := newResEnv(t, []protocol.WorkerSnapshot{old}, noBreaker)
+	held := e.chatAsync(context.Background(), "r0")
+	g.awaitArrivals(t, 1)
+	waiter := e.chatAsync(context.Background(), "r1")
+	e.awaitDepth(t, 1)
+	renewed := old
+	renewed.RegisteredAt = old.RegisteredAt.Add(time.Minute)
+	e.lister.set([]protocol.WorkerSnapshot{renewed}, nil)
+	e.refresh(t) // no free slot yet: the old request still counts for the worker ID
+	g.release(t, 1)
+	awaitResult(t, held)
+	g.awaitArrivals(t, 2) // no further refresh: only the wake-up can have routed it
+	g.release(t, 1)
+	if r := awaitResult(t, waiter); r.resp.StatusCode != 200 {
+		t.Fatalf("status %d", r.resp.StatusCode)
+	}
+	e.settle(t, "w1")
+}
