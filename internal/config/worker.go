@@ -31,6 +31,10 @@ type WorkerConfig struct {
 	BackendURL      string `yaml:"backend_url"`
 	AdvertiseURL    string `yaml:"advertise_url"`
 	ControlPlaneURL string `yaml:"control_plane_url"`
+
+	// StatusListen is the agent's optional status endpoint (/healthz and /readyz), see workerstatus.go. Empty (the
+	// default) means the agent opens no listener at all.
+	StatusListen string `yaml:"status_listen"`
 }
 
 func (w *WorkerConfig) validate() error {
@@ -80,7 +84,7 @@ func (w *WorkerConfig) validateAgent() error {
 			return fmt.Errorf("%s: %v", name, err)
 		}
 	}
-	return nil
+	return validateStatusListen(w.StatusListen)
 }
 
 // minHeartbeatInterval keeps a typo from turning every agent into a hot loop.
