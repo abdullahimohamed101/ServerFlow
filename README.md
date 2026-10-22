@@ -107,6 +107,13 @@ On Windows (no `make`), use the existing quality gate:
 .\scripts\quality.ps1 -Mode Full
 ```
 
+`quality.ps1` mirrors `scripts/quality.sh` but is not identical, and it has not been run on Windows by its authors. Differences: `observability` (promtool)
+and `deploy` (hadolint, shellcheck, `docker compose config`) are skipped (run `bash scripts/quality.sh deploy` from Git Bash or WSL); `go test -race`
+runs only when a C compiler (`gcc`) is on `PATH`; `govulncheck` and `golangci-lint` must be installed (the script installs nothing) and run in Full mode only;
+the integration stages run only when `SERVERFLOW_TEST_POSTGRES_DSN`, `_REDIS_ADDR` and `_KAFKA_BROKERS` are set; and `./tests/integration` (its process
+tests use `SIGSTOP`, undefined on Windows) is left out, with the named tests that live in it. The header of the script lists the same. If `gofmt -l`
+lists every file, Git checked the sources out with CRLF line endings (the repository has no `.gitattributes`; `core.autocrlf=input` avoids it; unverified).
+
 ## Phase Status
 
 | Phase | Description | Status |

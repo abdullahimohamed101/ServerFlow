@@ -48,10 +48,10 @@ func code(ps string) string {
 var invocations = []struct{ what, re string }{
 	{"gofmt -l", `(?m)^[ \t]*\$\w+\s*=\s*gofmt -l \.[ \t]*$`},
 	{"golangci-lint run", `(?m)^[ \t]*golangci-lint run \./\.\.\.[ \t]*$`},
-	{"go test -race ./...", `(?m)^[ \t]*go test -race \./\.\.\.[ \t]*$`},
+	{"go test -race", `(?m)^[ \t]*go test -race @GoPackages[ \t]*$`},
 	{"-race for the must-run stages", `(?m)^[ \t]*\$RaceFlags\s*=\s*@\("-race"\)[ \t]*$`},
-	{"go vet", `(?m)^[ \t]*go vet \./\.\.\.[ \t]*$`},
-	{"go test", `(?m)^[ \t]*go test \./\.\.\.[ \t]*$`},
+	{"go vet", `(?m)^[ \t]*go vet @GoPackages[ \t]*$`},
+	{"go test", `(?m)^[ \t]*go test @GoPackages[ \t]*$`},
 	{"go build", `(?m)^[ \t]*go build \./\.\.\.[ \t]*$`},
 	{"the cross-compile loop", `(?m)^[ \t]*foreach \(\$target in @\([^\n]*"linux/amd64"[^\n]*"linux/arm64"[^\n]*"darwin/arm64"[^\n]*"windows/amd64"[^\n]*\)\) \{[ \t]*$`},
 	{"GOOS set in the cross-compile loop", `(?m)^[ \t]*\$env:GOOS\s*=\s*\$targetOS[ \t]*$`},

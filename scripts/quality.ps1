@@ -688,11 +688,44 @@ else {
 Write-Step "[5/8] Go"
 
 
-# Mirrors scripts/quality.sh stage by stage (lint, unit, race, integration, build, vuln, tracing). Two stages cannot be
-# mirrored in PowerShell and are reported as skips in Full mode: `observability` (scripts/promtool.sh is bash) and
-# `deploy` (hadolint, shellcheck, `docker compose config` and bash scripts); run `bash scripts/quality.sh observability`
-# and `bash scripts/quality.sh deploy` from Git Bash or WSL. internal/ciguard fails if the test names this
-# script insists on drift from quality.sh.
+# Mirrors scripts/quality.sh (lint, unit, race, integration, build, vuln, tracing), with these DIFFERENCES, all
+# deliberate and none hidden:
+#   - Fast mode runs gofmt, go test, go vet only; everything else below is Full mode only (quality.sh `lint` runs
+#     golangci-lint on its own, here it is a Full-mode stage).
+#   - `observability` (scripts/promtool.sh is bash) and `deploy` (hadolint, shellcheck, `docker compose config`, bash
+#     scripts) are NOT mirrored and are reported as skips in Full mode; run `bash scripts/quality.sh observability` and
+#     `bash scripts/quality.sh deploy` from Git Bash or WSL.
+#   - `go test -race` needs cgo, so it runs only when gcc is on PATH (else a loud skip; the must-run stages then run
+#     without -race). quality.sh always uses -race.
+#   - govulncheck is part of Full here; in quality.sh it is its own stage that `full` does not run. A missing
+#     govulncheck or golangci-lint is a failure here (this script installs nothing); quality.sh installs govulncheck.
+#   - On Windows the ./tests/integration package (process tests that send SIGSTOP/SIGTERM) does not compile
+#     (syscall.SIGSTOP is undefined), so it is left out of the must-run stages and the named tests that live in it are
+#     not required; the skip is announced. Fixing that needs a platform split of those tests, not a one-line constraint.
+#   - Integration runs only when all of SERVERFLOW_TEST_POSTGRES_DSN, _REDIS_ADDR and _KAFKA_BROKERS are set (a loud
+#     skip otherwise, like `quality.sh full`).
+# Nothing here has been run on Windows by the people who wrote it; internal/ciguard only checks that the stage
+# invocations and test names have not drifted from quality.sh (it cannot check the PowerShell is correct).
+# Line endings: the repository has no .gitattributes; a checkout with CRLF makes `gofmt -l` list every .go file on
+# Windows (git's core.autocrlf=input or a .gitattributes with `*.go text eol=lf` avoids it). Unverified here.
+
+# The named tests that live in ./tests/integration, which does not compile on Windows (syscall.SIGSTOP is undefined).
+$WindowsExcludedTests = @(
+    "TestADeadCollectorNeverTouchesRequests",
+    "TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace",
+    "TestGatewayEventsEndToEnd",
+    "TestGatewayWithRealPostgresHotPathAndFloods",
+    "TestOneTraceAcrossGatewayAndWorker",
+    "TestProcessAuthEndToEnd",
+    "TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests",
+    "TestProcessRateLimitingEndToEnd",
+    "TestProcessUsageConsumerEndToEnd",
+    "TestRedisFailureMatrixThroughTheGateway",
+    "TestThreeGatewaysShareOneRequestQuota",
+    "TestUsageCrashBetweenDatabaseAndOffsetCommit",
+    "TestUsageStopAndReplay"
+)
+
 
 function Assert-NativeSucceeded {
     param(
@@ -716,6 +749,20 @@ function Invoke-GoTestMustRun {
     )
 
     $log = Join-Path ([System.IO.Path]::GetTempPath()) ("serverflow-$Label-" + [guid]::NewGuid().ToString("N") + ".log")
+
+    # ./tests/integration does not compile on Windows (see the header of this section): drop it, and the tests that live
+    # in it, and say so.
+    if ($env:OS -eq "Windows_NT") {
+        $GoArgs = @($GoArgs | Where-Object { $_ -ne "./tests/integration/..." })
+
+        $skipped = @($Tests | Where-Object { $WindowsExcludedTests -contains $_ })
+
+        if ($skipped.Count -gt 0) {
+            Write-Host "  NOTE  $Label`: ./tests/integration does not compile on Windows; not run: $($skipped -join ', ')"
+        }
+
+        $Tests = @($Tests | Where-Object { $WindowsExcludedTests -notcontains $_ })
+    }
 
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -764,6 +811,15 @@ if (Test-Path -LiteralPath "go.mod") {
     }
     else {
 
+        # The packages `go test` and `go vet` cover. On Windows ./tests/integration cannot even be compiled (see the
+        # header of this section), so it is left out there and the omission is announced.
+        $GoPackages = @("./...")
+
+        if ($env:OS -eq "Windows_NT") {
+            $GoPackages = @(go list ./... | Where-Object { $_ -notlike "*/tests/integration" })
+            Write-Host "  NOTE  Windows: ./tests/integration does not compile here (syscall.SIGSTOP is undefined) and is not part of go test, go vet or go test -race."
+        }
+
         # ----------------------------------------------------
         # Fast checks (also the start of Full)
         # ----------------------------------------------------
@@ -779,12 +835,12 @@ if (Test-Path -LiteralPath "go.mod") {
 
 
         Invoke-Check "Go: test" {
-            go test ./...
+            go test @GoPackages
         }
 
 
         Invoke-Check "Go: vet" {
-            go vet ./...
+            go vet @GoPackages
         }
 
 
@@ -813,7 +869,7 @@ if (Test-Path -LiteralPath "go.mod") {
                 $RaceFlags = @("-race")
 
                 Invoke-Check "Go: go test -race" {
-                    go test -race ./...
+                    go test -race @GoPackages
                 }
             }
             else {
