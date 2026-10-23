@@ -12,6 +12,9 @@ PR A closes the three defects that need no configuration and adds the seam the r
 
 ## Decision
 
+### [Follow-up] The one deliberate exception to "mode off is identical" outside PR A's unconditional fixes
+The retry classification (`internal/gateway/retry.go`) is not behind `resilience.mode`: a request that fails with net/http's `http: server closed idle connection` is now retried on another worker, with `resilience.mode: off` too (before, it returned 502 `INFERENCE_FAILED` with one attempt). It makes ADR-012's "a close before headers is retried" true for the case net/http reports with an unexported error, found by the Phase 15 drain-roll test. Static mode has no retry policy and is unaffected. The breaker taxonomy is unchanged: any attempt error was already a fault. See the amendment in ADR-012.
+
 ### [PR A] Panic-safe attempts (D2, debt 1)
 
 `forwardRegistry` used to register its cleanup after the send loop, so a panic in the request recorder, in the upstream call or between two attempts skipped

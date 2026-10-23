@@ -357,7 +357,7 @@ func TestDrainKeepsBackgroundWorkRunningUntilServeReturns(t *testing.T) {
 // and the listener closes at once (the readiness grace does not exist).
 func TestDrainDoesNothingWithTheFeatureOff(t *testing.T) {
 	g := newGateWorker(t, "w1")
-	re := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{g.snap(1)}, func(c *config.GatewayConfig) { c.ShutdownTimeout = 3 * time.Second })
+	re := newRegEnv(t, "round-robin", []protocol.WorkerSnapshot{g.snap(1)}, func(c *config.GatewayConfig) { c.ShutdownTimeout = 20 * time.Second })
 	if re.gw.res != nil {
 		t.Fatal("the feature must be off")
 	}
@@ -372,9 +372,16 @@ func TestDrainDoesNothingWithTheFeatureOff(t *testing.T) {
 	g.awaitArrivals(t, 1)
 	s.cancel()
 	eventually(t, time.Second, func() bool { return cancelledAt.Load() != 0 }, "with the feature off the background work stops at the signal, as before")
-	if _, err := net.DialTimeout("tcp", s.addr, 300*time.Millisecond); err == nil {
-		t.Fatal("with the feature off the listener closes at the signal (no grace)")
-	}
+	// The background work and the listener both react to the same cancellation, in different goroutines, so the
+	// listener closes just after the background work stops, not before. The shutdown timeout is long so that a
+	// readiness grace (min(5s, timeout/2) = 5s) would be told apart from a scheduling delay by the 3 s bound.
+	eventually(t, 3*time.Second, func() bool {
+		c, err := net.DialTimeout("tcp", s.addr, 300*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err != nil
+	}, "with the feature off the listener closes at the signal (no grace)")
 	g.release(t, 1)
 	if r := awaitResult(t, inflight); r.resp.StatusCode != 200 {
 		t.Fatalf("in-flight request: %d", r.resp.StatusCode)

@@ -136,10 +136,15 @@ func (e *resEnv) key(id string) resilience.Key { return resilience.KeyOf(id, tim
 
 func (e *resEnv) state(id string) resilience.State { return e.rs.breakers.State(e.key(id)) }
 
-// settle waits until every slot is free and every ticket is back.
+// settle waits until every slot is free, every ticket is back and every started attempt has been ended. The slot
+// and the ticket are given back before AttemptEnded is delivered, so a test that reads the last AttemptEnd must
+// wait for it: the last one recorded may otherwise belong to an earlier attempt.
 func (e *resEnv) settle(t *testing.T, ids ...string) {
 	t.Helper()
 	allIdle(t, e.regEnv, ids...)
+	eventually(t, 5*time.Second, func() bool {
+		return len(e.rec.attemptEnds()) == len(e.rec.attemptStarts())
+	}, "every started attempt must be ended")
 	for _, in := range e.rs.breakers.Snapshot() {
 		if in.Probes != 0 {
 			eventually(t, 3*time.Second, func() bool {

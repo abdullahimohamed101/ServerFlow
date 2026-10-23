@@ -187,9 +187,8 @@ func TestClosedPortAndRecovery(t *testing.T) {
 	}
 	emit(p, 5)
 	waitFor(t, "the failed export", func() bool { return p.Stats().Failed >= 5 })
-	if !strings.Contains(buf.String(), "reason=") {
-		t.Errorf("expected a logged reason: %s", buf.String())
-	}
+	// Failed is counted just before the failure is logged, so the log is polled, not read once.
+	waitFor(t, "a logged reason", func() bool { return strings.Contains(buf.String(), "reason=") })
 
 	// A receiver appears on the same port: later spans arrive and a recovery line is logged.
 	ln2, err := net.Listen("tcp", addr)

@@ -109,3 +109,7 @@ mode (one upstream) keeps its single try.
   - *A retry repeats the prompt* (GPU and token cost), bounded by `max_attempts`.
 - **Follow-ups**: circuit breakers, ejection cooldowns and backpressure (Phase 15); persisted attempt
   history (Phase 9 and Kafka events in Phase 12); tracing spans per attempt (Phase 11).
+
+## Amendment: net/http's "server closed idle connection" is a reset (Phase 15 follow-up)
+
+A worker that stops listening closes its idle keep-alive connections. A request handed such a connection fails with net/http's unexported `errServerClosedIdle` (`http: server closed idle connection`), which the transport does not replay for a POST. It means the peer's close was observed before the request was registered, so in practice nothing was processed. It is classified like a reset (`class reset`, retryable): the section 25 rule "a failure before any output is retried on another worker" already covered EOF and ECONNRESET and now covers this case too. The match is exact on a link of the error chain (net/http returns it undecorated and `url.Error` wraps it); a test pins the text against a real `http.Transport` so a change in net/http's message fails CI, and negative cases pin that other "closed" errors stay unretryable. The retry still obeys `max_attempts` and picks a different worker.
