@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -642,6 +643,25 @@ func TestProcessASecondSignalForcesTheControlPlaneToQuitEvenWithAStalledRequest(
 	}
 }
 
+// freeze stops a process and returns once it is stopped. kill(SIGSTOP) returns when the signal is queued, not when
+// the process has stopped, and a busy machine can keep a multi-threaded process running for a while longer; a test
+// that goes on at once can see the "frozen" process still answering.
+func freeze(t *testing.T, p *os.Process) {
+	t.Helper()
+	if err := p.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(p.Pid)).Output()
+		if err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "T") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("process %d did not stop", p.Pid)
+}
+
 func TestProcessASecondSignalForcesTheAgentToQuitWhileTheControlPlaneIsFrozen(t *testing.T) {
 	cpAddr := freePort(t)
 	cp := startControlPlaneProc(t, cpAddr, clusterToken)
@@ -650,12 +670,12 @@ func TestProcessASecondSignalForcesTheAgentToQuitWhileTheControlPlaneIsFrozen(t 
 	agent := startAgentProc(t, cpAddr, clusterToken, "w1", m)
 	waitWorkers(t, cpAddr, clusterToken, 8*time.Second, "w1 eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return ws["w1"].Eligible })
 
-	_ = cp.cmd.Process.Signal(syscall.SIGSTOP) // the control plane hangs
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
+	freeze(t, cp.cmd.Process)                     // the control plane hangs
 	_ = agent.cmd.Process.Signal(syscall.SIGTERM) // the agent tries to deregister and waits
 	time.Sleep(500 * time.Millisecond)
 	if agent.dead.Load() {
-		t.Fatal("the agent should be waiting for the frozen control plane")
+		t.Fatalf("the agent should be waiting for the frozen control plane; stderr: %s", agent.stderr.String())
 	}
 	start := time.Now()
 	_ = agent.cmd.Process.Signal(syscall.SIGTERM)

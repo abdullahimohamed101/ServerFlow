@@ -55,6 +55,21 @@ func (p retryPolicy) status(code int) (class string, retryable bool) {
 	return "", false
 }
 
+// errServerClosedIdleText is the message of net/http's errServerClosedIdle.
+const errServerClosedIdleText = "http: server closed idle connection"
+
+// isServerClosedIdle reports whether err, or an error it wraps, is exactly net/http's errServerClosedIdle. net/http
+// returns it undecorated (url.Error wraps it), so an exact match on a link of the chain is enough and a different
+// "closed" error (a closed network connection, an http2 closed connection) does not match.
+func isServerClosedIdle(err error) bool {
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if e.Error() == errServerClosedIdleText {
+			return true
+		}
+	}
+	return false
+}
+
 // transportError classifies an error from sending the request, before any response headers.
 func (p retryPolicy) transportError(err error) (class string, retryable bool) {
 	if err == nil || errors.Is(err, context.Canceled) {
@@ -66,6 +81,12 @@ func (p retryPolicy) transportError(err error) (class string, retryable bool) {
 	case errors.Is(err, syscall.ECONNREFUSED), errors.As(err, &dnsErr), errors.As(err, &opErr) && opErr.Op == "dial":
 		return classConnect, true // includes a dial timeout and a refused address: nothing was sent
 	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return classReset, true
+	case isServerClosedIdle(err):
+		// net/http's own report of the same thing: the worker closed the idle keep-alive connection the request was
+		// about to use (a worker that stops listening closes its idle connections), so nothing was processed.
+		// The error value is unexported, hence the text; a test pins it against the real transport. The transport
+		// does not replay a POST by itself.
 		return classReset, true
 	}
 	return "", false // header timeouts, TLS errors, anything unknown
