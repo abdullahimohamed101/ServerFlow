@@ -124,7 +124,9 @@ preflight_tools() {
   want="$(pin KUBERNETES_VERSION)"
   [ -n "$have" ] || die "cannot read the kubectl version"
   diff=$(($(minor_of "$have") - $(minor_of "$want")))
-  [ "$diff" -ge -1 ] && [ "$diff" -le 1 ] || die "kubectl $have is more than one minor version away from the node image's Kubernetes $want"
+  if [ "$diff" -lt -1 ] || [ "$diff" -gt 1 ]; then
+    die "kubectl $have is more than one minor version away from the node image's Kubernetes $want"
+  fi
   say "docker context: $(docker context show 2>/dev/null || echo unknown); kind $(pin KIND_VERSION), kubectl $have, node $want"
 }
 
