@@ -18,10 +18,9 @@ const (
 // ResilienceConfig configures fault tolerance (Phase 15, ADR-020): per-worker circuit breakers, a retry budget,
 // a bounded admission queue with load shedding, and gateway drain. See docs/operations/resilience.md.
 //
-// Mode: the final default is "on" (plan decision D1), but it is flipped in the last Phase 15 pull request. Until
-// then the code default is "off", and nothing in the gateway reads this section yet (PR C ships the library and the
-// configuration only). The feature takes effect only when gateway.worker_source is "registry" (see Effective);
-// with static workers "on" is a valid no-op. Only mode is validated while the feature is not effective, so a
+// Mode: the default is "on" (plan decision D1; flipped by the last Phase 15 pull request) and "off" is the kill
+// switch. The feature takes effect only when gateway.worker_source is "registry" (see Effective); with static workers
+// "on" is a valid no-op. The visible consequences of the default are listed in docs/operations/resilience.md and ADR-020. Only mode is validated while the feature is not effective, so a
 // malformed value cannot stop a gateway that does not use it.
 type ResilienceConfig struct {
 	Mode    string                  `yaml:"mode"`
@@ -133,11 +132,12 @@ const (
 	maxReadinessGrace = 5 * time.Minute
 )
 
-// defaultResilience returns the built-in settings. Mode is "off" until the last Phase 15 pull request flips the
-// shipped default to "on" (plan decision D26); every other value is the final default.
+// defaultResilience returns the built-in settings. Mode is "on" (plan decision D1, flipped by the last Phase 15
+// pull request, D26): the feature is effective in registry mode and a no-op with static workers; "off" is the kill
+// switch. Every other value is the final default.
 func defaultResilience() ResilienceConfig {
 	return ResilienceConfig{
-		Mode: ResilienceOff,
+		Mode: ResilienceOn,
 		Breaker: ResilienceBreakerConfig{
 			ConsecutiveFailures: 5,
 			FailureRatio:        0.5,

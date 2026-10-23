@@ -98,9 +98,12 @@ func mustAdmin(t *testing.T, dsn string, args ...string) string { return execAdm
 // execAdmin runs the admin binary and returns stdout only (stderr carries warnings).
 func execAdmin(t *testing.T, dsn string, args ...string) string {
 	t.Helper()
+	// binary builds the program on first use (tens of seconds with a cold build cache on a loaded runner), so it is
+	// resolved before the clock starts: the limit below bounds the run, not the build.
+	path := binary(t, "admin")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	c := exec.CommandContext(ctx, binary(t, "admin"), args...)
+	c := exec.CommandContext(ctx, path, args...)
 	c.Env = append(os.Environ(), "SERVERFLOW_POSTGRES_DSN="+dsn)
 	out, err := c.Output()
 	if err != nil {

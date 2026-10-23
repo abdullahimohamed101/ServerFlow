@@ -211,9 +211,9 @@ if want S8; then
     healthy() { gf /api/health | grep -q '"database": *"ok"'; }
     dashboards_ok() {
       local uid
-      for uid in sf-cluster-overview sf-worker sf-scheduler sf-model; do gf "/api/dashboards/uid/$uid" | grep -q "\"uid\": *\"$uid\"" || return 1; done
+      for uid in sf-cluster-overview sf-worker sf-scheduler sf-model sf-resilience; do gf "/api/dashboards/uid/$uid" | grep -q "\"uid\": *\"$uid\"" || return 1; done
     }
-    if poll 60 healthy && poll 30 dashboards_ok; then pass "S8 Grafana healthy with the four dashboards"; else fail "S8 Grafana unhealthy or a dashboard is missing"; fi
+    if poll 60 healthy && poll 30 dashboards_ok; then pass "S8 Grafana healthy with the five dashboards"; else fail "S8 Grafana unhealthy or a dashboard is missing"; fi
   else
     skip "S8 Grafana (profile observability is off)"
   fi

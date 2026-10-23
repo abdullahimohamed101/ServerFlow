@@ -32,7 +32,7 @@ die() { printf 'dev-up: %s\n' "$*" >&2; exit 1; }
 # value may only contain [A-Za-z0-9._:/@-], so it cannot add a flag, a quote, a variable or a second line.
 # Errors name the variable and never print its value.
 # ---------------------------------------------------------------------------------------------------------
-KNOWN_KEYS="PROFILES GATEWAYS GATEWAY_PORT CONTROL_PLANE_PORT PROMETHEUS_PORT GRAFANA_PORT JAEGER_UI_PORT SF_STRATEGY
+KNOWN_KEYS="PROFILES GATEWAYS GATEWAY_PORT CONTROL_PLANE_PORT PROMETHEUS_PORT GRAFANA_PORT JAEGER_UI_PORT SF_STRATEGY SF_RESILIENCE_MODE
 WORKER_CONCURRENCY WORKER_QUEUE TRACING_SAMPLE_RATIO PERSIST PROMETHEUS_RETENTION COMPOSE_PROJECT_NAME
 MOCK_1_TPS MOCK_1_TTFT MOCK_1_FAILURE_RATE MOCK_1_FAILURE_MODE MOCK_1_STARTUP_DELAY MOCK_1_SEED
 MOCK_2_TPS MOCK_2_TTFT MOCK_2_FAILURE_RATE MOCK_2_FAILURE_MODE MOCK_2_STARTUP_DELAY MOCK_2_SEED
@@ -70,6 +70,7 @@ check_value() {
       ;;
     GATEWAYS) is_int_in "$v" 1 8 || bad "$f" "$k" ;;
     GATEWAY_PORT | CONTROL_PLANE_PORT | PROMETHEUS_PORT | GRAFANA_PORT | JAEGER_UI_PORT) is_int_in "$v" 1024 65535 || bad "$f" "$k" ;;
+    SF_RESILIENCE_MODE) case "$v" in on | off) ;; *) bad "$f" "$k" ;; esac ;;
     SF_STRATEGY) case "$v" in random | round-robin | least-active | least-queue) ;; *) bad "$f" "$k" ;; esac ;;
     WORKER_CONCURRENCY) is_int_in "$v" 1 1024 || bad "$f" "$k" ;;
     WORKER_QUEUE) is_int_in "$v" 0 100000 || bad "$f" "$k" ;;
@@ -432,8 +433,8 @@ cmd_up() {
     die "the image build failed (full log: $DEV_DIR/build.log)"
   fi
   say "starting"
-  # No `--wait`: Compose 2.38 (GitHub's runners) refuses it for services that have no healthcheck (the worker agents have
-  # no HTTP endpoint), Compose 5.6 tolerates that. wait_stack below does the waiting for every version.
+  # No `--wait`: Compose 2.38 (GitHub's runners) refuses it for services that have no healthcheck (the one-shot jobs have
+  # none), Compose 5.6 tolerates that. wait_stack below does the waiting for every version.
   if ! dc up -d --remove-orphans >"$DEV_DIR/up.log" 2>&1 || ! wait_stack "${DEV_UP_WAIT_TIMEOUT:-240}"; then
     tail -5 "$DEV_DIR/up.log" >&2
     wait_failed

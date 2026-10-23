@@ -27,6 +27,7 @@ var equalsDefault = map[string]string{
 	"SERVERFLOW_REDIS_ADDRESS":        "the default address is the service name redis:6379; compose pins it so a changed default cannot silently break the stack",
 	"SERVERFLOW_TRACING_SAMPLE_RATIO": "compose passes TRACING_SAMPLE_RATIO from .env; its default 1.0 equals the config default",
 	"SERVERFLOW_SCHEDULER_STRATEGY":   "SF_STRATEGY from .env; its default round-robin equals the config default",
+	"SERVERFLOW_RESILIENCE_MODE":      "SF_RESILIENCE_MODE from .env; its default on equals the config default (the compose line makes the kill switch visible)",
 }
 
 func clearServerflowEnv(t *testing.T) {
@@ -145,5 +146,18 @@ func TestControlPlaneClientsOptIntoPlainHTTP(t *testing.T) {
 				t.Errorf("%s sets %s but is not a control-plane client", name, flag)
 			}
 		}
+	}
+}
+
+// The compose gateway's kill-switch variable defaults to on: flipping the default to off would silently turn the Phase 15
+// feature off in the container stack while the configuration default (on) is what the documents promise.
+func TestComposeResilienceDefaultIsOn(t *testing.T) {
+	gw := services(t, "docker-compose.yml")["gateway"]
+	env, _ := gw["environment"].(map[string]any)
+	if got := fmt.Sprint(env["SERVERFLOW_RESILIENCE_MODE"]); got != "${SF_RESILIENCE_MODE:-on}" {
+		t.Errorf("gateway SERVERFLOW_RESILIENCE_MODE = %q, want ${SF_RESILIENCE_MODE:-on}", got)
+	}
+	if got := expand(fmt.Sprint(env["SERVERFLOW_RESILIENCE_MODE"])); got != "on" {
+		t.Errorf("the expanded default is %q, want on", got)
 	}
 }
