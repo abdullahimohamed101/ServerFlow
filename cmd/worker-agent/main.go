@@ -21,7 +21,10 @@ import (
 	"serverflow/internal/worker"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout       = 5 * time.Second
+	statusShutdownTimeout = 250 * time.Millisecond
+)
 
 func main() {
 	var configPath string
@@ -45,15 +48,31 @@ func main() {
 
 	agent := worker.New(worker.Config{
 		WorkerID: cfg.Worker.ID, Model: cfg.Worker.Model, AdvertiseURL: cfg.Worker.AdvertiseURL, Interval: cfg.Worker.HeartbeatInterval,
+		ReadyTimeout: cfg.Worker.UnhealthyTimeout,
 	}, worker.NewMockBackend(cfg.Worker.BackendURL), client.New(cfg.Worker.ControlPlaneURL, cfg.ControlPlane.Token, nil), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() { <-ctx.Done(); stop() }() // a second signal force-quits
 
+	// The status endpoint (worker.status_listen) is off by default. It outlives Run on purpose: while the agent
+	// deregisters, probes see 503 "draining" rather than a refused connection, and it is closed last.
+	var status *worker.StatusServer
+	if cfg.Worker.StatusListen != "" {
+		status, err = worker.StartStatusServer(cfg.Worker.StatusListen, agent, logger)
+		if err != nil {
+			logger.Error("worker-agent cannot start its status endpoint", "component", "worker-agent", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+
 	logger.Info("worker-agent starting", "component", "worker-agent", "worker_id", cfg.Worker.ID, "model", cfg.Worker.Model,
 		"backend_url", cfg.Worker.BackendURL, "advertise_url", cfg.Worker.AdvertiseURL,
 		"control_plane_url", cfg.Worker.ControlPlaneURL, "heartbeat_interval", cfg.Worker.HeartbeatInterval.String())
+
+	if status != nil {
+		logger.Info("worker status endpoint", "component", "worker-agent", "addr", status.Addr())
+	}
 
 	if err := agent.Run(ctx); errors.Is(err, worker.ErrSuperseded) {
 		// Another process registered under this worker ID. Do not deregister
@@ -65,5 +84,12 @@ func main() {
 	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	agent.Shutdown(sctx)
+	if status != nil {
+		// A probe is never worth waiting for: whatever is still in flight after a moment is cut. The deadline is
+		// inside the agent's 5 s budget, so the endpoint never lengthens the shutdown beyond a quarter of a second.
+		stctx, stcancel := context.WithTimeout(sctx, statusShutdownTimeout)
+		defer stcancel()
+		status.Shutdown(stctx)
+	}
 	logger.Info("worker-agent stopped", "component", "worker-agent", "worker_id", cfg.Worker.ID)
 }

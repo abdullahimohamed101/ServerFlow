@@ -96,7 +96,9 @@ Purpose: register worker, report heartbeats/metrics. It sits beside the
 inference backend and is not in the data path. Location: `cmd/worker-agent` +
 `internal/worker`. Owns: worker lifecycle, capacity reporting. Status:
 implemented (Phase 4) with a mock-worker backend; a vLLM backend arrives in
-Phase 13.
+Phase 13. An optional loopback-only status endpoint (`/healthz`, `/readyz`; off by
+default, `worker.status_listen`; Phase 17) lets a Docker or Kubernetes probe tell a
+registered agent from a hung one; see `docs/architecture/worker-lifecycle.md`.
 
 
 
