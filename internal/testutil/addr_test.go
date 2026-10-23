@@ -35,7 +35,7 @@ func TestRefusedAddrIsOutsideTheEphemeralRange(t *testing.T) {
 	if err != nil || n <= 0 || n >= 1024 {
 		t.Fatalf("port %q: want a privileged port, which the kernel never gives to a listener on :0", port)
 	}
-	if RefusedAddr(t) != RefusedAddr(t) {
+	if first, second := RefusedAddr(t), RefusedAddr(t); first != second {
 		t.Fatal("RefusedAddr must return the same address every time")
 	}
 }
