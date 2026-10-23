@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"serverflow/internal/api"
 	"serverflow/internal/resilience"
 	"serverflow/internal/scheduler"
+	"serverflow/internal/scheduler/signals"
 	"serverflow/pkg/protocol"
 )
 
@@ -36,6 +39,12 @@ type router struct {
 	// open out of the selection and takes a breaker ticket for the worker it chooses.
 	res *resilienceState
 
+	// sig, when set, is the in-flight ledger and start/finish history of the opt-in "ledger" load overlay
+	// (scheduler.load_overlay, ADR-022). nil is the default: the original max(reported, local) rule, and nothing
+	// else of this file's ledger code runs. It is set once, before the router serves (enableLedger).
+	sig       *signals.Tracker
+	capWarned atomic.Bool // the tracked-worker cap was reported once
+
 	mu       sync.Mutex
 	inflight map[string]int // worker ID -> requests sent and not yet finished
 }
@@ -54,6 +63,13 @@ type routed struct {
 	// come back through the breakers exactly once: with a verdict at the retry-decision point, or released by
 	// the attempt's cleanup.
 	ticket resilience.Ticket
+
+	// lease is this attempt's entry in the signals ledger (zero without the ledger overlay). cost is the estimated
+	// token cost the ledger holds for it: set at reserve, or by the waiter that receives a handed-off slot
+	// (charge), because a hand-off is made under r.mu, which knows the model but not the request (D4, D14). release
+	// subtracts exactly what was added.
+	lease signals.Token
+	cost  atomic.Int64
 }
 
 // probe reports whether the attempt is a circuit breaker's trial request (AttemptStart.Probe).
@@ -100,7 +116,7 @@ func (r *router) RouteOrWait(ctx context.Context, req *protocol.InferenceRequest
 type waitOpts struct{ tenant string }
 
 func (r *router) route(ctx context.Context, req *protocol.InferenceRequest, wait *waitOpts, exclude []string) (*routed, *resilience.Waiter, *routeError) {
-	workers, ok := r.cache.View(req.Model)
+	workers, viewAt, ok := r.cache.viewAt(req.Model)
 	if !ok {
 		// No snapshot, or one too old to trust: fail closed.
 		return nil, nil, &routeError{Error: api.ErrWorkerUnavailable()}
@@ -128,32 +144,96 @@ func (r *router) route(ctx context.Context, req *protocol.InferenceRequest, wait
 		}
 	}
 
-	chosen, ticket, waiter, rerr := r.reserve(ctx, req, workers, broke, wait)
+	chosen, ticket, lease, waiter, rerr := r.reserve(ctx, req, workers, viewAt, broke, wait)
 	if rerr != nil || waiter != nil {
 		return nil, waiter, rerr
 	}
-	return r.newRouted(chosen, ticket), nil, nil
+	rt := r.newRouted(chosen, ticket, lease)
+	rt.cost.Store(lease.cost)
+	return rt, nil, nil
 }
 
 // newRouted wraps a worker whose slot (inflight count) and breaker ticket the caller already holds.
-func (r *router) newRouted(w *protocol.WorkerSnapshot, ticket resilience.Ticket) *routed {
+func (r *router) newRouted(w *protocol.WorkerSnapshot, ticket resilience.Ticket, lease ledgerLease) *routed {
 	snap := *w
 	var once sync.Once
-	return &routed{
+	rt := &routed{
 		ticket: ticket,
 		worker: snap,
+		lease:  lease.tok,
 		up:     &httpUpstream{baseURL: trimSlash(snap.Address), client: r.client},
-		release: func() {
-			once.Do(func() { r.releaseSlot(&snap) })
-		},
 	}
+	rt.release = func() {
+		once.Do(func() { r.releaseSlot(&snap, rt) })
+	}
+	return rt
+}
+
+// ledgerLease is what reserve (or a hand-off) took from the ledger for one attempt.
+type ledgerLease struct {
+	tok  signals.Token
+	cost int64
+}
+
+// requestCost is the estimated token work of a request for the ledger: input plus output estimate, as the
+// handler computed them once (D3). Clamped to non-negative.
+func requestCost(req *protocol.InferenceRequest) int64 {
+	return max(int64(req.EstInputTokens), 0) + max(int64(req.EstOutputTokens), 0)
+}
+
+// charge adds the cost of req to the ledger entry of a routed that was handed a slot by a release (cost 0 until
+// now). The waiter that received it calls this once, outside r.mu; until then the ledger undercounts by one
+// request, which cannot over-admit because admission counts slots, not tokens (D4, D14).
+func (r *router) charge(rt *routed, req *protocol.InferenceRequest) {
+	if r.sig == nil || rt == nil || rt.cost.Load() != 0 {
+		return
+	}
+	if c := requestCost(req); r.sig.AddCost(rt.lease, c) {
+		rt.cost.Store(c)
+	}
+}
+
+// enableLedger switches the router to the ledger load overlay. It must be called before the router serves.
+func (r *router) enableLedger(cfg signals.Config) {
+	r.sig = signals.New(cfg)
+	r.cache.onSnapshot = func(now time.Time, ws []protocol.WorkerSnapshot) {
+		obs := make([]signals.Observation, len(ws))
+		for i := range ws {
+			obs[i] = signals.Observation{Key: signals.KeyOf(&ws[i]), LastHeartbeat: ws[i].LastHeartbeat}
+		}
+		r.sig.Sync(now, obs)
+		if st := r.sig.Stats(); st.Untracked > 0 && !r.capWarned.Swap(true) {
+			r.log.Warn("the load ledger tracks a limited number of workers; the others use the original max(reported, local) rule",
+				"component", "gateway", "tracked", st.Tracked)
+		}
+	}
+}
+
+// overlay is the effective load of a worker: the one place that combines what the worker reported with what this
+// gateway has in flight, used by reserve (the scheduler's view) and by freeSlots (the queue's capacity count) so
+// the two cannot disagree. now is the instant of the view w came from. Without the ledger it is the original
+// max(reported, local).
+func (r *router) overlay(w *protocol.WorkerSnapshot, now time.Time) (active int, res signals.Result, ledger bool) {
+	local := r.inflight[w.WorkerID]
+	if r.sig == nil {
+		return max(w.Metrics.ActiveRequests, local), signals.Result{}, false
+	}
+	res = r.sig.Overlay(now, signals.Input{
+		Key: signals.KeyOf(w), Local: local, Reported: w.Metrics.ActiveRequests,
+		At: signals.ReportTime(now, w.HeartbeatAgeSeconds),
+	})
+	return res.Active, res, true
 }
 
 // releaseSlot gives a worker's slot back. If requests are waiting for the model, the slot goes straight to the
 // head waiter instead (D11): the worker's inflight count stays as it is, the waiter receives a routed for the same
 // worker without running the scheduler, so there is no window in which an arrival or a stale count can take it.
-func (r *router) releaseSlot(w *protocol.WorkerSnapshot) {
+func (r *router) releaseSlot(w *protocol.WorkerSnapshot, rt *routed) {
 	r.mu.Lock()
+	if r.sig != nil {
+		// This request's own entry leaves the ledger first, whatever happens to its slot next.
+		r.sig.End(r.cache.now(), rt.lease, rt.cost.Load())
+	}
 	handed, wake := r.handoffLocked(w)
 	if !handed {
 		if r.inflight[w.WorkerID]--; r.inflight[w.WorkerID] <= 0 {
@@ -186,8 +266,18 @@ func (r *router) handoffLocked(w *protocol.WorkerSnapshot) (handed, wake bool) {
 	if !ok {
 		return false, true
 	}
-	if !q.Handoff(w.Model, r.newRouted(&cur, ticket)) {
+	var lease ledgerLease
+	if r.sig != nil {
+		// The slot is the new holder's from here; its token is taken now, its cost by the waiter (charge). The
+		// token is wasted if the library refuses the hand-off below, so it is ended at once with nothing to
+		// subtract.
+		lease.tok = r.sig.Begin(r.cache.now(), signals.KeyOf(&cur))
+	}
+	if !q.Handoff(w.Model, r.newRouted(&cur, ticket, lease)) {
 		r.res.breakers.Release(ticket) // the head is routing after a wake-up; the library banked the slot as credit
+		if r.sig != nil {
+			r.sig.End(r.cache.now(), lease.tok, 0)
+		}
 		return false, false
 	}
 	return true, false
@@ -210,7 +300,7 @@ func (r *router) wakeWaiters() {
 // freeSlots counts the slots a routing could take for the model right now: the workers the registry offers and the
 // breakers admit, with the larger of the worker-reported and local load, as the router overlays it.
 func (r *router) freeSlots(model string) int {
-	workers, ok := r.cache.View(model)
+	workers, now, ok := r.cache.viewAt(model)
 	if !ok {
 		return 0
 	}
@@ -222,7 +312,7 @@ func (r *router) freeSlots(model string) int {
 		if !schedulable(w) || (r.res != nil && !r.res.breakers.Admissible(keyOf(w))) {
 			continue
 		}
-		active := max(w.Metrics.ActiveRequests, r.inflight[w.WorkerID])
+		active, _, _ := r.overlay(w, now)
 		free += max(0, w.MaxConcurrency-active)
 	}
 	return free
@@ -240,18 +330,20 @@ func (r *router) freeSlots(model string) int {
 // without routing (strict FIFO), and one that finds every eligible worker full joins it too. Both happen under
 // r.mu, which is also what a release holds while it hands a slot to the head waiter, so a slot cannot be freed in
 // the gap between "everything is full" and "I am waiting".
-func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot, broke int, wait *waitOpts) (*protocol.WorkerSnapshot, resilience.Ticket, *resilience.Waiter, *routeError) {
+func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot, viewAt time.Time, broke int, wait *waitOpts) (*protocol.WorkerSnapshot, resilience.Ticket, ledgerLease, *resilience.Waiter, *routeError) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if wait != nil && anySchedulable(workers) && r.res.waitq.Busy(req.Model) {
 		// Others are waiting for this model and a worker could serve it: join the queue, behind them. (With nobody
 		// eligible there is nothing to wait for and the scheduler answers as it always did.)
 		w, rerr := r.enqueueLocked(req, wait, routeError{})
-		return nil, resilience.Ticket{}, w, rerr
+		return nil, resilience.Ticket{}, ledgerLease{}, w, rerr
 	}
 	for i := range workers {
-		if local := r.inflight[workers[i].WorkerID]; local > workers[i].Metrics.ActiveRequests {
-			workers[i].Metrics.ActiveRequests = local
+		active, res, ledger := r.overlay(&workers[i], viewAt)
+		workers[i].Metrics.ActiveRequests = active
+		if ledger {
+			workers[i].Observed = res.Observed()
 		}
 	}
 	var chosen *protocol.WorkerSnapshot
@@ -262,7 +354,7 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 		if err != nil {
 			var none *scheduler.NoWorkerError
 			if !errors.As(err, &none) {
-				return nil, ticket, nil, &routeError{Error: api.ErrInternal()} // the client went away, or the scheduler failed
+				return nil, ticket, ledgerLease{}, nil, &routeError{Error: api.ErrInternal()} // the client went away, or the scheduler failed
 			}
 			counts := routeError{Serving: none.Serving, Eligible: none.Eligible, AtCapacity: none.AtCapacity}
 			switch {
@@ -280,10 +372,10 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 				}
 				if wait != nil && counts.full() {
 					w, rerr := r.enqueueLocked(req, wait, counts)
-					return nil, ticket, w, rerr
+					return nil, ticket, ledgerLease{}, w, rerr
 				}
 			}
-			return nil, ticket, nil, &counts
+			return nil, ticket, ledgerLease{}, nil, &counts
 		}
 		if r.res == nil {
 			break
@@ -302,7 +394,15 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 		broke++
 	}
 	r.inflight[chosen.WorkerID]++
-	return chosen, ticket, nil, nil
+	var lease ledgerLease
+	if r.sig != nil {
+		now := r.cache.now()
+		lease.tok = r.sig.Begin(now, signals.KeyOf(chosen))
+		if lease.cost = requestCost(req); !r.sig.AddCost(lease.tok, lease.cost) {
+			lease.cost = 0
+		}
+	}
+	return chosen, ticket, lease, nil, nil
 }
 
 // anySchedulable reports whether the registry (and the breakers, which mark workers ineligible in the copy) offer

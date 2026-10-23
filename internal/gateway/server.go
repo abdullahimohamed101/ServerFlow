@@ -20,6 +20,7 @@ import (
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/scheduler"
+	"serverflow/internal/scheduler/signals"
 	"serverflow/pkg/protocol"
 )
 
@@ -257,6 +258,10 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	requireIfConfigured(cfg.Auth.Mode)(s)
 	requireLimitIfConfigured(cfg.RateLimit.Mode)(s)
 	WithMetricsConfig(cfg.Metrics)(s)
+	if cfg.Scheduler.LoadOverlay == config.LoadOverlayLedger {
+		// A report older than the staleness bound is never used, and one heartbeat more covers the report's own age.
+		s.router.enableLedger(signals.Config{Window: cfg.Gateway.RegistryMaxStaleness + cfg.Worker.HeartbeatInterval})
+	}
 	if cfg.Resilience.Effective(config.WorkerSourceRegistry) {
 		s.enableResilience(cfg, resilienceDeps{})
 	}
