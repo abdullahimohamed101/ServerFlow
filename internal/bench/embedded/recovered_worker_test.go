@@ -42,37 +42,58 @@ const (
 	e0LedgerMax = 200 * time.Millisecond
 )
 
+// The mechanism itself is pinned deterministically, with a fake clock, in internal/gateway
+// (TestStaleHighReportNoLongerHidesAnEmptiedWorker); this test is the real-time measurement. It is sensitive to a
+// starved machine (a test goroutine that is not scheduled for a second misses the heartbeat window it is built
+// around), so: a repetition whose abandonment came more than e0MaxGap after the heartbeat it relies on is not valid
+// by construction and is repeated (at most e0Attempts times in all); the assertions are on the medians of the valid
+// repetitions. Numbers from it are simulator results from an idle machine, not hardware results.
+const (
+	e0Reps     = 5
+	e0Attempts = 3 * e0Reps
+	// e0MaxGap is the longest the test may take between seeing the heartbeat and abandoning: the next heartbeat is a
+	// second after the one it saw, and the gateway reads the registry only every 100 ms.
+	e0MaxGap = 600 * time.Millisecond
+)
+
 func TestE0RecoveredWorkerIsPickedAgain(t *testing.T) {
-	reps := 1
+	reps := e0Reps
 	if v, err := strconv.Atoi(os.Getenv("SERVERFLOW_E0_REPS")); err == nil && v > 0 {
 		reps = v
 	}
 	results := map[string][]time.Duration{}
 	for _, overlay := range []string{config.LoadOverlayMax, config.LoadOverlayLedger} {
-		for i := 0; i < reps; i++ {
-			d := runRecoveredWorker(t, overlay)
-			results[overlay] = append(results[overlay], d)
-			t.Logf("E0 load_overlay=%-6s rep %d: first answer %v after the abandonment", overlay, i+1, d.Round(time.Millisecond))
-			switch overlay {
-			case config.LoadOverlayMax:
-				if d < e0MaxMin {
-					t.Errorf("max: the probe was answered after %v: the stale report did not hide worker-01 (the finding is not reproduced)", d)
-				}
-			default:
-				if d > e0LedgerMax {
-					t.Errorf("ledger: the probe was answered after %v, want under %v", d, e0LedgerMax)
-				}
+		invalid := 0
+		for len(results[overlay]) < reps && len(results[overlay])+invalid < 3*reps {
+			d, gap := runRecoveredWorker(t, overlay)
+			if gap > e0MaxGap {
+				invalid++
+				t.Logf("E0 load_overlay=%s: repetition discarded, the abandonment came %v after the heartbeat (machine too busy)", overlay, gap.Round(time.Millisecond))
+				continue
 			}
+			results[overlay] = append(results[overlay], d)
+			t.Logf("E0 load_overlay=%-6s rep %d: first answer %v after the abandonment", overlay, len(results[overlay]), d.Round(time.Millisecond))
+		}
+		if len(results[overlay]) < (reps+1)/2 {
+			t.Fatalf("%s: only %d valid repetitions of %d (%d discarded): the machine is too busy for this measurement", overlay, len(results[overlay]), reps, invalid)
 		}
 	}
+	median := map[string]time.Duration{}
 	for _, overlay := range []string{config.LoadOverlayMax, config.LoadOverlayLedger} {
 		ds := slices.Clone(results[overlay])
 		slices.Sort(ds)
-		t.Logf("E0 summary load_overlay=%s n=%d min=%v median=%v max=%v", overlay, len(ds), ds[0].Round(time.Millisecond), ds[len(ds)/2].Round(time.Millisecond), ds[len(ds)-1].Round(time.Millisecond))
+		median[overlay] = ds[len(ds)/2]
+		t.Logf("E0 summary load_overlay=%s n=%d min=%v median=%v max=%v", overlay, len(ds), ds[0].Round(time.Millisecond), median[overlay].Round(time.Millisecond), ds[len(ds)-1].Round(time.Millisecond))
+	}
+	if m := median[config.LoadOverlayMax]; m < e0MaxMin {
+		t.Errorf("max: median %v < %v: the stale report did not hide worker-01 (the finding is not reproduced)", m, e0MaxMin)
+	}
+	if m := median[config.LoadOverlayLedger]; m > e0LedgerMax {
+		t.Errorf("ledger: median %v > %v", m, e0LedgerMax)
 	}
 }
 
-func runRecoveredWorker(t *testing.T, overlay string) time.Duration {
+func runRecoveredWorker(t *testing.T, overlay string) (answer, gap time.Duration) {
 	t.Helper()
 	c := startCluster(t, Config{
 		Workers: 2, MaxConcurrency: e0Slots, TokensPerSecond: 100, Scheduler: "least-active",
@@ -120,6 +141,7 @@ func runRecoveredWorker(t *testing.T, overlay string) time.Duration {
 	}
 
 	// A heartbeat that shows all four streams must reach the registry, and the gateway must read it.
+	var heartbeatSeen time.Time
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ws, err := c.ControlPlane().Workers(context.Background(), client.Query{})
@@ -133,6 +155,7 @@ func runRecoveredWorker(t *testing.T, overlay string) time.Duration {
 			}
 		}
 		if full == len(specs) {
+			heartbeatSeen = time.Now()
 			break
 		}
 		if time.Now().After(deadline) {
@@ -144,6 +167,7 @@ func runRecoveredWorker(t *testing.T, overlay string) time.Duration {
 
 	// Abandon the streams on worker-01 and ask for one answer.
 	began := time.Now()
+	gap = began.Sub(heartbeatSeen)
 	for _, s := range streams {
 		if s.worker == 0 {
 			s.cancel()
@@ -169,10 +193,10 @@ func runRecoveredWorker(t *testing.T, overlay string) time.Duration {
 		if d < 0 {
 			t.Fatalf("probe failed (%d)", d)
 		}
-		return d
+		return d, gap
 	case <-time.After(10 * time.Second):
 		t.Fatal("the probe was never answered")
-		return 0
+		return 0, gap
 	}
 }
 

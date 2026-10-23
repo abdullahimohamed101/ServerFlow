@@ -61,10 +61,12 @@ runs none of this code and the differential fixtures of PR A pass unchanged.
   `release` with cost 0 and subtracts nothing. A declined hand-off ends the token it took with nothing to subtract.
 - **Overlay v2.** `effective = max(local, reported + started_since_report - finished_since_report)`, one function (`Tracker.Overlay`) used by both `reserve` and `freeSlots`, each with the instant of its own snapshot view
   (`snapshotCache.viewAt`), so `AtCapacity` and the queue's wake-ups cannot diverge (a randomised test fails if they do). The report time is `view time - aged heartbeat age`, which equals the snapshot's fetch time minus the
-  heartbeat age at the registry: one clock domain, no registry clock involved. Classification at the report's bucket `b`: starts in buckets `>= b` count as after the report, finishes in buckets `>= b + 2` count as after it.
-  The report time is only known to about a bucket (round trip, registry processing, the worker's sampling delay), and every misclassification this allows is an **over-count**, which the floor `local` keeps one-sided.
-  The cost of that choice is stated, not hidden: requests that start and finish within the report's bucket and the next one are never subtracted, so a worker serving very short requests at a high rate can look fuller than it is
-  until the next report (roughly the number of such requests in 0.2 s). It is the price of never under-counting; the experiments of the phase measure it (H1 guard: over-capacity refusals).
+  heartbeat age at the registry: one clock domain, no registry clock involved. Classification at the report's bucket `b`: starts and finishes in buckets `>= b` both count as after the report. The report time
+  is only known to about a bucket (round trip, registry processing, the worker's sampling delay), so for the requests in that one bucket the classification can be wrong in either direction: the result can be a request or two too high
+  or too low for up to one heartbeat. The floor `local` bounds the low side (the gateway never admits to a worker it knows is full; a test asserts zero such admissions). **This replaces the plan's D4(a) rule**
+  (boundary always classified as an over-count: starts from `b`, finishes from `b+2`): the independent verification showed it keeps every request that starts and finishes around the report as a permanent +1 until the next
+  report, so with short requests a worker looked full for the whole heartbeat interval (simulated wrong-full 99.7% against 0.9% for `max` at 8 slots, 20 ms requests, 30% load; 84-94% refusals in the embedded cluster). With the symmetric
+  rule the same cases are 4.0% against 0.9%, 12.6% against 12.7%, 4.5% against 1.6% and 5.0% against 8.8% (simulator results, guarded by `internal/scheduler/signals/overcount_test.go`). The guarantee "always an over-count" is given up deliberately.
 - **Fallback to `max`, never below local.** The rule gives way to `max(local, reported)` for a worker the tracker does not follow, for a report made before the tracker began following the worker (a new gateway, a new
   incarnation, a reset history), for a report older than the window (`registry_max_staleness` plus one heartbeat interval), and when the history no longer reaches back. A registry restart that keeps `RegisteredAt` shows as the
   worker's `LastHeartbeat` going backwards; the worker's history (not its ledger: its requests are still in flight) is then reset like a re-registration.
@@ -73,7 +75,11 @@ runs none of this code and the differential fixtures of PR A pass unchanged.
 - **Deviations from the plan text, recorded.** (1) No new Prometheus series in this change: the plan's minimum observability (`scheduler_signal_fallbacks_total`) lands with the first strategy that reads the signals (PR C1);
   the tracker exposes the counters (`Stats`) and the router logs once when the worker cap is reached. (2) The slow terms the plan computes "at refresh time into an immutable per-worker struct" (capacity peak, TTFT, medians) do not exist yet;
   what exists per refresh is `Sync` (entries, pruning, restart detection), and the per-request work is the overlay lookup. (3) E0 resets the abandoned requests by a client cancel rather than through a breaker; the mechanism
-  (a stale-high report) is the same and a breaker adds timing the experiment does not need.
+  (a stale-high report) is the same and a breaker adds timing the experiment does not need. (4) An invalid `SERVERFLOW_SCHEDULER_LOAD_OVERLAY` fails startup (validated with the rest, like `SERVERFLOW_SCHEDULER_STRATEGY`)
+  where plan criterion 9 says invalid env values are ignored; an enumeration is not a numeric override, and silently running the other overlay would hide a typo. (5) The boundary rule above (D4(a)).
+- **For PR C1's strategies.** A worker that flaps out of the snapshot and back loses its ledger entry while its requests are in flight (the entry is pruned at the refresh, and the old requests' tokens go stale), so the ledger's
+  in-flight count can be below the slot count (`r.inflight`, which is keyed by worker ID and survives). That is the safe direction (the overlay falls back to `max`, admission uses slot counts), but a strategy that reads
+  `Observed.WorkAheadTokens` must treat it as a lower bound. The signals package is 32-bit safe (counts are clamped to `MaxInt32`); the repository as a whole does not build for 386 on master (`internal/ratelimit`).
 
 ### [later PR] Strategies, observability, simulator, experiments (D5 to D28)
 

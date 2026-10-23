@@ -137,9 +137,12 @@ A worker's reported active count is up to one heartbeat old (plus one registry r
 - `ledger` (opt-in, Phase 14, ADR-022): effective load is `max(local, reported + started_since_report - finished_since_report)`. The gateway keeps a short, bucketed (100 ms) history of when it started and
   finished requests per worker, and measures "since the report" from the gateway-local time the report was made (snapshot fetch time minus the worker's heartbeat age). It never returns less than the local
   count. When the history cannot answer (the gateway has not followed the worker since before the report, the report is older than `registry_max_staleness` plus one heartbeat interval, the control plane's
-  heartbeat time for the worker went backwards, or more than 4,096 workers are tracked) it uses `max` for that worker. The bucket holding the report time is classified so that the error is an **over-count**,
-  never an under-count: a start in it counts as after the report, a finish in it or the next bucket as before it. Requests shorter than a bucket that start and finish around a report therefore keep a worker
-  slightly fuller than it is until the next report (about the number of such requests in 0.2 s); at high rates of very short requests this can make a nearly full worker look full.
+  heartbeat time for the worker went backwards, or more than 4,096 workers are tracked) it uses `max` for that worker. The report time is known only to about a bucket, so starts and finishes in the report's own bucket are
+  classified alike (as after the report): a request that starts and finishes inside that bucket nets to zero. For the requests in that one bucket the classification can be wrong in either
+  direction, so the result can be a request or two too high or too low for up to one heartbeat; the floor (never below this gateway's own in-flight count) bounds the low side, so the gateway never admits to a worker
+  it knows is full. This replaces an earlier rule that guaranteed an over-count and, at short request lengths, made workers look full for the whole heartbeat interval. Simulator results (one worker, Poisson
+  arrivals, the real tracker; share of requests for which the estimator says "full" while the gateway's own count has room, ledger against max, heartbeat 1 s): 8 slots, 20 ms requests, 30% load: 4.0% against 0.9%;
+  8 slots, 100 ms, 70%: 12.6% against 12.7%; 32 slots, 100 ms, 70%: 4.5% against 1.6%; 8 slots, 500 ms, 70%: 5.0% against 8.8%. They are guarded by `overcount_test.go`.
 - The same function answers the scheduler's capacity check (`reserve`) and the admission queue's free-slot count (`freeSlots`), each with the instant of its own snapshot view, so the two never disagree about
   whether a worker has room. The overlay changes `ActiveRequests` for **all** strategies.
 - With `ledger` on, the gateway also keeps a ledger of the estimated token cost (`input + max_tokens`, the same estimate the rate limiter uses) of its in-flight requests per worker and puts it, with the
@@ -147,7 +150,7 @@ A worker's reported active count is up to one heartbeat old (plus one registry r
   A slot handed to a queued request by the admission queue carries no cost until the request that receives it adds its own; for those microseconds the ledger undercounts by one request (admission uses slot counts, so
   nothing is over-admitted).
 - E0, the recovered-worker experiment (`internal/bench/embedded/recovered_worker_test.go`): two workers, the stuck requests of one abandoned by the client, a probe sent at once. Embedded cluster
-  (heartbeat 1 s, refresh 100 ms): the probe waits 0.70 to 0.71 s under `max` (10 runs; one run 0.81 s) and is served in 12 to 14 ms under `ledger` (10 runs).
+  (heartbeat 1 s, refresh 100 ms): the probe waits 0.71 s (median; 0.70 to 0.80 s over 20 runs) under `max` and is served in 12 ms under `ledger` (20 runs). Simulator-validated, not hardware-validated: embedded mock workers on an idle machine; the real-time test discards repetitions a busy machine invalidates and asserts on medians.
 
 ## Operating notes
 

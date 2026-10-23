@@ -13,7 +13,7 @@ const (
 	DefaultBucket     = 100 * time.Millisecond
 	DefaultMaxWorkers = 4096
 	// maxCount bounds the counts taken from a worker's report so that the arithmetic cannot overflow.
-	maxCount = 1 << 31
+	maxCount = 1<<31 - 1
 	// maxReportAge bounds the heartbeat age taken from a snapshot before it becomes a duration.
 	maxReportAge = 1e6 // seconds
 )
@@ -304,10 +304,13 @@ func (t *Tracker) Overlay(now time.Time, in Input) Result {
 	return res
 }
 
-// finishLag is how many buckets after the report's bucket a finish must be to count as "after the report". A
-// finish in the report's own bucket or the next one may be before the report (the report time is only known to
-// about a bucket), and not subtracting it can only over-count.
-const finishLag = 2
+// finishLag is how many buckets after the report's bucket a finish must be to count as "after the report". It is
+// 0: starts and finishes are classified the same way at the boundary, so a request that starts and finishes inside
+// the report's bucket nets to zero. (A lag of 2 made every such request a permanent +1 until the next report,
+// which at short request lengths made the worker look full for the whole heartbeat interval.) The price is that
+// the boundary can be wrong in either direction for the requests in that one bucket; the floor "local" bounds
+// the under-count.
+const finishLag = 0
 
 // Ledger returns the requests and estimated token cost in flight on a worker (0, 0 when untracked).
 func (t *Tracker) Ledger(k Key) (inflight int, work int64) {

@@ -55,9 +55,11 @@ func TestOverlayCases(t *testing.T) {
 		{name: "stale-low report: the local floor covers it", events: []ev{{5600, true}, {5650, true}, {5700, true}}, reported: 0, local: 3, reportMs: 5000, nowMs: 5800, want: 3},
 		{name: "never below local even when the arithmetic says so", events: []ev{{1000, true}, {5600, false}}, reported: 1, local: 2, reportMs: 5000, nowMs: 5800, want: 2},
 		{name: "request shorter than a bucket, wholly after the report: nets zero", events: []ev{{5610, true}, {5620, false}}, reported: 4, local: 0, reportMs: 5000, nowMs: 5800, want: 4},
-		{name: "request shorter than a bucket inside the report's bucket: counted as after for the start, not subtracted", events: []ev{{5010, true}, {5030, false}}, reported: 4, local: 0, reportMs: 5000, nowMs: 5800, want: 5},
-		{name: "finish in the bucket after the report's is still not subtracted (report time is only known to a bucket)", events: []ev{{1000, true}, {5150, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 1},
-		{name: "finish two buckets after the report is subtracted", events: []ev{{1000, true}, {5250, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
+		{name: "request shorter than a bucket inside the report's bucket: start and finish classified alike, nets zero", events: []ev{{5010, true}, {5030, false}}, reported: 4, local: 0, reportMs: 5000, nowMs: 5800, want: 4},
+		{name: "a finish in the report's own bucket counts as after the report (may under-count by one; the local floor bounds it)", events: []ev{{1000, true}, {5050, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
+		{name: "the same under-count is floored by the local count", events: []ev{{1000, true}, {5050, false}}, reported: 1, local: 1, reportMs: 5000, nowMs: 5800, want: 1},
+		{name: "finish in the bucket after the report's is subtracted", events: []ev{{1000, true}, {5150, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
+		{name: "finish in the bucket before the report's is not", events: []ev{{1000, true}, {4950, false}}, reported: 0, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
 		{name: "start in the bucket before the report's is in reported", events: []ev{{4950, true}}, reported: 1, local: 1, reportMs: 5000, nowMs: 5800, want: 1},
 		{name: "report older than the window falls back to max", events: []ev{{1000, true}, {18000, false}}, reported: 5, local: 1, reportMs: 4000, nowMs: 17000, want: 5, wantFallback: FallbackHistory},
 		{name: "report older than the worker's history falls back to max", events: nil, reported: 3, local: 1, reportMs: -500, nowMs: 800, want: 3, wantFallback: FallbackHistory},
@@ -425,5 +427,24 @@ func TestNegativeCountsAreClamped(t *testing.T) {
 	}
 	if got := tr.Overlay(at(1000), Input{Key: key("other"), Local: -5, Reported: -3, At: at(900)}); got.Active != 0 {
 		t.Fatalf("fallback path: %d", got.Active)
+	}
+}
+
+// Falling back because of the history is counted, and a snapshot that carries no heartbeat time (zero) is not a
+// restart.
+func TestHistoryFallbacksAreCountedAndAZeroHeartbeatIsNotARestart(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	tr.Sync(at(0), []Observation{{Key: k, LastHeartbeat: at(500)}})
+	if got := ov(tr, k, 1000, -2000, 1, 2); got.Fallback != FallbackHistory {
+		t.Fatalf("%+v", got)
+	}
+	if s := tr.Stats(); s.FallbackHistory != 1 {
+		t.Fatalf("history fallbacks counted %d, want 1", s.FallbackHistory)
+	}
+	tr.Sync(at(2000), []Observation{{Key: k}}) // no heartbeat time
+	tr.Sync(at(3000), []Observation{{Key: k, LastHeartbeat: at(600)}})
+	if s := tr.Stats(); s.Resets != 0 {
+		t.Fatalf("a zero heartbeat time caused %d reset(s)", s.Resets)
 	}
 }

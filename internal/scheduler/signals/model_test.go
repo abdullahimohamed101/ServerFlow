@@ -56,7 +56,7 @@ func (m *refModel) overlay(nowMs int64, k Key, local, reported int, atMs int64) 
 		if ev.start && m.bucket(ev.ms) >= b {
 			s++
 		}
-		if !ev.start && m.bucket(ev.ms) >= b+2 {
+		if !ev.start && m.bucket(ev.ms) >= b+finishLag {
 			f++
 		}
 	}

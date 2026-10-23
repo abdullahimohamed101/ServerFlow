@@ -19,11 +19,16 @@
 //
 //	effective = max(local, reported + started_since_report - finished_since_report)
 //
-// where "since the report" comes from the history. The report time is uncertain (round trip, registry
-// processing, the worker's sampling delay) and the history is bucketed, so the boundary is classified so that the
-// error is always an over-count: a start in the boundary bucket counts as after the report, a finish in the
-// boundary bucket or the one after counts as before it. The floor local keeps the guarantee the overlay exists
-// for (a stale-low report is still covered by what this gateway knows it sent). When the history cannot answer
-// (a worker the tracker has not followed since before the report, a report older than the window, a history
-// that was reset) the rule falls back to max(local, reported) and says so.
+// where "since the report" comes from the history. The report time is only known to about a bucket (round trip,
+// registry processing, the worker's sampling delay) and the history is bucketed, so starts and finishes in the
+// report's own bucket are classified alike (both as after the report): a request that starts and finishes inside
+// that bucket nets to zero. The classification can still be wrong in either direction for the requests in that one
+// bucket: a request that really started after the report but is counted as before it (or a finish that really
+// preceded the report) can make the result too low by a request or two for a moment; a request that started
+// before the report in that bucket can make it too high. The floor local bounds the low side (the gateway never
+// takes the effective load below what it knows it has sent), and the next report moves the boundary. There is no
+// "always an over-count" guarantee: an earlier version that classified finishes two buckets later gave one,
+// and at short request lengths made workers look full for the whole heartbeat interval. When the history cannot
+// answer (a worker the tracker has not followed since before the report, a report older than the window, a
+// history that was reset) the rule falls back to max(local, reported) and says so.
 package signals
