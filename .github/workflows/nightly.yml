@@ -25,6 +25,15 @@ jobs:
     timeout-minutes: 125
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      # Tests whose assertion is a PERFORMANCE budget. They measure the product on a quiet machine and are invalid under four
+      # CPU-hogging processes plus the race detector (the budget is then missed by the machine, not by the gateway): they run
+      # in CI's unit, race and tracing steps and in the `overhead` job below, and are left out here, where the point is to find
+      # races and load-sensitive logic. Everything else stays in, however slow it gets: a timing bug that only shows under load
+      # is exactly what this job exists for. internal/ciguard fails if this list loses a name or a `go test` line here loses
+      # `-skip "$LOAD_SKIP"`.
+      #   TestGatewayOverhead  p95 added latency of the gateway against a direct call (25 ms budget); measured 28 ms direct
+      #                        against 56 ms through the gateway under this load in 12 of 12 nightly runs.
+      LOAD_SKIP: ^(TestGatewayOverhead)$
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,12 +85,13 @@ jobs:
         run: |
           pkgs="$(go list ./...)"
           # shellcheck disable=SC2046 # a deliberate word list of import paths
-          go test -race -count=3 -timeout 30m $(printf '%s\n' "$pkgs" | grep -v '/tests/integration$')
+          go test -race -count=3 -timeout 30m -skip "$LOAD_SKIP" $(printf '%s\n' "$pkgs" | grep -v '/tests/integration$')
       - name: Race tests, three times, under load (tests/integration)
         timeout-minutes: 65
-        run: go test -race -count=3 -timeout 60m ./tests/integration
+        run: go test -race -count=3 -timeout 60m -skip "$LOAD_SKIP" ./tests/integration
 
   overhead:
+    # The measurement the stress job leaves out: one test, alone on a runner, no race detector, no extra load.
     name: gateway overhead budget
     runs-on: ubuntu-latest
     timeout-minutes: 20

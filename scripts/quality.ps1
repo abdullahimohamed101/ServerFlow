@@ -891,7 +891,8 @@ if (Test-Path -LiteralPath "go.mod") {
                         "TestADeadCollectorNeverTouchesRequests",
                         "TestGatewayDoesNotDependOnOpenTelemetry",
                         "TestExportReachesTheReceiver",
-                        "TestStreamingRequestSpanTree"
+                        "TestStreamingRequestSpanTree",
+                        "TestGatewayOverhead"
                     )
             }
 
