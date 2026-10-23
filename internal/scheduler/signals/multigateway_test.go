@@ -26,19 +26,10 @@ func pct(a, b int) float64 {
 	return 100 * float64(a) / float64(b)
 }
 
-type areq struct {
-	gw    int
-	finW  int // tick the worker finishes (load decrement)
-	tok   signals.Token
-	local *int
-}
-
 type estAcc struct {
 	n, truthFull, truthNotFull int
 	wrongFull, wrongFree       int
 	sumSigned, sumAbs          float64
-	belowReported              int
-	samples                    int
 }
 
 func (a *estAcc) add(est, truth, c int) {
