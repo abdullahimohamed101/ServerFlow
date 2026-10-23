@@ -170,6 +170,11 @@ jobs:
           for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
             docker build -q -f deploy/docker/Dockerfile --target "$t" -t "serverflow/$t:scan" .
           done
+      # The scanner has one source (public.ecr.aws, by digest), so there is no mirror to fall back to, but a pull that fails
+      # once is retried with backoff here instead of failing the first `docker run`. Its vulnerability database is downloaded by
+      # the scanner itself and cannot be retried from here: that is why this whole job stays advisory (continue-on-error).
+      - name: Pull the scanner (retries with backoff)
+        run: scripts/ci-docker-pull.sh "$TRIVY_IMAGE"
       - name: Scan from docker save tarballs (the scanner gets no Docker socket)
         run: |
           mkdir -p "$RUNNER_TEMP/scan"
