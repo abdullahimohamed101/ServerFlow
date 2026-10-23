@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -109,9 +108,7 @@ func TestADeadCollectorNeverTouchesRequests(t *testing.T) {
 	const n = 400
 	base := measure(t, staticGateway(t), n) // tracing off
 
-	closed, _ := net.Listen("tcp", "127.0.0.1:0")
-	closedURL := "http://" + closed.Addr().String()
-	_ = closed.Close()
+	closedURL := "http://" + refusedAddr()
 
 	cases := map[string]string{"500": "", "hang": "", "slow": "", "closed port": closedURL}
 	for name, fixed := range cases {

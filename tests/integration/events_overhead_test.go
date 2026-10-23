@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -75,9 +74,7 @@ func TestEventsOverhead(t *testing.T) {
 			}
 		}
 	}
-	dead, _ := net.Listen("tcp", "127.0.0.1:0")
-	deadAddr := dead.Addr().String()
-	_ = dead.Close()
+	deadAddr := refusedAddr()
 	downCfg := kcfg
 	downCfg.Brokers = []string{deadAddr}
 	scenarios := []scenario{
