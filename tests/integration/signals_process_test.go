@@ -58,8 +58,8 @@ func TestProcessGatewaySecondSignalExitsPromptly(t *testing.T) {
 	}
 	time.Sleep(time.Second)
 	select {
-	case err := <-gw.exited:
-		t.Fatalf("the gateway exited during a drain it should have waited for: %v", err)
+	case <-gw.done:
+		t.Fatalf("the gateway exited during a drain it should have waited for: %v", gw.exitErr)
 	default:
 	}
 	start := time.Now()
