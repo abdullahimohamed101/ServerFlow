@@ -147,7 +147,7 @@ A worker's reported active count is up to one heartbeat old (plus one registry r
   A slot handed to a queued request by the admission queue carries no cost until the request that receives it adds its own; for those microseconds the ledger undercounts by one request (admission uses slot counts, so
   nothing is over-admitted).
 - E0, the recovered-worker experiment (`internal/bench/embedded/recovered_worker_test.go`): two workers, the stuck requests of one abandoned by the client, a probe sent at once. Embedded cluster
-  (heartbeat 1 s, refresh 100 ms): the probe waits about 0.8 s under `max` and is served in about 15 ms under `ledger`.
+  (heartbeat 1 s, refresh 100 ms): the probe waits 0.70 to 0.71 s under `max` (10 runs; one run 0.81 s) and is served in 12 to 14 ms under `ledger` (10 runs).
 
 ## Operating notes
 
