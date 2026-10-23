@@ -1,6 +1,6 @@
 # Phase 15 — Chaos harness, mock-worker faults and the master baseline
 
-PR B of the seven-PR delivery of Phase 15 (fault tolerance; plan `docs/plans/active/phase-15-fault-tolerance.md`
+PR B of the seven-PR delivery of Phase 15 (fault tolerance; plan `docs/plans/completed/phase-15-fault-tolerance.md`
 on the PR A branch, decisions D17 to D21). It adds **no product code**: it adds the means to measure the
 resilience feature before it exists, and the baseline taken on the gateway as it is on master. Every
 number below describes this machine on this day; none of it is a claim about the feature (there is no feature

@@ -224,6 +224,9 @@ func TestAWaiterIsHandedTheFreedSlotEvenWhenTheReportedCountIsStale(t *testing.T
 	g.awaitArrivals(t, 1)
 	r2 := e.chatAsync(context.Background(), "r2")
 	e.awaitDepth(t, 1)
+	// r2 is queued. Its queue wait is checked below to be at least 5 ms; the steps between here and the release
+	// can take less than that on a fast machine (2 ms was seen), so make the wait last: a sleep sets a floor.
+	time.Sleep(20 * time.Millisecond)
 
 	// The worker's heartbeat now reports the request our gateway sent: reported 1 of 1, local 1 of 1.
 	stale := g.snap(1)

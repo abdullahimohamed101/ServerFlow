@@ -24,7 +24,7 @@ ADR-016.
 Guarantee (ADR-016 amendment, ADR-020): every `AttemptStarted` is followed by exactly one `AttemptEnded`, even when the request panics (the attempt
 ends `failed` with class `panic` and the panic still becomes a 500), and an `AttemptEnded` never arrives for an attempt that was not started.
 
-Phase 15 fields. **Fired with `resilience.mode: on` (PR D):** `AttemptStart.Probe` (a circuit breaker's trial request), `AttemptEnd.RetryDenied` (`budget`, `deadline`: a wanted retry was refused;
+Phase 15 fields. `resilience.mode: on` is the default since PR G (registry mode), so an observer sees these in a default deployment; with `mode: off` or static workers they stay at their zero values and the two new methods are never called. **Fired with `resilience.mode: on` (PR D):** `AttemptStart.Probe` (a circuit breaker's trial request), `AttemptEnd.RetryDenied` (`budget`, `deadline`: a wanted retry was refused;
 the denied retry has no `AttemptStarted`), `AttemptEnd.Probe` and `AttemptEnd.Verdict` (`ok`, `fault`, `neutral`: what the breaker was told; empty without resilience; a probe that ended before a verdict
 reads `neutral`; a stream that fails after its first byte ends with `fault`), and the attempt class `deadline` (the first-byte deadline cut the attempt; the request is a 504 `UPSTREAM_TIMEOUT`).
 **Fired with `resilience.mode: on` (PR E):** `AttemptStart.QueueWait` (time spent in the admission queue, on the first attempt only; the gateway overhead measurement subtracts it), `QueueWaited`, and `Rejection` kind `overload`

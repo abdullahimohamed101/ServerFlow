@@ -37,6 +37,17 @@ groups:
   - name: serverflow-fleet
     interval: 5s # failed-worker detection must fit the 10 s target: see prometheus.yml
     rules:
+      # Silent-agent detection (Phase 15, plan D23). The gateway stops routing to a worker at the suspect threshold
+      # (worker.suspect_timeout, 5 s by default): that is the "isolated" moment. The warning fires at that age so a late
+      # heartbeat is visible, and the critical alert below keeps its 10 s (worker.unhealthy_timeout) so one late heartbeat
+      # never pages. Above 10 s both fire.
+      - alert: ServerFlowWorkerHeartbeatLate
+        expr: worker_heartbeat_age_seconds > 5
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Worker {{ $labels.worker_id }} has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
+          runbook: "docs/operations/observability.md#runbook-worker-down"
       # A worker that stopped heartbeating is detected from the control plane's heartbeat age. 10 s is the
       # worker.unhealthy_timeout default: after it the registry already treats the worker as UNHEALTHY.
       - alert: ServerFlowWorkerHeartbeatStale
@@ -99,3 +110,26 @@ groups:
         annotations:
           summary: "Requests are waiting for a PostgreSQL connection (pool exhausted)"
           runbook: "docs/operations/observability.md#runbook-postgres-pool-exhausted"
+
+  # Fault tolerance (Phase 15, ADR-020, docs/operations/resilience.md). These series exist only on gateways that run with
+  # resilience.mode on in registry mode; with the feature off the rules see no series and never fire.
+  - name: serverflow-resilience
+    rules:
+      # circuit_breakers_open counts open plus half-open breakers per gateway and model, so a worker that is cycling through
+      # failed probes keeps it above 0. A short ejection (one cool-down) is the breaker doing its job: hold for 2 minutes.
+      - alert: ServerFlowCircuitOpen
+        expr: circuit_breakers_open > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "A gateway has kept {{ $value }} circuit breaker(s) for model {{ $labels.model }} open for 2 minutes: a worker is ejected from routing"
+          runbook: "docs/operations/observability.md#runbook-circuit-open"
+      # Shedding is a client-visible 503 NO_CAPACITY. `draining` is excluded (it is expected during a restart). More than
+      # one shed every 20 s for 2 minutes, so a burst that the queue absorbs or a single shed does not fire.
+      - alert: ServerFlowShedding
+        expr: sum by (instance, reason) (rate(admission_rejections_total{reason!="draining"}[1m])) > 0.05
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "A gateway is refusing requests with 503 NO_CAPACITY (reason {{ $labels.reason }}) at more than one every 20 seconds"
+          runbook: "docs/operations/observability.md#runbook-shedding"

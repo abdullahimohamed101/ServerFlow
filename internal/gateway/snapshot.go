@@ -142,7 +142,7 @@ func (c *snapshotCache) runSync(s *snapshot, age time.Duration) {
 					next = min(next, int64(math.Ceil(secs*1e9)))
 				}
 			}
-			members = append(members, resilience.Member{Key: keyOf(w), Eligible: eligible})
+			members = append(members, resilience.Member{Key: keyOf(w), Model: model, Eligible: eligible})
 			models[w.WorkerID] = model
 		}
 	}

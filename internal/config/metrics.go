@@ -124,6 +124,11 @@ func (m MetricsConfig) String() string {
 // GoString implements fmt.GoStringer.
 func (m MetricsConfig) GoString() string { return "config.MetricsConfig" + m.String() }
 
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (m MetricsConfig) Format(f fmt.State, verb rune) {
+	writeRedacted(f, verb, m.String(), m.GoString())
+}
+
 // LogValue implements slog.LogValuer.
 func (m MetricsConfig) LogValue() slog.Value { return slog.StringValue(m.String()) }
 

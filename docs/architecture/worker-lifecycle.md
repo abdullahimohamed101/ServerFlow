@@ -121,6 +121,21 @@ A snapshot never includes the registration ID.
 - **Failures**: a control plane that is unreachable is retried at the normal heartbeat
   cadence (backing off would let health decay); registration failures and an absent
   backend back off up to ten intervals.
+- **Status endpoint** (Phase 17, ADR-022 D6; off unless `worker.status_listen` is set, for example `127.0.0.1:9102`):
+  a loopback-only listener for a probe running beside the agent (the `healthcheck` binary: Docker's healthcheck, a
+  Kubernetes exec probe). `GET /healthz` is 200 while the heartbeat loop wakes on schedule: the wait it announced
+  (backoff included), plus one interval, plus the longest the next step can take by itself (three call timeouts, each
+  half an interval but at least 250 ms; 7 s at the default 2 s interval, 14 s before the first step ends). A control
+  plane that times out every call therefore cannot make it fail. It says nothing about the control
+  plane or the backend, so an outage of either never restarts agents. `GET /readyz` is 200 only when the agent holds a
+  registration, the control plane accepted a heartbeat within `worker.unhealthy_timeout`, and the backend answered in
+  the last step; otherwise 503 with a fixed reason (`not registered`, `backend unreachable`, `no recent accepted
+  heartbeat`, `superseded by another process`, `heartbeat loop stalled`, `draining`). On SIGTERM `/readyz` turns 503
+  `draining` at once, the endpoint keeps answering while the agent reports DRAINING and deregisters, and it is closed
+  last inside the agent's existing 5 s shutdown budget. Bodies are one fixed line: no worker ID, address, token or
+  registration data. No other path, no other method, no TLS and no way to expose it beyond loopback. The mock backend's
+  own DRAINING state does not make `/readyz` fail (the backend's `/readyz` covers that); the agent's readiness is about
+  its own membership.
 
 ## Configuration
 
@@ -137,6 +152,7 @@ Shared YAML or `SERVERFLOW_*` environment (see `internal/config`).
 | `control_plane.token` | none | shared secret (at least 16 characters), also used by agents |
 | `control_plane.max_workers` | 1000 | registry size cap |
 | `worker.id`, `model`, `backend_url`, `advertise_url`, `control_plane_url` | | the agent's identity and addresses |
+| `worker.status_listen` | empty (off) | the agent's status endpoint, `host:port`, loopback only (see below); env `SERVERFLOW_WORKER_STATUS_LISTEN` |
 
 ## Security
 

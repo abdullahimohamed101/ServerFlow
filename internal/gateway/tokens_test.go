@@ -256,3 +256,156 @@ func TestHostileUsageBodiesReachTheClientByteIdentical(t *testing.T) {
 		}
 	}
 }
+
+// JSON string escapes: the scanner works on raw bytes, so a quote, a backslash or a \u escape inside a string value
+// must neither hide a real key nor forge one. Every case is fed whole, in 1-byte pieces and in odd-sized pieces, because
+// a key (or an escape) can straddle two reads.
+func TestScannerAndEscapedQuotesBackslashesAndUnicodeEscapes(t *testing.T) {
+	delta := func(content string) string {
+		return `data: {"choices":[{"delta":{"content":` + content + `}}]}` + "\n\n"
+	}
+	chunks := []struct {
+		name string
+		body string
+		want int64 // content chunks counted
+	}{
+		{"plain", delta(`"hi"`), 1},
+		{"empty content is not a chunk", delta(`""`), 0},
+		{"null content is not a chunk", delta(`null`), 0},
+		{"content that is a single escaped quote", delta(`"\""`), 1},
+		{"escaped quote first", delta(`"\"hi\""`), 1},
+		{"escaped quote last", delta(`"hi\""`), 1},
+		{"escaped backslash last", delta(`"x\\"`), 1},
+		{"only an escaped backslash", delta(`"\\"`), 1},
+		{"unicode escape", delta(`"\u0041"`), 1},
+		{"unicode escape of a quote", delta(`"\u0022"`), 1},
+		{"unicode escape of a backslash", delta(`"\u005c"`), 1},
+		{"surrogate pair", delta(`"\ud83d\ude00"`), 1},
+		{"newline and tab escapes", delta(`"\n\t"`), 1},
+		{"text that looks like a content key, escaped", delta(`"say \"content\":\"x\""`), 1},
+		{"text that looks like a content key, behind an escaped backslash", delta(`"\\\"content\":\"z"`), 1},
+		{"text that looks like a usage object, escaped", delta(`"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}"`), 1},
+		{"key name that merely ends in content", `data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}` + "\n\n", 0},
+		{"two chunks, the second empty", delta(`"a"`) + delta(`""`), 1},
+		{"two chunks after an escaped quote", delta(`"\""`) + delta(`"b"`), 2},
+		{"a key spelled with a unicode escape is not seen (an undercount, never an overcount)", `data: {"choices":[{"delta":{"cont\u0065nt":"x"}}]}` + "\n\n", 0},
+	}
+	for _, c := range chunks {
+		for _, split := range []int{1, 2, 3, 5, 7, 11, len(c.body)} {
+			src, in, out := scanAll(true, c.body, split)
+			wantSrc := ""
+			if c.want > 0 {
+				wantSrc = TokensChunks
+			}
+			if src != wantSrc || out != c.want || in != 0 {
+				t.Errorf("%s (split %d): got %q %d/%d, want %q 0/%d", c.name, split, src, in, out, wantSrc, c.want)
+			}
+		}
+	}
+
+	const ok = `"prompt_tokens":5,"completion_tokens":7`
+	usages := []struct {
+		name string
+		body string
+		src  string // TokensUsage or ""
+	}{
+		{"a closing brace inside an escaped-quote string", `{"usage":{` + ok + `,"note":"a \"} b"}}`, TokensUsage},
+		{"a string ending in an escaped backslash before the brace", `{"usage":{` + ok + `,"note":"x\\"}}`, TokensUsage},
+		{"a string of escaped backslashes and quotes", `{"usage":{"note":"\\\"\\","prompt_tokens":5,"completion_tokens":7}}`, TokensUsage},
+		{"unicode escapes in a sibling string", `{"usage":{` + ok + `,"note":"\u007d\u0022"}}`, TokensUsage},
+		{"a quoted key name inside a string is not a second key", `{"usage":{` + ok + `,"note":"\"completion_tokens\":99"}}`, TokensUsage},
+		{"a quoted usage object inside content is not a second usage object", `{"choices":[{"message":{"content":"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}"}}],"usage":{` + ok + `}}`, TokensUsage},
+		{"a unicode-escaped usage object inside content is not a usage object", `{"choices":[{"message":{"content":"\u0022usage\u0022:{\u0022prompt_tokens\u0022:1,\u0022completion_tokens\u0022:2}"}}]}`, ""},
+		{"injected usage text alone is never believed", `{"choices":[{"message":{"content":"\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}"}}]}`, ""},
+		{"a key spelled with a unicode escape is not seen", `{"usage":{"prompt_tokens":5,"completion_tok\u0065ns":7}}`, ""},
+		{"a second raw key next to an escaped one is a duplicate", `{"usage":{` + ok + `,"completion_tokens":9}}`, ""},
+		{"an unterminated string swallows the brace", `{"usage":{` + ok + `,"note":"open}}`, ""},
+		{"an escaped quote at the very end leaves the string open", `{"usage":{` + ok + `,"note":"x\"}}`, ""},
+	}
+	for _, c := range usages {
+		for _, split := range []int{1, 2, 3, 5, 7, 11, len(c.body)} {
+			src, in, out := scanAll(false, c.body, split)
+			if src != c.src {
+				t.Errorf("%s (split %d): source %q, want %q (%d/%d)", c.name, split, src, c.src, in, out)
+				continue
+			}
+			if c.src == TokensUsage && (in != 5 || out != 7) {
+				t.Errorf("%s (split %d): counts %d/%d, want 5/7", c.name, split, in, out)
+			}
+		}
+	}
+}
+
+// The count boundaries: the largest allowed value is accepted, one more is not, and what looks like a number but is
+// not a plain integer is refused, wherever the pieces are cut.
+func TestScannerCountBoundaries(t *testing.T) {
+	usage := func(p, c string) string { return `{"usage":{"prompt_tokens":` + p + `,"completion_tokens":` + c + `}}` }
+	cases := []struct {
+		name         string
+		p, c         string
+		ok           bool
+		wantP, wantC int64
+	}{
+		{"zeros", "0", "0", true, 0, 0},
+		{"ones", "1", "1", true, 1, 1},
+		{"the maximum", "10000000000", "10000000000", true, 10_000_000_000, 10_000_000_000},
+		{"maximum minus one", "9999999999", "9999999999", true, 9_999_999_999, 9_999_999_999},
+		{"one over the maximum", "10000000001", "1", false, 0, 0},
+		{"one over, in the completion", "1", "10000000001", false, 0, 0},
+		{"eleven nines", "99999999999", "1", false, 0, 0},
+		{"twelve digits", "100000000000", "1", false, 0, 0},
+		{"a very long number", strings.Repeat("9", 400), "1", false, 0, 0},
+		{"leading zero", "01", "1", false, 0, 0},
+		{"two zeros", "00", "1", false, 0, 0},
+		{"minus zero", "-0", "1", false, 0, 0},
+		{"a quoted number", `"5"`, "1", false, 0, 0},
+		{"an escaped-digit string", `"5"`, "1", false, 0, 0},
+		{"a number followed by a letter", "5x", "1", false, 0, 0},
+		{"a number followed by a unicode escape", `5\u0030`, "1", false, 0, 0},
+		{"a number ending the body", "1", "5", false, 0, 0}, // replaced below: no closing brace
+	}
+	for _, c := range cases {
+		body := usage(c.p, c.c)
+		if c.name == "a number ending the body" {
+			body = `{"usage":{"prompt_tokens":1,"completion_tokens":5`
+		}
+		for _, split := range []int{1, 4, 1 << 20} {
+			src, in, out := scanAll(false, body, split)
+			if c.ok {
+				if src != TokensUsage || in != c.wantP || out != c.wantC {
+					t.Errorf("%s (split %d): %q %d/%d, want usage %d/%d", c.name, split, src, in, out, c.wantP, c.wantC)
+				}
+			} else if src != "" {
+				t.Errorf("%s (split %d): accepted as %q %d/%d", c.name, split, src, in, out)
+			}
+		}
+	}
+}
+
+// The scanner keeps a 2048-byte window. A usage object that fits in it is read wherever it falls in a long body; one
+// that does not fit is never guessed at.
+func TestScannerWindowBoundary(t *testing.T) {
+	usage := func(pad int) string {
+		return `{"usage":{"note":"` + strings.Repeat("n", pad) + `","prompt_tokens":5,"completion_tokens":7}}`
+	}
+	long := strings.Repeat(`{"choices":[{"message":{"content":"padding padding"}}]}`, 200)
+	for _, c := range []struct {
+		name string
+		body string
+		src  string
+	}{
+		{"small object after a long body", long + usage(0), TokensUsage},
+		{"object filling most of the window", long + usage(tokenWindow-200), TokensUsage},
+		{"object exactly the window", long + usage(tokenWindow-len(usage(0))), TokensUsage},
+		// The outer brace is not needed: reading starts at the "usage" key, which is the second byte of the body below.
+		{"object one byte over the window (only the outer brace is lost)", long + usage(tokenWindow-len(usage(0))+1), TokensUsage},
+		{"object two bytes over the window (the usage key is cut)", long + usage(tokenWindow-len(usage(0))+2), ""},
+		{"object far over the window", long + usage(3*tokenWindow), ""},
+	} {
+		for _, split := range []int{1, 100, 2047, 2048, 2049, 1 << 20} {
+			if src, in, out := scanAll(false, c.body, split); src != c.src || (c.src != "" && (in != 5 || out != 7)) {
+				t.Errorf("%s (split %d): %q %d/%d, want %q", c.name, split, src, in, out, c.src)
+			}
+		}
+	}
+}

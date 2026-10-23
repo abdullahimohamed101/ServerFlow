@@ -20,6 +20,7 @@ import (
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/scheduler"
+	"serverflow/pkg/protocol"
 )
 
 // defaultBodyReadTimeout bounds reading a request body (slow-client defense).
@@ -63,6 +64,8 @@ type Server struct {
 	bodyReadTimeout time.Duration
 	// clientWriteTimeout bounds each write to the client.
 	clientWriteTimeout time.Duration
+	// estimator computes the request cost estimate; nil means cost.Estimate. A seam for tests that count calls.
+	estimator func(msgs []protocol.Message, prompt string, bodyBytes, maxTokens, limit int) (input, output int)
 }
 
 // New builds a Server that forwards to the upstream described by cfg.

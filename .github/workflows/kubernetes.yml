@@ -1,0 +1,94 @@
+name: Kubernetes
+
+# Phase 17: the kind cluster. Advisory (not in the owner's required-check list, docs/development/ci.md): it creates a real
+# single-node kind cluster on the runner, loads the ServerFlow images, deploys the data tier under Pod Security `restricted`
+# and runs the data-tier smoke checks. It has not run on GitHub before the pull request that adds it; until a run is green its
+# result is unknown (docs/operations/kubernetes-deployment.md, "What is verified"). The static checks are the k8s-static job
+# in ci.yml, which runs on every pull request.
+# Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/kubernetes/**"
+      - "deploy/docker/**"
+      - "scripts/k8s-up.sh"
+      - "scripts/k8s-tool.sh"
+      - "scripts/dev-up.sh"
+      - "scripts/dev-pull.sh"
+      - "scripts/ci-docker-pull.sh"
+      - "migrations/**"
+      - "cmd/admin/**"
+      - "docker-compose.yml"
+      - ".github/workflows/kubernetes.yml"
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kind-data-tier:
+    name: k8s kind data tier (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pinned tool versions (deploy/kubernetes/tools.env is the single source)
+        run: grep -E '^(KUBERNETES_VERSION|KUBECTL_LINUX_AMD64_SHA256|KIND_VERSION|KIND_LINUX_AMD64_SHA256)=' deploy/kubernetes/tools.env >> "$GITHUB_ENV"
+      - name: Install kubectl and kind (checksum verified)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" "https://dl.k8s.io/release/${KUBERNETES_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_LINUX_AMD64_SHA256}  $RUNNER_TEMP/kubectl" | sha256sum --check -
+          chmod +x "$RUNNER_TEMP/kubectl" && mv "$RUNNER_TEMP/kubectl" "$HOME/.local/bin/kubectl"
+          curl -fsSL -o "$RUNNER_TEMP/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_LINUX_AMD64_SHA256}  $RUNNER_TEMP/kind" | sha256sum --check -
+          chmod +x "$RUNNER_TEMP/kind" && mv "$RUNNER_TEMP/kind" "$HOME/.local/bin/kind"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Tool versions and the runner's memory and disk
+        run: |
+          kubectl version --client
+          kind version
+          docker info --format 'engine memory: {{.MemTotal}} bytes, {{.NCPU}} CPUs'
+          df -h / | tail -1
+      - name: Cluster up (secrets, kind, images, namespace, data tier, jobs)
+        run: |
+          start=$(date +%s)
+          scripts/k8s-up.sh up
+          echo "k8s-up took $(( $(date +%s) - start )) s"
+      - name: Data-tier smoke checks (all must pass, none skipped)
+        run: |
+          set -o pipefail
+          scripts/k8s-up.sh smoke 2>&1 | tee "$RUNNER_TEMP/k8s-smoke.log"
+          tail -1 "$RUNNER_TEMP/k8s-smoke.log" | grep -Eq '^smoke: [0-9]+ of [0-9]+ checks passed, 0 failed, 0 skipped$'
+      - name: Cluster state on failure (secret-free by construction, and checked)
+        if: failure()
+        run: |
+          scripts/k8s-up.sh diagnose > "$RUNNER_TEMP/k8s-diagnose.txt" 2>&1 || true
+          # Belt and braces for the artifact: withhold the log if any generated secret value appears in it (nothing is printed).
+          { for f in .dev/*.env; do sed -n 's/^[A-Z_]*=//p' "$f"; done; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
+          if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/k8s-diagnose.txt"; then
+            echo "a generated secret appeared in the diagnostics; the artifact is withheld"
+            rm -f "$RUNNER_TEMP/k8s-diagnose.txt"
+          fi
+          rm -f "$RUNNER_TEMP/needles"
+      - name: Keep the diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: k8s-diagnostics
+          path: |
+            ${{ runner.temp }}/k8s-diagnose.txt
+            ${{ runner.temp }}/k8s-smoke.log
+          if-no-files-found: ignore
+      - name: Delete the cluster and check nothing is left behind
+        if: always()
+        run: scripts/k8s-up.sh down

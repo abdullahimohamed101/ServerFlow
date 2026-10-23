@@ -29,6 +29,10 @@ type Config struct {
 	// Interval is the default heartbeat interval; the control plane's value,
 	// returned at registration, takes over within the bounds below.
 	Interval time.Duration
+	// ReadyTimeout is how long an accepted heartbeat keeps the status endpoint's /readyz green. It follows the
+	// registry's own judgement (worker.unhealthy_timeout): after that long without an accepted heartbeat the
+	// control plane no longer routes to this worker. Zero means five heartbeat intervals.
+	ReadyTimeout time.Duration
 }
 
 const (
@@ -71,11 +75,20 @@ type Agent struct {
 	backendDown  bool // to log reachability changes once, not on every tick
 	cpFailures   int
 	reRegistered bool // the previous step ended by dropping the registration
+
+	// Inputs of the status endpoint (see status.go). The fields below are written by the goroutine that drives the
+	// agent only; Step and Shutdown publish them to st, which the endpoint reads from other goroutines.
+	now          func() time.Time
+	lastAccepted time.Time // the last heartbeat the control plane accepted
+	backendOK    bool      // the backend answered sensibly in the last step
+	st           statusState
 }
 
 // New returns an agent. It is not safe for concurrent use.
 func New(cfg Config, backend Backend, cp ControlPlane, log *slog.Logger) *Agent {
-	return &Agent{cfg: cfg, backend: backend, cp: cp, interval: cfg.Interval, log: log.With("component", "worker-agent", "worker_id", cfg.WorkerID)}
+	a := &Agent{cfg: cfg, backend: backend, cp: cp, interval: cfg.Interval, now: time.Now, log: log.With("component", "worker-agent", "worker_id", cfg.WorkerID)}
+	a.st.aliveUntil = a.now().Add(a.liveWindow(0)) // the first step has not finished yet
+	return a
 }
 
 // Registered reports whether the agent currently holds a registration.
@@ -86,11 +99,19 @@ func (a *Agent) Superseded() bool { return a.superseded }
 
 // callTimeout bounds each backend probe and control plane call to half a
 // heartbeat interval (with a floor), so a step cannot outlast its interval.
-func (a *Agent) callTimeout() time.Duration { return max(a.interval/2, minCallTimeout) }
+func (a *Agent) callTimeout() time.Duration { return callTimeoutFor(a.interval) }
+
+func callTimeoutFor(interval time.Duration) time.Duration { return max(interval/2, minCallTimeout) }
 
 // Step runs one cycle: probe the backend, register if needed, send a heartbeat.
 // It returns how long to wait before the next cycle.
 func (a *Agent) Step(ctx context.Context) time.Duration {
+	d := a.step(ctx)
+	a.publish(d)
+	return d
+}
+
+func (a *Agent) step(ctx context.Context) time.Duration {
 	if a.superseded {
 		return a.interval
 	}
@@ -107,6 +128,7 @@ func (a *Agent) Step(ctx context.Context) time.Duration {
 		}
 	}
 	a.noteBackend(berr)
+	a.backendOK = berr == nil
 
 	if !a.registered {
 		if berr != nil {
@@ -132,6 +154,7 @@ func (a *Agent) Step(ctx context.Context) time.Duration {
 	hcancel()
 	switch {
 	case err == nil:
+		a.lastAccepted = a.now()
 		a.lastReported = hb.State
 		a.cpFailures = 0
 		a.reRegistered = false
@@ -292,6 +315,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-t.C:
 		}
 	}
+	a.markDraining() // stopping: /readyz fails from here on, before Shutdown has said anything to the control plane
 	return nil
 }
 
@@ -299,6 +323,8 @@ func (a *Agent) Run(ctx context.Context) error {
 // registry stops offering it, then deregisters. It is best effort and bounded
 // by ctx. A superseded agent does nothing: the registration is no longer its own.
 func (a *Agent) Shutdown(ctx context.Context) {
+	a.markDraining()
+	defer a.publish(a.interval)
 	if !a.registered {
 		return
 	}

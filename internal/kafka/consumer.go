@@ -20,7 +20,7 @@ import (
 // move only when Commit is called, after the caller's database commit. Rebalances are held back while a batch
 // is being processed (between Poll and Commit), so one member never works on partitions another has been given.
 type Consumer struct {
-	cfg    Config
+	cfg    sealedConfig // see sealedConfig
 	cl     *kgo.Client
 	closed atomic.Bool
 	polled atomic.Bool // a batch is out: rebalances are blocked until Commit or an empty Poll
@@ -61,7 +61,7 @@ func NewConsumer(cfg Config) (*Consumer, error) {
 	if err != nil {
 		return nil, cfg.safe(err)
 	}
-	c := &Consumer{cfg: cfg, cl: cl, lagStop: make(chan struct{}), lagDone: make(chan struct{})}
+	c := &Consumer{cfg: seal(cfg), cl: cl, lagStop: make(chan struct{}), lagDone: make(chan struct{})}
 	go c.lagLoop()
 	return c, nil
 }
@@ -71,7 +71,7 @@ func NewConsumer(cfg Config) (*Consumer, error) {
 // goes on being stale for as long as the broker cannot be asked.
 func (c *Consumer) lagLoop() {
 	defer close(c.lagDone)
-	every := c.cfg.LagInterval
+	every := c.cfg.c().LagInterval
 	if every <= 0 {
 		every = 5 * time.Second
 	}
@@ -79,7 +79,7 @@ func (c *Consumer) lagLoop() {
 	refresh := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if n, err := adm.GroupLag(ctx, c.cfg.GroupID, c.cfg.Topic); err == nil {
+		if n, err := adm.GroupLag(ctx, c.cfg.c().GroupID, c.cfg.c().Topic); err == nil {
 			c.lag.Store(n)
 		}
 	}
@@ -118,7 +118,7 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]usage.Message, error) {
 			continue
 		}
 		if firstErr == nil {
-			firstErr = c.cfg.safe(fe.Err)
+			firstErr = c.cfg.c().safe(fe.Err)
 		}
 	}
 	var out []usage.Message
@@ -171,7 +171,7 @@ func (c *Consumer) Commit(ctx context.Context, upTo []usage.Offset) error {
 	})
 	wg.Wait()
 	if commitErr != nil {
-		return c.cfg.safe(commitErr)
+		return c.cfg.c().safe(commitErr)
 	}
 	return nil
 }
@@ -199,7 +199,9 @@ type (
 func kerrFor(code int16) error { return kerr.ErrorForCode(code) }
 
 // Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
-func (x *Consumer) Format(f fmt.State, _ rune) { redactedFormat(f, "Consumer", x.cfg) }
+func (x *Consumer) Format(f fmt.State, _ rune) { redactedFormat(f, "Consumer", x.cfg.c()) }
 
 // LogValue implements slog.LogValuer.
-func (x *Consumer) LogValue() slog.Value { return slog.StringValue("kafka.Consumer" + x.cfg.String()) }
+func (x *Consumer) LogValue() slog.Value {
+	return slog.StringValue("kafka.Consumer" + x.cfg.c().String())
+}

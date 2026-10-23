@@ -113,6 +113,13 @@ func TestHealthchecksAreBoundedAndAimedAtTheService(t *testing.T) {
 	cpAddr := fmt.Sprint(asMap(t, svcs["control-plane"]["environment"], "cp env")["SERVERFLOW_CONTROL_PLANE_ADDR"])
 	want["control-plane"] = "http://127.0.0.1:" + cpAddr[strings.LastIndex(cpAddr, ":")+1:] + "/healthz"
 	for _, n := range []string{"1", "2", "3"} {
+		// The agents' status endpoint (ADR-022 D6): readiness is registration, so a healthy agent is a registered one.
+		agentEnv := asMap(t, svcs["worker-agent-"+n]["environment"], "agent env")
+		listen := fmt.Sprint(agentEnv["SERVERFLOW_WORKER_STATUS_LISTEN"])
+		if !strings.HasPrefix(listen, "127.0.0.1:") {
+			t.Errorf("worker-agent-%s must enable its status endpoint on a loopback address, got %q", n, listen)
+		}
+		want["worker-agent-"+n] = "http://" + listen + "/readyz"
 		var port string
 		for _, a := range strList(svcs["mock-worker-"+n]["command"]) {
 			if v, ok := strings.CutPrefix(a, "--addr="); ok {
@@ -189,6 +196,22 @@ func TestTraceInsecureFlagOnlyBesideATracingEndpoint(t *testing.T) {
 		}
 		if ep != "${SF_OTLP_ENDPOINT:-}" {
 			t.Errorf("%s: --trace-insecure-ok without --otlp-endpoint=${SF_OTLP_ENDPOINT:-} (got %q): tracing would not be tied to the profile", name, ep)
+		}
+	}
+}
+
+// TestAgentHealthchecksKeepTheirTiming pins the agents' healthcheck numbers (the shared anchor's): a typo that
+// makes one agent unhealthy after a single missed check, or never, must not pass because the range check in
+// TestHealthchecksAreBoundedAndAimedAtTheService is loose. A healthy agent is a registered one (ADR-022 D6), and
+// dev-up refuses to finish while a container is unhealthy.
+func TestAgentHealthchecksKeepTheirTiming(t *testing.T) {
+	svcs := services(t, "docker-compose.yml")
+	for _, n := range []string{"1", "2", "3"} {
+		name := "worker-agent-" + n
+		hc := asMap(t, svcs[name]["healthcheck"], name+" healthcheck")
+		if dur(t, hc["interval"]) != 5*time.Second || dur(t, hc["timeout"]) != 4*time.Second || dur(t, hc["start_period"]) != 2*time.Second || hc["retries"] != 6 {
+			t.Errorf("%s healthcheck timing = interval %v timeout %v start_period %v retries %v, want 5s 4s 2s 6", name,
+				hc["interval"], hc["timeout"], hc["start_period"], hc["retries"])
 		}
 	}
 }

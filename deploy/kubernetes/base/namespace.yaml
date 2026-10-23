@@ -1,0 +1,17 @@
+# Pod Security Admission: a pod that is not "restricted" is rejected (enforce), and audited and warned about as well.
+# The version is pinned to the Kubernetes minor of deploy/kubernetes/tools.env so a newer cluster does not tighten it silently.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: serverflow
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: namespace
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
