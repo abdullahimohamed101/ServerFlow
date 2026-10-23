@@ -448,3 +448,38 @@ func TestHistoryFallbacksAreCountedAndAZeroHeartbeatIsNotARestart(t *testing.T) 
 		t.Fatalf("a zero heartbeat time caused %d reset(s)", s.Resets)
 	}
 }
+
+// The history keeps exactly window() buckets behind the newest one: a pivot that far back is answered, one bucket
+// further is unknown (it was folded into the base). Pins how much history is kept (the window plus two buckets of
+// slack for the report-time uncertainty).
+func TestHistoryDepthIsTheWindowPlusSlack(t *testing.T) {
+	tr := New(Config{Window: time.Second}) // 10 buckets
+	k := key("w")
+	tr.Sync(at(0), []Observation{{Key: k}})
+	for ms := 0; ms < 20_000; ms += 50 {
+		tok := tr.Begin(at(ms), k)
+		tr.End(at(ms), tok, 0)
+	}
+	if got, want := tr.window(), int64(12); got != want {
+		t.Fatalf("window() = %d buckets, want %d", got, want)
+	}
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	h := &tr.entries[k].hist
+	newest := h.recs[len(h.recs)-1].idx
+	if _, ok := h.since(newest-tr.window(), true); !ok {
+		t.Fatal("a pivot window() buckets back must still be answerable")
+	}
+	if _, ok := h.since(newest-tr.window()-1, true); ok {
+		t.Fatal("a pivot further back must be unknown: more history than the window was kept")
+	}
+}
+
+func TestHugeCountsAreClampedToMaxInt32(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	seed(tr, k)
+	if got := tr.Overlay(at(1000), Input{Key: k, Local: 0, Reported: 1 << 40, At: at(900)}); got.Active != 1<<31-1 {
+		t.Fatalf("Active = %d, want MaxInt32", got.Active)
+	}
+}
