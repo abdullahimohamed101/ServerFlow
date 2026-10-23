@@ -788,17 +788,28 @@ func TestStartProcRetriesWhenItsPortIsBrieflyTaken(t *testing.T) {
 // A port the kernel hands out a second time (it does, once the first listener is closed) is never returned
 // again: the first holder is still running.
 func TestFreePortNeverReturnsAPortTwice(t *testing.T) {
-	seq := []string{"127.0.0.1:40099", "127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40099", "127.0.0.1:40101"}
-	next := func() string { a := seq[0]; seq = seq[1:]; return a }
+	// Made-up addresses on ports below the ephemeral range: the process-wide registry is shared with every other test of
+	// this binary, and a made-up port inside the kernel's ephemeral range (32768 and up on Linux) can already have been
+	// handed out to a real test, which made this test panic once on CI (run 39957...: the sequence ran out).
+	a, b, c := "127.0.0.1:41", "127.0.0.1:42", "127.0.0.1:43"
+	seq := []string{a, a, b, a, c}
+	next := func() string {
+		if len(seq) == 0 {
+			t.Fatal("pickPort asked for more candidates than the test supplied")
+		}
+		x := seq[0]
+		seq = seq[1:]
+		return x
+	}
 	t.Cleanup(func() { // the registry is process-wide (and -count repeats this test): forget the made-up ports
 		handedOutMu.Lock()
 		defer handedOutMu.Unlock()
-		for _, a := range []string{"127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40101"} {
-			delete(handedOut, a)
+		for _, x := range []string{a, b, c} {
+			delete(handedOut, x)
 		}
 	})
 	got := []string{pickPort(t, next), pickPort(t, next), pickPort(t, next)}
-	want := []string{"127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40101"}
+	want := []string{a, b, c}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
