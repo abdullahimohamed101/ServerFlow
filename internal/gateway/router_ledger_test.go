@@ -760,3 +760,43 @@ func BenchmarkRouteLedger(b *testing.B) {
 		})
 	}
 }
+
+// The tracker learns a snapshot's workers before routing can see the snapshot: a request can never be routed to a
+// worker the ledger has not been told about (which would start its history late and force a fallback).
+func TestTheTrackerSeesAWorkerBeforeRoutingCan(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	src := &fakeLister{workers: []protocol.WorkerSnapshot{g.snap(2)}}
+	c, _, _ := newCache(t, src)
+	var seenBeforeVisible bool
+	c.onSnapshot = func(now time.Time, ws []protocol.WorkerSnapshot) {
+		seenBeforeVisible = len(ws) == 1 && c.cur.Load() == nil
+	}
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !seenBeforeVisible {
+		t.Fatal("the hook ran after the snapshot became visible, or with the wrong workers")
+	}
+}
+
+// A hand-off the queue declines (the head waiter is already routing after a wake-up) leaves the ledger as it was: the
+// token taken for the hand-off is ended at once.
+func TestADeclinedHandOffLeavesTheLedgerUntouched(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	sa := g.snap(2)
+	e := newResEnv(t, []protocol.WorkerSnapshot{sa}, noBreaker)
+	tr := withLedger(t, e.regEnv)
+	stand, err := e.rs.waitq.Enqueue("qwen-7b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.rs.waitq.Leave(stand)
+	e.rs.waitq.Wake("qwen-7b", 1) // the head is routing: it cannot receive a hand-off
+	e.gw.router.mu.Lock()
+	handed, wake := e.gw.router.handoffLocked(&sa)
+	e.gw.router.mu.Unlock()
+	if handed || wake {
+		t.Fatalf("handed %v wake %v", handed, wake)
+	}
+	wantTotals(t, tr, 0, 0, "after a declined hand-off")
+}

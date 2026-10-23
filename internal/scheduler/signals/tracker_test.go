@@ -324,3 +324,106 @@ func TestObservedConversion(t *testing.T) {
 		t.Fatal("a fallback must be flagged")
 	}
 }
+
+// A token of an earlier generation of the same key (the entry was pruned and created again) must not add cost to
+// the new entry.
+func TestStaleTokenOfTheSameKeyCannotAddCost(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	seed(tr, k)
+	old := tr.Begin(at(10), k)
+	tr.Sync(at(20), nil) // the worker leaves the snapshot ...
+	tr.Sync(at(30), []Observation{{Key: k, LastHeartbeat: t0}})
+	fresh := tr.Begin(at(40), k) // ... and comes back as a new entry
+	if tr.AddCost(old, 50) {
+		t.Fatal("AddCost accepted a token of the previous generation")
+	}
+	if n, w := tr.Ledger(k); n != 1 || w != 0 {
+		t.Fatalf("the new entry holds %d / %d, want 1 / 0", n, w)
+	}
+	tr.End(at(50), fresh, 0)
+}
+
+// A reset history holds no records (memory), and the ledger survives it.
+func TestResetEmptiesTheHistory(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	tr.Sync(at(0), []Observation{{Key: k, LastHeartbeat: at(500)}})
+	for i := 0; i < 20; i++ {
+		tok := tr.Begin(at(100+i*100), k)
+		tr.End(at(150+i*100), tok, 0)
+	}
+	if tr.HistoryRecords() == 0 {
+		t.Fatal("no history recorded")
+	}
+	tr.Sync(at(3000), []Observation{{Key: k, LastHeartbeat: at(100)}})
+	if n := tr.HistoryRecords(); n != 0 {
+		t.Fatalf("%d history records after a reset", n)
+	}
+}
+
+// A history that has dropped its oldest buckets answers "unknown" for a pivot at or before the last one it dropped,
+// and only for those.
+func TestHistorySinceAfterTrimming(t *testing.T) {
+	var h history
+	keep := int64(5)
+	for idx := int64(0); idx < 20; idx++ {
+		h.record(idx, true, keep)
+		h.record(idx, false, keep)
+	}
+	if !h.hasDropped {
+		t.Fatal("nothing was trimmed")
+	}
+	if _, ok := h.since(h.droppedIdx, true); ok {
+		t.Fatal("a pivot at the last dropped bucket is unknown: its bucket's events were folded into the base")
+	}
+	if _, ok := h.since(h.droppedIdx-3, true); ok {
+		t.Fatal("a pivot before the last dropped bucket is unknown")
+	}
+	n, ok := h.since(h.droppedIdx+1, true)
+	if !ok || n != uint64(19-h.droppedIdx) {
+		t.Fatalf("since(droppedIdx+1) = %d, %v; want %d, true", n, ok, 19-h.droppedIdx)
+	}
+}
+
+// Buckets floor toward minus infinity, so an instant before the origin lands in the bucket below 0, not in bucket 0.
+func TestBucketFloorsBelowTheOrigin(t *testing.T) {
+	tr := newTracker()
+	tr.Sync(at(1000), nil) // the origin is 1,000 ms
+	for _, tc := range []struct {
+		ms   int
+		want int64
+	}{{1000, 0}, {1099, 0}, {1100, 1}, {999, -1}, {901, -1}, {900, -1}, {899, -2}} {
+		tr.mu.Lock()
+		got := tr.bucket(at(tc.ms))
+		tr.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("bucket(%d ms) = %d, want %d", tc.ms, got, tc.want)
+		}
+	}
+}
+
+// A report time after now is taken as now: the events of the current bucket then count as after the report.
+func TestAFutureReportTimeIsClampedToNow(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	seed(tr, k)
+	tr.Begin(at(1050), k) // a start in the bucket of now (and a little later than the view's now)
+	got := tr.Overlay(at(1000), Input{Key: k, Local: 0, Reported: 3, At: at(1500)})
+	if got.Active != 4 {
+		t.Fatalf("Active = %d, want 4 (reported 3 plus the start in now's bucket)", got.Active)
+	}
+}
+
+// Nonsense counts from a report are treated as zero, never negative.
+func TestNegativeCountsAreClamped(t *testing.T) {
+	tr := newTracker()
+	k := key("w")
+	seed(tr, k)
+	if got := tr.Overlay(at(1000), Input{Key: k, Local: -5, Reported: -3, At: at(900)}); got.Active != 0 {
+		t.Fatalf("history path: %d", got.Active)
+	}
+	if got := tr.Overlay(at(1000), Input{Key: key("other"), Local: -5, Reported: -3, At: at(900)}); got.Active != 0 {
+		t.Fatalf("fallback path: %d", got.Active)
+	}
+}
