@@ -167,8 +167,12 @@ func TestProcessASecondSignalForcesTheAgentWithTheStatusEndpointOn(t *testing.T)
 	freeze(t, cp.cmd.Process) // returns once the process is really stopped (kill returns when the signal is queued)
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
 	sigterm(t, agent)
-	// The second signal must find the first one already being handled: the agent says so by answering /readyz with 503.
-	waitProbe(t, status, "/readyz", 503, 5*time.Second)
+	// The second signal must find the first one already being handled: the agent says so by answering /readyz "draining"
+	// (a bare 503 is not enough: the frozen control plane makes readiness lapse for another reason within a second).
+	waitFor(t, 10*time.Second, "the agent to report draining", func() bool {
+		code, body, err := probe(status, "/readyz")
+		return err == nil && code == 503 && body == "draining"
+	})
 	start := time.Now()
 	sigterm(t, agent)
 	if err := agent.wait(t, 3*time.Second); err == nil {
