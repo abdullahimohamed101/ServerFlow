@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// Since Phase 15 PR C the configuration has a resilience section (default off), so the flag is applied and the
-// result records the effective mode. (The "absent" case for a build without the section is covered in
-// internal/bench/embedded.) The gateway does not read the section before PR D.
+// Since Phase 15 PR C the configuration has a resilience section (default on since PR G), so the flag is applied and
+// the result records the effective mode; without the flag the build's default, on, is recorded. (The "absent" case for a
+// build without the section is covered in internal/bench/embedded.)
 func TestResilienceFlagIsRecordedAsTheEffectiveMode(t *testing.T) {
 	for _, v := range []string{"", "on", "off"} {
 		args := []string{"--workload", "uniform-short"}
@@ -22,7 +22,7 @@ func TestResilienceFlagIsRecordedAsTheEffectiveMode(t *testing.T) {
 		if err != nil || len(rs) != 1 {
 			t.Fatalf("--resilience %q: %v", v, err)
 		}
-		want := map[string]string{"": "off", "on": "on", "off": "off"}[v]
+		want := map[string]string{"": "on", "on": "on", "off": "off"}[v]
 		if got := rs[0].Metadata.Resilience; got != want {
 			t.Fatalf("--resilience %q recorded %q, want %q", v, got, want)
 		}

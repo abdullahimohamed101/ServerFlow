@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -125,6 +126,27 @@ func TestCheckTransport(t *testing.T) {
 		}
 		if err != nil && (strings.Contains(err.Error(), "pw") || strings.Contains(err.Error(), "evil") || strings.Contains(err.Error(), "10.0.0.5")) {
 			t.Errorf("%s: error echoes configuration: %v", tc.name, err)
+		}
+	}
+}
+
+func TestConfigIsRedactedUnderEveryVerb(t *testing.T) {
+	const canary = "CANARY-redis-fmt-8c2d"
+	c := Config{Address: "127.0.0.1:6379", Password: canary}
+	type holder struct{ C Config }
+	for name, v := range map[string]any{"value": c, "pointer": &c, "slice": []Config{c}, "slice of pointers": []*Config{&c}, "map": map[string]Config{"k": c}, "holder": holder{c}, "&holder": &holder{c}} {
+		var out strings.Builder
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%t", "%e", "%b", "%o", "%c", "%U", "%10.3v"} {
+			fmt.Fprintf(&out, verb+"|", v)
+		}
+		var logs bytes.Buffer
+		slog.New(slog.NewJSONHandler(&logs, nil)).Info("x", "v", v)
+		slog.New(slog.NewTextHandler(&logs, nil)).Info("x", "v", v)
+		out.WriteString(logs.String())
+		for _, secret := range []string{canary, hex.EncodeToString([]byte(canary))} {
+			if strings.Contains(out.String(), secret) {
+				t.Errorf("%s leaks the password: %.300s", name, out.String())
+			}
 		}
 	}
 }

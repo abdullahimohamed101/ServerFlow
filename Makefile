@@ -195,3 +195,37 @@ dev-key:
 # Static checks of the deployment files: no Docker daemon needed (docs/development/ci.md).
 deploy-check:
 	scripts/quality.sh deploy
+
+# Phase 17: ServerFlow on a local kind cluster (docs/operations/kubernetes-deployment.md). Needs Docker with at least 4 GB of
+# memory, kind and kubectl at the versions in deploy/kubernetes/tools.env (nothing is installed for you), and Compose's
+# secrets generator (scripts/dev-up.sh secrets). The cluster uses a dedicated kubeconfig, .dev/k8s/kubeconfig, and the scripts
+# refuse any context other than kind-serverflow. PR 2 deploys the data tier (PostgreSQL, Redis, Redpanda) and its jobs.
+.PHONY: k8s-up k8s-down k8s-reset k8s-smoke k8s-roll-test k8s-audit k8s-render k8s-check
+k8s-up:
+	scripts/k8s-up.sh up
+
+# Deletes the kind cluster and its kubeconfig and nothing else.
+k8s-down:
+	scripts/k8s-up.sh down
+
+# Also removes .dev/k8s/ (the generated secrets in .dev/ stay; make dev-reset removes them).
+k8s-reset:
+	scripts/k8s-up.sh reset
+
+k8s-smoke:
+	scripts/k8s-up.sh smoke
+
+# Not implemented yet: the rolling-update measurement arrives in PR 6, the pod audit with the workloads in PR 3.
+k8s-roll-test:
+	scripts/k8s-up.sh roll-test
+
+k8s-audit:
+	scripts/k8s-up.sh audit
+
+# The rendered manifests of the kind overlay, with no Secret content (safe to paste into an issue).
+k8s-render:
+	scripts/k8s-up.sh render
+
+# The static checks, no cluster: render, kubeconform, the tests/k8s policy tests, shellcheck.
+k8s-check:
+	scripts/quality.sh k8s

@@ -1,0 +1,134 @@
+# Redpanda (Kafka API compatible, not Apache Kafka, ADR-019), one broker, for development (D10). Same image and digest as
+# docker-compose.yml. SASL/SCRAM is required: the bootstrap superuser `serverflow` gets its password from the Secret
+# `kafka` (created by scripts/k8s-up.sh) through RP_BOOTSTRAP_USER, built by the wrapper so it is not in this file or argv.
+# --advertise-kafka-addr is the Service name, valid for one broker; a multi-broker form is not attempted.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: redpanda
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: data
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: redpanda
+  ports:
+    - {name: kafka, port: 9092, targetPort: kafka}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: redpanda
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: data
+spec:
+  replicas: 1
+  serviceName: redpanda
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: redpanda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: redpanda
+        app.kubernetes.io/part-of: serverflow
+    spec:
+      serviceAccountName: redpanda
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redpanda
+          image: mirror.gcr.io/redpandadata/redpanda:v25.3.17@sha256:c96a71811ec85eee436b7471e4d2777b70ceb4d6a0bc5447094854b3150511c1
+          imagePullPolicy: IfNotPresent
+          # $SERVERFLOW_EVENTS_SASL_PASSWORD and "$@" have no parentheses, so Kubernetes leaves them for bash (as in Compose).
+          command:
+            - /bin/bash
+            - -c
+            - |
+              export RP_BOOTSTRAP_USER="serverflow:$SERVERFLOW_EVENTS_SASL_PASSWORD:SCRAM-SHA-256"
+              exec /entrypoint.sh "$@"
+            - --
+          args:
+            - redpanda
+            - start
+            - --mode=dev-container
+            - --smp=1
+            - --memory=512M
+            - --reserve-memory=0M
+            - --kafka-addr=internal://0.0.0.0:9092
+            - --advertise-kafka-addr=internal://redpanda:9092
+            # One node: the RPC listener is for peers that do not exist, so keep it on loopback.
+            - --rpc-addr=127.0.0.1:33145
+            - --advertise-rpc-addr=127.0.0.1:33145
+            - --set
+            - redpanda.enable_sasl=true
+            - --set
+            - redpanda.superusers=["serverflow"]
+          ports:
+            - {name: kafka, containerPort: 9092}
+          envFrom:
+            - secretRef: {name: kafka}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            exec:
+              command: [sh, -c, "rpk cluster health | grep -q 'Healthy:.*true'"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: [sh, -c, "rpk cluster health | grep -q 'Healthy:.*true'"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: [sh, -c, "rpk cluster health | grep -q 'Healthy:.*true'"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 768Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/redpanda/data}
+            # rpk start writes its generated redpanda.yaml here and its own settings under .config.
+            - {name: etc, mountPath: /etc/redpanda}
+            - {name: config, mountPath: /var/lib/redpanda/.config}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: etc
+          emptyDir: {sizeLimit: 1Mi}
+        - name: config
+          emptyDir: {sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: serverflow
+          app.kubernetes.io/component: redpanda
+          app.kubernetes.io/part-of: serverflow
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}

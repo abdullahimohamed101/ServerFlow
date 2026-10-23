@@ -31,9 +31,10 @@ func TestResilienceAbsentOnABuildWithoutTheFeature(t *testing.T) {
 	}
 }
 
-// The real configuration has the section (PR C); its default mode is off.
+// The real configuration has the section (PR C); its default mode is on since PR G (plan D1), so a run without
+// --resilience measures the shipped default.
 func TestResilienceAppliedToTheRealConfiguration(t *testing.T) {
-	for _, tc := range []struct{ want, effective string }{{ResilienceDefault, "off"}, {ResilienceOn, "on"}, {ResilienceOff, "off"}} {
+	for _, tc := range []struct{ want, effective string }{{ResilienceDefault, "on"}, {ResilienceOn, "on"}, {ResilienceOff, "off"}} {
 		cfg := config.Default()
 		got, ignored, err := ApplyResilience(&cfg, tc.want)
 		if err != nil || ignored || got != tc.effective || cfg.Resilience.Mode != tc.effective {

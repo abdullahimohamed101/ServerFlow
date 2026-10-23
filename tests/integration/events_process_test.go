@@ -171,9 +171,10 @@ func TestProcessUsageConsumerEndToEnd(t *testing.T) {
 		"SERVERFLOW_EVENTS_CONSUMER_METRICS_ADDR=" + metrics, "SERVERFLOW_EVENTS_CONSUMER_BATCH_TIMEOUT=50ms",
 	}
 	// runBin allows 10s, which is too tight for a process start and a database round trip while the whole suite runs.
+	consumer := binary(t, "usage-consumer") // built before the clock starts, as in runBin
 	rctx, rcancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer rcancel()
-	cmd := exec.CommandContext(rctx, binary(t, "usage-consumer"))
+	cmd := exec.CommandContext(rctx, consumer)
 	cmd.Env = append(os.Environ(), env...)
 	out0, runErr := cmd.CombinedOutput()
 	if runErr == nil || rctx.Err() != nil || !strings.Contains(string(out0), "migration") {

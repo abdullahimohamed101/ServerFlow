@@ -24,12 +24,9 @@ var mayPublish = map[string]bool{"gateway": true, "lb": true, "control-plane": t
 
 // Services without a compose health check, with the reason (ADR-021). Anything else must have one.
 var noHealthcheck = map[string]string{
-	"worker-agent-1": "the agent has no HTTP endpoint; restart on-failure covers crashes and dev-smoke checks heartbeats",
-	"worker-agent-2": "same as worker-agent-1",
-	"worker-agent-3": "same as worker-agent-1",
-	"migrate":        "one-shot job",
-	"redpanda-init":  "one-shot job",
-	"admin":          "run on demand",
+	"migrate":       "one-shot job",
+	"redpanda-init": "one-shot job",
+	"admin":         "run on demand",
 }
 
 // Image volumes that must be covered by a tmpfs or a named volume so no anonymous volume is ever created.

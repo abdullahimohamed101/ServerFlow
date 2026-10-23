@@ -80,6 +80,7 @@ belong here (they are generated).
 | `GATEWAYS` | `1` | gateway replicas (1-8); more than 1 puts nginx in front |
 | `GATEWAY_PORT`, `CONTROL_PLANE_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`, `JAEGER_UI_PORT` | `18080`, `19090`, `19091`, `13000`, `16686` | host ports (127.0.0.1). Empty `CONTROL_PLANE_PORT=` does not publish the control plane. |
 | `SF_STRATEGY` | `round-robin` | `random`, `round-robin`, `least-active`, `least-queue` |
+| `SF_RESILIENCE_MODE` | `on` | `on` or `off`: the gateway's fault tolerance (circuit breakers, retry budget, bounded queue and shedding, drain; ADR-020, `docs/operations/resilience.md`). `off` is the kill switch; recreate the gateway after changing it. |
 | `WORKER_CONCURRENCY`, `WORKER_QUEUE` | `8`, `64` | mock worker slots and queue (12 benchmark clients overload smaller ones) |
 | `MOCK_n_TPS`, `MOCK_n_TTFT` | 100/60/20, 100ms/150ms/300ms | speed and time to first token of worker n |
 | `MOCK_n_FAILURE_RATE`, `MOCK_n_FAILURE_MODE`, `MOCK_n_STARTUP_DELAY`, `MOCK_n_SEED` | 0, `error`, 0s, n | failure injection (modes: `error`, `unavailable`, `drop`, `midstream`) |
@@ -122,7 +123,7 @@ on a failure and never prints a key, token or password. Every wait is a poll wit
 | S5 | 24 requests reach at least two workers (`scheduler_selections_total` in Prometheus) |
 | S6 | a throwaway tenant limited to 3 requests per minute gets 200 200 200 then 429 with `Retry-After` |
 | S7 | Prometheus reports the gateway(s), control plane and three mock workers up, and requests counted |
-| S8 | Grafana is healthy and the four dashboards exist |
+| S8 | Grafana is healthy and the five dashboards exist (the four of spec section 30 and `sf-resilience`) |
 | S9 | usage rows for tenant `dev` appear (Redpanda to PostgreSQL) |
 | S10 | one Jaeger trace holds gateway and mock-worker spans |
 | S11 | `kill mock-worker-3`: it leaves the pool, requests stay 200, and it returns after `start` |
@@ -151,6 +152,12 @@ development Mac (Colima), with the default heartbeat settings:
   as the agent re-registers (checked by smoke S11).
 - **Pause** (`... pause mock-worker-3`): the agent's probe times out and the worker is `FAILED` and not eligible after about 3 s (measured);
   `unpause` makes it eligible again within a few seconds. Requests during the pause all returned 200.
+- **Agent health.** Each agent serves a loopback-only status endpoint on `127.0.0.1:9102` inside its container
+  (`SERVERFLOW_WORKER_STATUS_LISTEN`, off by default in the binary, on here; see `docs/architecture/worker-lifecycle.md`) and Compose's
+  healthcheck runs the `healthcheck` binary on `/readyz`: `docker compose ps` shows an agent `healthy` once it is registered and
+  heartbeating, and `unhealthy` (after about 30 s of failed checks) when it lost its control plane, its registration or its backend, for
+  example during the `pause` and `kill mock-worker-3` drills above. Docker only reports this: nothing restarts or stops on `unhealthy`
+  (`make dev-up` does refuse to finish while a container is unhealthy). The port is not published and not reachable from other containers.
 - **Heartbeat loss.** `... kill worker-agent-3` (an `kill`, not a `stop`: a clean stop makes the agent deregister the worker at once): the
   control plane marks the worker `suspect` and not eligible after 5 s, `UNHEALTHY` after about 11 s and `LOST` after about 31 s (the default
   `worker.suspect_timeout`, `unhealthy_timeout` and `lost_timeout`); `... start worker-agent-3` re-registers it immediately.
@@ -189,5 +196,4 @@ Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose suppo
 ## What is deliberately not here
 
 TLS between services, secrets management, HA data stores, image signing or SBOMs, Kubernetes manifests (Phase 17 reuses these six images, the
-`healthcheck` binary as an exec probe and the variable names above), a liveness endpoint on the worker agent (Phase 17 decides), native Windows
-support for the scripts (use WSL2).
+`healthcheck` binary as an exec probe and the variable names above), native Windows support for the scripts (use WSL2).

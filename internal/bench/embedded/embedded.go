@@ -28,6 +28,7 @@ import (
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/registry/server"
+	"serverflow/internal/sim/engine"
 	"serverflow/internal/worker"
 )
 
@@ -86,6 +87,14 @@ type Config struct {
 	MaxConcurrency  int
 	QueueSize       int
 
+	// SimProfiles, when set, runs every worker on the simulator engine (mockworker --model-engine sim)
+	// instead of constant TTFT and speed: each worker takes the next profile of the list in turn, so
+	// {"fast","medium","slow"} is a heterogeneous fleet of three hardware generations and a single
+	// name a homogeneous one. Names are internal/sim/engine built-in profiles. The workers' TTFT and
+	// TokensPerSecond then have no effect; concurrency, queue size and the natural output length
+	// (MockOutputTokens) still apply. Results from it are simulator results.
+	SimProfiles []string
+
 	// GatewayMutate, if set, edits the gateway's configuration after the harness has filled it in and
 	// before the gateway starts (the chaos harness lowers the header timeout through it). It must not
 	// change what the harness depends on: the worker source, control plane URL and token.
@@ -122,6 +131,8 @@ type WorkerSpec struct {
 	TTFT            time.Duration
 	MaxConcurrency  int
 	QueueSize       int
+	// SimProfile is the simulator profile the worker runs ("" for the constant-speed mock).
+	SimProfile string
 	// URL is where the worker listens; set once the cluster is running.
 	URL string
 }
@@ -165,6 +176,11 @@ func Plan(cfg Config) ([]WorkerSpec, error) {
 	case cfg.QueueSize < 0 || cfg.QueueSize > 100000:
 		return nil, fmt.Errorf("mock queue size must be in 0-100000, got %d", cfg.QueueSize)
 	}
+	for _, name := range cfg.SimProfiles {
+		if _, ok := engine.Profile(name); !ok {
+			return nil, fmt.Errorf("unknown simulator profile %q (choose from %s)", name, strings.Join(engine.ProfileNames(), ", "))
+		}
+	}
 	seen := map[string]bool{}
 	for _, m := range cfg.Models {
 		if m == "" || seen[m] {
@@ -197,6 +213,9 @@ func Plan(cfg Config) ([]WorkerSpec, error) {
 			if cfg.Profile == Heterogeneous {
 				w.TokensPerSecond = cfg.TokensPerSecond * speedFactors[i%len(speedFactors)]
 				w.TTFT = time.Duration(float64(cfg.TTFT) * ttftFactors[i%len(ttftFactors)])
+			}
+			if len(cfg.SimProfiles) > 0 {
+				w.SimProfile = cfg.SimProfiles[i%len(cfg.SimProfiles)]
 			}
 			out = append(out, w)
 		}
@@ -336,6 +355,10 @@ func (c *Cluster) startWorker(i int) error {
 	mcfg.Model, mcfg.WorkerID, mcfg.Seed = w.Model, w.ID, 1
 	mcfg.TTFT, mcfg.TokensPerSecond, mcfg.OutputTokens = w.TTFT, w.TokensPerSecond, MockOutputTokens
 	mcfg.MaxConcurrency, mcfg.QueueSize = w.MaxConcurrency, w.QueueSize
+	if w.SimProfile != "" {
+		p, _ := engine.Profile(w.SimProfile) // Plan checked the name
+		mcfg.ModelEngine, mcfg.Sim = mockworker.ModelEngineSim, &p
+	}
 	mcfg.DrainTimeout = time.Second
 	if c.cfg.MockDrainTimeout > 0 {
 		mcfg.DrainTimeout = c.cfg.MockDrainTimeout

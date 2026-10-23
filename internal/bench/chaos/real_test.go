@@ -21,7 +21,12 @@ func TestRealScenarios(t *testing.T) {
 		t.Run(sc.Name, func(t *testing.T) {
 			o := Options{Scenario: sc.Name, Scale: 0.15, Workers: 4, MockConcurrent: 8, MockTPS: 1000, MockTTFT: 20 * time.Millisecond, Scheduler: "round-robin",
 				Workload: "uniform-short", Model: "qwen-7b", StreamRatio: 0.5, Seed: 1, Repeat: 1, MaxErrorRate: DefaultMaxErrorRate, MinRequests: 20,
-				OutDir: t.TempDir(), AllowDirty: true}
+				OutDir: t.TempDir(), AllowDirty: true,
+				// The per-scenario expectations below describe a gateway without the resilience feature (master's
+				// behaviour: retries spare the clients, nothing avoids a fault). Since the default flip (PR G) the
+				// build's default is on, so the test asks for off explicitly; the default-on behaviour is asserted by
+				// tests/chaos and by the benchmark note.
+				Resilience: "off"}
 			if err := o.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -35,9 +40,8 @@ func TestRealScenarios(t *testing.T) {
 			if ch == nil || len(ch.Windows) != 3 || len(recs) == 0 {
 				t.Fatalf("no chaos result: %+v", ch)
 			}
-			// Since PR C the configuration section exists (default off) although the gateway does not read it yet.
 			if res.Metadata.Resilience != "off" {
-				t.Fatalf("resilience %q: the build has the configuration section, default off", res.Metadata.Resilience)
+				t.Fatalf("resilience %q: the test asked for off and the build has the configuration section", res.Metadata.Resilience)
 			}
 			for _, c := range ch.Gate {
 				switch c.Name {

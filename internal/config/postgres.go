@@ -28,6 +28,11 @@ func (p PostgresConfig) String() string {
 // GoString implements fmt.GoStringer.
 func (p PostgresConfig) GoString() string { return "config.PostgresConfig" + p.String() }
 
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (p PostgresConfig) Format(f fmt.State, verb rune) {
+	writeRedacted(f, verb, p.String(), p.GoString())
+}
+
 // LogValue implements slog.LogValuer.
 func (p PostgresConfig) LogValue() slog.Value { return slog.StringValue(p.String()) }
 

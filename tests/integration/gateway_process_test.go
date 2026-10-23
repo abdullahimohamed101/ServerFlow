@@ -228,7 +228,11 @@ func gatewayPost(t *testing.T, gwAddr string) (*http.Response, string) {
 // With two attempts, a request only has a guarantee while at most one worker is bad, so each scenario
 // below has exactly one.
 
-func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
+// flakyWorkerRun starts a cluster with one worker that refuses every request (503 mock_failure) and two good ones, behind a
+// round-robin gateway with the given extra environment, sends 90 requests (all must succeed) and returns the gateway and
+// how many of them needed a second attempt.
+func flakyWorkerRun(t *testing.T, extraEnv ...string) (*proc, int) {
+	t.Helper()
 	cpAddr := freePort(t)
 	startControlPlaneProc(t, cpAddr, clusterToken)
 	flakyAddr, good1, good2 := freePort(t), freePort(t), freePort(t)
@@ -239,7 +243,7 @@ func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
 	startAgentProc(t, cpAddr, clusterToken, "w2", good1)
 	startAgentProc(t, cpAddr, clusterToken, "w3", good2)
 	gwAddr := freePort(t)
-	gw := startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
+	gw := startProc(t, "gateway", "gateway starting", append(gatewayEnv(cpAddr, clusterToken, gwAddr, "round-robin"), extraEnv...))
 	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
 		return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
 	})
@@ -275,13 +279,36 @@ func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
 			retried++
 		}
 	}
-	// A retry also takes a turn in the rotation, so the worker after the flaky one is picked twice as often and
-	// the flaky one is first choice for up to half of the requests (docs/decisions/ADR-012).
+	return gw, retried
+}
+
+// With the resilience feature off the gateway has no memory of past failures: a retry also takes a turn in the rotation, so
+// the worker after the flaky one is picked twice as often and the flaky one is first choice for up to half of the requests
+// (docs/decisions/ADR-012). The default is on since Phase 15 PR G (ejection of the flaky worker, next test), so this test
+// asks for the old behaviour explicitly.
+func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
+	gw, retried := flakyWorkerRun(t, "SERVERFLOW_RESILIENCE_MODE=off")
 	if retried < 25 || retried > 55 {
 		t.Fatalf("expected roughly a third to a half of the 90 requests to hit the flaky worker first: %d were retried", retried)
 	}
 	if !strings.Contains(gw.stderr.String(), `"outcome":"retried"`) || !strings.Contains(gw.stderr.String(), `"class":"status_503"`) {
 		t.Fatal("the retried attempts must be on record in the gateway log")
+	}
+	if strings.Contains(gw.stderr.String(), clusterToken) {
+		t.Fatal("the token leaked into the log")
+	}
+}
+
+// The same cluster with the shipped default (resilience on, plan D1): the flaky worker's breaker opens after a handful of
+// faults and the worker then receives only probes, so far fewer requests need a second attempt (D25 item 3); every
+// request still succeeds.
+func TestProcessGatewayEjectsAFlakyWorkerByDefault(t *testing.T) {
+	gw, retried := flakyWorkerRun(t)
+	if retried > 10 {
+		t.Fatalf("%d of 90 requests were retried: the flaky worker should have been ejected after a few faults", retried)
+	}
+	if !strings.Contains(gw.stderr.String(), "circuit breaker changed state") {
+		t.Fatal("the breaker transition must be on record in the gateway log")
 	}
 	if strings.Contains(gw.stderr.String(), clusterToken) {
 		t.Fatal("the token leaked into the log")

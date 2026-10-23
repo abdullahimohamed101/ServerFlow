@@ -112,6 +112,7 @@ func TestDevUpCheckEnv(t *testing.T) {
 		{"lowercase variable", "gateways=3"},
 		{"not a pair", canary},
 		{"strategy", "SF_STRATEGY=" + canary},
+		{"resilience mode", "SF_RESILIENCE_MODE=" + canary},
 		{"failure mode", "MOCK_1_FAILURE_MODE=" + canary},
 		{"failure rate above one", "MOCK_1_FAILURE_RATE=1.5"},
 		{"tps zero", "MOCK_1_TPS=0"},
@@ -159,7 +160,12 @@ func deploymentFiles(t *testing.T) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		files = append(files, m...)
+		for _, f := range m {
+			// deploy/*/* also matches directories (deploy/kubernetes/base, ...): their files are scanned by tests/k8s.
+			if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
+				files = append(files, f)
+			}
+		}
 	}
 	if len(files) < 8 {
 		t.Fatalf("expected the deployment files, found %d", len(files))
@@ -206,7 +212,7 @@ func TestComposeLeavesNoDefaultSecrets(t *testing.T) {
 }
 
 // TestDevUpDoesNotUseComposeWait: `docker compose up --wait` fails on Compose 2.38 (the CI runner) for any service without a
-// healthcheck, and the worker agents have none; dev-up.sh waits itself.
+// healthcheck (the one-shot jobs and the admin tool have none); dev-up.sh waits itself.
 func TestDevUpDoesNotUseComposeWait(t *testing.T) {
 	for _, f := range []string{"scripts/dev-up.sh", "scripts/dev-smoke.sh", "Makefile", ".github/workflows/ci.yml", ".github/workflows/nightly.yml"} {
 		for i, line := range strings.Split(read(t, f), "\n") {

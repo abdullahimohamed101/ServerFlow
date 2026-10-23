@@ -1,6 +1,6 @@
 # Phase 15 — Fault Tolerance: Circuit Breakers, Retry Budgets, Bounded Admission, Drain, and a Chaos Benchmark
 
-Status: Proposed. The user's answers are recorded (shipped default **on**, observability in scope, 503 `NO_CAPACITY` for overload, 10 s initial cool-down, 50% ejection cap) and an independent design review is folded in (section "Review fold-in"). Everything else is at the stated defaults D1-D27.
+Status: Completed (2026-10-22), delivered as seven pull requests A-G; see the implementation progress below. The user's answers are recorded (shipped default **on**, observability in scope, 503 `NO_CAPACITY` for overload, 10 s initial cool-down, 50% ejection cap) and an independent design review is folded in (section "Review fold-in"). Everything else is at the stated defaults D1-D27.
 Owner: coding agent
 Depends on: Phases 4-12 merged (master 4b9fd32): the registry and agents (4), the scheduler (5), retries and attempts (6), the benchmark harness (7), rate limits (8), the observer seam (prep, ADR-016), metrics (10), tracing (11) and events (12). Uses Phase 7 (`cmd/benchmark`) for the acceptance runs.
 Spec: `docs/architecture/serverflow-spec.md` §6, §7, §11-12, §15-16, §24-27, §31, §36, §40, §58 Phase 15, §63
@@ -146,7 +146,7 @@ An independent design review (code checked against master) is adopted as the def
   2. Retries are subject to the budget; some retries that used to happen are denied and the failed worker response is relayed — asserted + documented.
   3. A worker with sustained faults is ejected by its breaker (cap D9) and receives only probes; a half-open worker gets at most one request at a time — asserted + documented.
   4. `admission.max_global_requests` (1000) becomes live: the 1001st concurrent request on a gateway is refused with 503 `global_limit` (1000 long streams is ordinary) — asserted + documented; the operator raises the key.
-  5. The first-byte deadline defaults to header + idle timeouts, so no request the old gateway served is cut — **excluded**; an explicit value below the header timeout is refused.
+  5. The first-byte deadline defaults to header + idle timeouts plus the 5 s dial timeout (185 s with the defaults), so no single attempt the old gateway served is cut — **excluded** per attempt; a request that spends a slow header phase, a retry and a late first byte beyond that total (about 250 s) was served before and now gets 504 `UPSTREAM_TIMEOUT` — documented; an explicit value below the header timeout is refused.
   6. The overhead histogram excludes queue wait, so the 25 ms alert keeps its meaning — **excluded**; the wait has its own series.
   7. A retried 503 now pays a body peek of at most 250 ms and only when a retry is possible — asserted (bound) + documented.
   8. On SIGTERM the gateway fails `/readyz` and serves for 5 s before shutting down (a developer's Ctrl-C waits 5 s; a second signal exits); existing process tests and the embedded cluster set grace 0 — asserted + documented.
@@ -442,3 +442,32 @@ Three mutants had survived; each is now killed by a test, shown on a scratch cop
 
 The first gate of this round failed once in `TestProcessGatewayRollBehindALoadBalancer/grace_1s`: the replacement gateway could not bind its port (`address already in use` four times: the port from `freePort` stayed held by another process, probably a load client's ephemeral port, and `startProc` retries the same port). Not a product failure; the test now takes a fresh port per launch attempt (`launchProc`, up to 5) and passed `-count=15` afterwards. The gate was then re-run from the start.
 
+### PR G (default flip, D25 differential, observability, final benchmark note): done
+
+Branch `feature/p15g-default-on`, on top of master after PR E and PR F were merged (88954f1). Nothing is pushed. Documents: ADR-020 (PR G section and consequences), `docs/operations/resilience.md` (status, the D25 list, kill switch, runbooks), README note, `docs/operations/observability.md` (dashboard, alerts, runbooks), `docs/benchmarks/phase-15-chaos.md` (final note), `ARCHITECTURE.md`. This plan moved from `docs/plans/active/` to `docs/plans/completed/`.
+
+**Behaviour change for explicit review:** `defaultResilience().Mode = on` changes every registry-mode deployment that sets nothing (D25 list, repeated verbatim in ADR-020, the operations guide and the README; a test compares them with this plan). Static workers and `mode: off` are byte-identical to master.
+
+Acceptance subset, with the evidence:
+
+| # | Criterion | Evidence |
+| --- | --- | --- |
+| 4(a) | Off means off | `TestDifferentialModeOffAndStaticAreIdenticalToMaster`: 39 shapes against the committed recordings of master 16dda6b, identical (status, headers, bodies, logs, every series and value); also static in the default mode |
+| 4(b) | Default on differs only as documented | `TestDifferentialDefaultOnDiffersFromMasterExactlyByTheD25List`: 38 of 39 identical apart from the new series and attempt-line fields; the full-model shape differs as item 1; a table names the allowed shapes and fails when an entry does not differ. Items 2-4, 7, 8, 11 pinned by named tests checked by `TestEveryD25ItemNamesATestThatExists` |
+| 4(c) | `on` with static starts | unchanged tests (config, gateway process tests) green with the flip |
+| 21 | Silent agent and alerts | `ServerFlowWorkerHeartbeatLate` (warning, above 5 s), critical stays at 10 s, `ServerFlowCircuitOpen`, `ServerFlowShedding`, each with firing and quiet promtool cases (a heartbeat late by one interval never fires the critical alert); kill experiment repeated and reported in the benchmark note (alerts at about 15 s and 20 s: still above 10 s); `scripts/quality.sh observability` |
+| 22 | Benchmark deliverable | final note: defaults on against off against master, 3 repeats, freeze, midstream, overload, drain-roll, Run A, spread verdicts, what is not shown |
+| 24 | Default-on documentation | `TestD25ListIsRepeatedVerbatimInTheDocuments`; `mode: off` reproduces Run A (19% errors) |
+| 23 | Quality gate | see the report of the final gate in the pull request |
+
+Deviations and decisions: see "Deviations and decisions made while implementing PR G" in ADR-020 (five items). The two that matter: (1) **the ejection cap was gateway-wide and is now per model** (plan D9: a single-worker model never opens), a defect of PR C/D found while building the dashboard test, fixed with tests red on the old code; (2) the plan's D23 asks for a *new* warning at 5 s and the critical alert unchanged, which is what was built. Also: the compose stack gained `SF_RESILIENCE_MODE`; tests that assumed the default off were changed only to state the mode they need (no assertion loosened; list in ADR-020); the dashboard has no deadline panel; the spec file was not edited (it carries no status table; the README phase table is the status list).
+
+Hand mutation (committed first, mutated on scratch copies, focused tests): 37 mutants over the default, the effective rule, the env overlay, the differential and its table, the log-field normaliser, the master recordings, the D25 verbatim and evidence checks, the per-model cap (six), the three new alerts (eleven expressions and holds), the dashboard (metric, label, panel, datasource), the compose variable and its validation, and the exported-series cluster. All killed after three first survived (Prune not recounting, a shedding threshold the test series hid, the cap relaxation ignoring the model); each now has a test.
+
+#### PR G, after the independent verification (fix round)
+
+Docs: the observability runbook now states the measured alert times (warning 15.4 and 15.8 s, critical 20.5 and 20.9 s after the kill, each about 10.4-10.5 s behind the age it tests; isolation at about 4.1-4.2 s); "identical to the gateway after PR A's three unconditional fixes" replaces "before Phase 15" and "exactly the previous behaviour" (master 16dda6b contains them); D25 item 5 is narrowed (per attempt; a slow header phase, a retry and a late first byte beyond about 185 s now gets 504), changed verbatim in this plan, ADR-020, the operations guide and the README; `Connection: close` while draining, the new tracing attributes and events (not covered by the differential), the existence-only nature of `TestEveryD25ItemNamesATestThatExists`, items 5, 6, 9 and 10 having no evidence tests, run 2's raw kill data not retained and `ServerFlowCircuitOpen` firing for an already ejected worker are all stated. Tests: a promtool case at 4.5 s and 5.5 s pins the 5 s threshold (6 s and 4 s mutants), `TestDefaultGlobalRequestCapIs1000`, `TestComposeResilienceDefaultIsOn` (a `:-off` default fails it), and the verifier's randomized per-model cap test as `TestRandomPerModelCapInvariant` (300 seeds x 400 steps, `-race` clean).
+
+## Completion
+
+All acceptance criteria 1-24 have evidence in the progress notes above (A-F) and G. Known risks, as carried into the default-on release: N gateways decide alone; the global cap (1000) is live; the vLLM 503 vocabulary is unverified (Phase 13); streams aborting after the first byte are ejected slowly by design; only mock workers and loopback were measured; Linux behaviour is verified by CI only. Rollback: `resilience.mode: off` (configuration) or revert the flip commit.

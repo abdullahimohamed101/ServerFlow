@@ -17,7 +17,7 @@ import (
 // Produce, and bounds its memory: at most MaxBufferedRecords unacknowledged records, and a record that is not
 // acknowledged within DeliveryTimeout is given up on and reported as an error.
 type Producer struct {
-	cfg   Config
+	cfg   sealedConfig // see sealedConfig
 	cl    *kgo.Client
 	max   int64
 	count atomic.Int64 // records handed to the client and not yet acknowledged or failed
@@ -69,7 +69,7 @@ func NewProducer(cfg Config) (*Producer, error) {
 	if err != nil {
 		return nil, cfg.safe(err)
 	}
-	return &Producer{cfg: cfg, cl: cl, max: int64(maxRecs)}, nil
+	return &Producer{cfg: seal(cfg), cl: cl, max: int64(maxRecs)}, nil
 }
 
 // Produce queues the record and returns at once. It returns events.ErrFull when MaxBufferedRecords records are
@@ -79,16 +79,16 @@ func (p *Producer) Produce(r events.Record, done func(error)) error {
 		p.count.Add(-1)
 		return events.ErrFull
 	}
-	rec := &kgo.Record{Topic: p.cfg.Topic, Key: r.Key, Value: r.Value}
+	rec := &kgo.Record{Topic: p.cfg.c().Topic, Key: r.Key, Value: r.Value}
 	p.cl.TryProduce(context.Background(), rec, func(_ *kgo.Record, err error) {
 		p.count.Add(-1)
-		done(p.cfg.safe(err))
+		done(p.cfg.c().safe(err))
 	})
 	return nil
 }
 
 // Flush waits for every produced record to be acknowledged or failed, or for ctx to end.
-func (p *Producer) Flush(ctx context.Context) error { return p.cfg.safe(p.cl.Flush(ctx)) }
+func (p *Producer) Flush(ctx context.Context) error { return p.cfg.c().safe(p.cl.Flush(ctx)) }
 
 // Close shuts the client down without flushing; records still buffered are failed.
 func (p *Producer) Close() error {
@@ -97,7 +97,9 @@ func (p *Producer) Close() error {
 }
 
 // Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
-func (x *Producer) Format(f fmt.State, _ rune) { redactedFormat(f, "Producer", x.cfg) }
+func (x *Producer) Format(f fmt.State, _ rune) { redactedFormat(f, "Producer", x.cfg.c()) }
 
 // LogValue implements slog.LogValuer.
-func (x *Producer) LogValue() slog.Value { return slog.StringValue("kafka.Producer" + x.cfg.String()) }
+func (x *Producer) LogValue() slog.Value {
+	return slog.StringValue("kafka.Producer" + x.cfg.c().String())
+}

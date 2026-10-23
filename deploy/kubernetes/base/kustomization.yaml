@@ -1,0 +1,14 @@
+# The static foundation (Phase 17 PR 2): namespace with Pod Security `restricted`, ServiceAccounts, the data tier and the
+# one-shot jobs. No Secret is here and none may be (they are generated into .dev/ and created by scripts/k8s-up.sh).
+# Render with the command in scripts/k8s-up.sh (`render`): the load restrictor is relaxed because later pull requests read
+# observability/ files; do not `kubectl apply -k` this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: serverflow
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - postgres.yaml
+  - redis.yaml
+  - redpanda.yaml
+  - jobs.yaml
