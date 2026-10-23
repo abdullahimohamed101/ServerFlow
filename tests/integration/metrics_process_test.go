@@ -139,7 +139,19 @@ func TestProcessGatewayKeepsServingMetricsWhileDraining(t *testing.T) {
 	if err := gw.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(500 * time.Millisecond) // the gateway is draining now
+	// Look at the metrics listener only once the gateway has begun to drain (its drain gauge says so, or its main listener
+	// has closed): after a fixed sleep the check would also pass if the signal had not been handled yet.
+	waitFor(t, 10*time.Second, "the gateway to begin draining after SIGTERM", func() bool {
+		if metricLine(t, mAddr, "gateway_draining") == "gateway_draining 1" {
+			return true
+		}
+		c, err := net.DialTimeout("tcp", gwAddr, time.Second)
+		if err != nil {
+			return true
+		}
+		_ = c.Close()
+		return false
+	})
 	r, body := authGet(t, mAddr, "/metrics", "")
 	if r.StatusCode != 200 || !strings.Contains(body, "inference_requests_active 1\n") {
 		t.Fatalf("during the drain the metrics listener answered %d\n%.300s", r.StatusCode, body)

@@ -167,7 +167,8 @@ func TestProcessASecondSignalForcesTheAgentWithTheStatusEndpointOn(t *testing.T)
 	freeze(t, cp.cmd.Process) // returns once the process is really stopped (kill returns when the signal is queued)
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
 	sigterm(t, agent)
-	time.Sleep(50 * time.Millisecond)
+	// The second signal must find the first one already being handled: the agent says so by answering /readyz with 503.
+	waitProbe(t, status, "/readyz", 503, 5*time.Second)
 	start := time.Now()
 	sigterm(t, agent)
 	if err := agent.wait(t, 3*time.Second); err == nil {
@@ -246,7 +247,9 @@ func TestProcessAStalledStatusClientDoesNotDelayTheAgentsExit(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte("GET /readyz HTTP/1.1\r\nHost: x\r\n")) // never finished
-	time.Sleep(100 * time.Millisecond)
+	// The listener takes connections in order, so once a later connection has been served the stalled one has been accepted
+	// and is being read: that is what the agent's exit must not wait for.
+	waitProbe(t, status, "/readyz", 200, 5*time.Second)
 	start := time.Now()
 	sigterm(t, agent)
 	if err := agent.wait(t, 5*time.Second); err != nil {

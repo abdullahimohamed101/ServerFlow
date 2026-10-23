@@ -84,7 +84,15 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	// A killed backend stops receiving traffic.
 	mock1.kill9()
 	waitWorkers(t, cpAddr, clusterToken, 5*time.Second, "w1 not eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return !ws["w1"].Eligible })
-	time.Sleep(400 * time.Millisecond) // the gateway's next refreshes
+	// Wait until the gateway has dropped w1 from its view (its next refresh): then no request needs a second attempt.
+	waitFor(t, 10*time.Second, "the gateway to stop routing to the killed w1", func() bool {
+		for i := 0; i < 6; i++ {
+			if resp, _ := gatewayPost(t, gwAddr); resp.StatusCode != 200 || resp.Header.Get("X-ServerFlow-Attempts") == "2" {
+				return false
+			}
+		}
+		return true
+	})
 	for i := 0; i < 20; i++ {
 		if code, body := gatewayChat(gwAddr); code != 200 {
 			t.Fatalf("w2 is healthy but request %d got %d %s", i, code, body)
@@ -269,8 +277,11 @@ func flakyWorkerRun(t *testing.T, extraEnv ...string) (*proc, int) {
 			waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
 				return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
 			})
-			time.Sleep(1500 * time.Millisecond) // the gateway refreshes its view every second
-			resp, body = gatewayPost(t, gwAddr)
+			// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
+			waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
+				resp, body = gatewayPost(t, gwAddr)
+				return !(resp.StatusCode == 503 && strings.Contains(body, `"eligible_workers":0`))
+			})
 		}
 		if resp.StatusCode != 200 {
 			t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
