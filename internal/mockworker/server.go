@@ -60,6 +60,7 @@ type Server struct {
 	log    *slog.Logger
 	engine *Engine
 	inj    *Injector
+	sim    *simDriver // nil unless --model-engine sim
 	state  atomic.Int32
 	// inflight counts chat handlers from the moment they start, before the
 	// readiness check, so a drain also waits for requests that were admitted
@@ -118,6 +119,9 @@ func New(cfg Config, log *slog.Logger, opts ...Option) *Server {
 		conns:     map[net.Conn]struct{}{},
 	}
 	s.faults = newFaults(s, cfg.Seed)
+	if cfg.UsesSim() {
+		s.sim = newSimDriver(cfg)
+	}
 	if cfg.StartupDelay > 0 {
 		s.state.Store(int32(stateStarting))
 		s.ready = time.AfterFunc(cfg.StartupDelay, func() {
@@ -355,12 +359,17 @@ type Stats struct {
 	QueueSize                 int     `json:"queue_size"`
 	ConfiguredTTFTMillis      int64   `json:"configured_ttft_ms"`
 	ConfiguredTokensPerSecond float64 `json:"configured_tokens_per_second"`
+	// Present only with --model-engine sim (the default /stats is unchanged): the simulated GPU figures
+	// the worker agent forwards in its heartbeat, and the simulator's own state.
+	GPUUtilization  *float64  `json:"gpu_utilization,omitempty"`
+	GPUMemoryUsedMB *int64    `json:"gpu_memory_used_mb,omitempty"`
+	Sim             *SimStats `json:"sim,omitempty"`
 }
 
 // Stats returns the current worker metadata.
 func (s *Server) Stats() Stats {
 	e := s.engine.Stats()
-	return Stats{
+	st := Stats{
 		WorkerID:                  s.cfg.EffectiveWorkerID(),
 		Model:                     s.cfg.Model,
 		Status:                    s.currentState().String(),
@@ -378,6 +387,10 @@ func (s *Server) Stats() Stats {
 		ConfiguredTTFTMillis:      s.cfg.TTFT.Milliseconds(),
 		ConfiguredTokensPerSecond: s.cfg.TokensPerSecond,
 	}
+	if s.sim != nil {
+		s.fillSimStats(&st)
+	}
+	return st
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
@@ -482,6 +495,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			rl.outcome = "failed"
 			panic(http.ErrAbortHandler) // close the connection without a response
 		}
+	}
+	if s.sim != nil {
+		s.chatSim(w, r, ireq, rl, ts, mode, fail)
+		return
 	}
 	abortAt := -1 // token index at which a midstream failure strikes
 	if fail && mode == ModeMidstream {

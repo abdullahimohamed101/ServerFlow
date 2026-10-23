@@ -60,6 +60,10 @@ type mockStats struct {
 	RecentTokensPerSecond float64 `json:"recent_tokens_per_second"`
 	MaxConcurrency        int     `json:"max_concurrency"`
 	QueueSize             int     `json:"queue_size"`
+	// Only a mock worker running the simulator engine reports these; absent, they stay nil and the
+	// heartbeat omits them like any worker without a GPU.
+	GPUUtilization  *float64 `json:"gpu_utilization"`
+	GPUMemoryUsedMB *int64   `json:"gpu_memory_used_mb"`
 }
 
 // Status implements Backend.
@@ -103,6 +107,7 @@ func (m *MockBackend) Status(ctx context.Context) (BackendStatus, error) {
 		Metrics: protocol.Metrics{
 			ActiveRequests: s.ActiveRequests, QueueDepth: s.QueueDepth,
 			QueuedInputTokens: s.QueuedInputTokens, RecentTokensPerSecond: s.RecentTokensPerSecond,
+			GPUUtilization: s.GPUUtilization, GPUMemoryUsedMB: s.GPUMemoryUsedMB,
 		},
 		MaxConcurrency: s.MaxConcurrency,
 		QueueSize:      s.QueueSize,

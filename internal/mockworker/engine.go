@@ -135,6 +135,14 @@ func (e *Engine) removeLocked(w *waiter) {
 	}
 }
 
+// recordRejected counts a request refused because the queue was full (the simulator path, which does
+// not go through Acquire).
+func (e *Engine) recordRejected() {
+	e.mu.Lock()
+	e.rejected++
+	e.mu.Unlock()
+}
+
 // RecordTokens adds n generated tokens to the recent-throughput window.
 func (e *Engine) RecordTokens(n int) {
 	e.mu.Lock()
