@@ -134,6 +134,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := env("SCHEDULER_STRATEGY"); ok {
 		cfg.Scheduler.Strategy = v
 	}
+	if v, ok := env("SCHEDULER_LOAD_OVERLAY"); ok {
+		cfg.Scheduler.LoadOverlay = v // validated with the rest (fail fast), like the strategy name
+	}
 	if v, ok := env("WORKER_HEARTBEAT_INTERVAL"); ok {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Worker.HeartbeatInterval = d
