@@ -280,7 +280,7 @@ func flakyWorkerRun(t *testing.T, extraEnv ...string) (*proc, int) {
 			// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
 			waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
 				resp, body = gatewayPost(t, gwAddr)
-				return !(resp.StatusCode == 503 && strings.Contains(body, `"eligible_workers":0`))
+				return resp.StatusCode != 503 || !strings.Contains(body, `"eligible_workers":0`)
 			})
 		}
 		if resp.StatusCode != 200 {
