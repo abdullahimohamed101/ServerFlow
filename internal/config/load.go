@@ -161,6 +161,7 @@ func applyEnv(cfg *Config) {
 		"WORKER_BACKEND_URL":       &cfg.Worker.BackendURL,
 		"WORKER_ADVERTISE_URL":     &cfg.Worker.AdvertiseURL,
 		"WORKER_CONTROL_PLANE_URL": &cfg.Worker.ControlPlaneURL,
+		"WORKER_STATUS_LISTEN":     &cfg.Worker.StatusListen,
 		"CONTROL_PLANE_ADDR":       &cfg.ControlPlane.Addr,
 		"CONTROL_PLANE_TOKEN":      &cfg.ControlPlane.Token,
 	} {

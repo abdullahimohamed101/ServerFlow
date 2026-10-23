@@ -2,10 +2,12 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -341,5 +343,77 @@ func TestAnEmptySuccessBodyIsAnErrorForEveryCallThatExpectsOne(t *testing.T) {
 	// Calls that expect no body are unaffected.
 	if err := c.Heartbeat(context.Background(), "w1", protocol.Heartbeat{}); err != nil {
 		t.Errorf("Heartbeat expects no body: %v", err)
+	}
+}
+
+// A control plane (or anything pretending to be one) must not be able to set the gateway-local Observed load of a
+// worker snapshot, whatever key spelling it uses (ADR-022, Phase 14 criterion 1).
+func TestAControlPlaneCannotForgeTheObservedLoad(t *testing.T) {
+	obs := `{"InflightRequests":9,"WorkAheadTokens":1e9,"CapacityTPS":5,"TTFTSeconds":1,"EffectiveActive":7,"Flags":8}`
+	snap := func(id string) string {
+		return `{"worker_id":"` + id + `","model":"qwen-7b","address":"http://127.0.0.1:9001","max_concurrency":4,"queue_size":8,` +
+			`"state":"READY","health":"healthy","eligible":true,"metrics":{"active_requests":1},"Observed":` + obs + `,"observed":` + obs + `}`
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/v1/workers/") {
+			_, _ = io.WriteString(w, snap("w1"))
+			return
+		}
+		_, _ = io.WriteString(w, `{"workers":[`+snap("w1")+`,`+snap("w2")+`]}`)
+	}))
+	t.Cleanup(ts.Close)
+	c := New(ts.URL, token, nil)
+	ws, err := c.Workers(context.Background(), Query{})
+	if err != nil || len(ws) != 2 {
+		t.Fatalf("%v %v", ws, err)
+	}
+	one, err := c.Worker(context.Background(), "w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range append(ws, one) {
+		if w.Observed != (protocol.ObservedLoad{}) {
+			t.Fatalf("worker %s: the control plane set Observed: %+v", w.WorkerID, w.Observed)
+		}
+		if w.Metrics.ActiveRequests != 1 || !w.Eligible {
+			t.Fatalf("the rest of the snapshot must still be read: %+v", w)
+		}
+	}
+}
+
+// The registry server's JSON has exactly the keys it had before Observed existed, with a gateway-side Observed
+// value set or not: the wire format is unchanged.
+func TestRegistryResponsesCarryNoObservedKey(t *testing.T) {
+	c, _ := start(t, token)
+	ctx := context.Background()
+	reg, err := c.Register(ctx, info("w1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Heartbeat(ctx, "w1", protocol.Heartbeat{RegistrationID: reg.RegistrationID, State: protocol.StateReady}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := c.Worker(ctx, "w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Observed = protocol.ObservedLoad{InflightRequests: 3, WorkAheadTokens: 100}
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for k := range keys {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := []string{"address", "eligible", "health", "heartbeat_age_seconds", "last_heartbeat", "max_concurrency", "metrics", "model", "queue_size", "registered_at", "state", "worker_id"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("snapshot keys changed:\n got %v\nwant %v", got, want)
 	}
 }

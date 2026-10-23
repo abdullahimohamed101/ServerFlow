@@ -1,0 +1,43 @@
+[
+  {
+    "worker_id": "w-1",
+    "model": "qwen-7b",
+    "address": "http://10.0.0.5:9001",
+    "max_concurrency": 8,
+    "queue_size": 16,
+    "state": "READY",
+    "health": "healthy",
+    "eligible": true,
+    "metrics": {
+      "active_requests": 3,
+      "queue_depth": 2,
+      "queued_input_tokens": 410,
+      "recent_tokens_per_second": 61.5,
+      "gpu_utilization": 87.5,
+      "gpu_memory_used_mb": 12000
+    },
+    "registered_at": "2026-01-02T03:04:05.6Z",
+    "last_heartbeat": "2026-01-02T03:04:06.6Z",
+    "heartbeat_age_seconds": 1.25
+  },
+  {
+    "worker_id": "w-2",
+    "model": "llama-8b",
+    "address": "http://10.0.0.6:9001",
+    "max_concurrency": 1,
+    "queue_size": 0,
+    "state": "DRAINING",
+    "health": "suspect",
+    "eligible": false,
+    "metrics": {
+      "active_requests": 0,
+      "queue_depth": 0,
+      "queued_input_tokens": 0,
+      "recent_tokens_per_second": 0
+    },
+    "reason": "warming up",
+    "registered_at": "2026-01-02T03:04:05.6Z",
+    "last_heartbeat": "2026-01-02T03:04:05.6Z",
+    "heartbeat_age_seconds": 0
+  }
+]

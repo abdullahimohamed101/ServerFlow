@@ -97,7 +97,9 @@ Purpose: register worker, report heartbeats/metrics. It sits beside the
 inference backend and is not in the data path. Location: `cmd/worker-agent` +
 `internal/worker`. Owns: worker lifecycle, capacity reporting. Status:
 implemented (Phase 4) with a mock-worker backend; a vLLM backend arrives in
-Phase 13.
+Phase 13. An optional loopback-only status endpoint (`/healthz`, `/readyz`; off by
+default, `worker.status_listen`; Phase 17) lets a Docker or Kubernetes probe tell a
+registered agent from a hung one; see `docs/architecture/worker-lifecycle.md`.
 
 
 
@@ -151,7 +153,7 @@ effect within `auth.cache_ttl`. Quotas are enforced by the rate limiter (below);
 ### Rate Limiting and Redis
 Purpose: share each tenant's quotas across every gateway. Location: `internal/ratelimit` (pure token-bucket and lease
 model in `model.go`, the same algorithm as one atomic Lua script in `script.go`, `RedisLimiter` with lease renewal, outage backoff
-and closed/open failure modes, `EstimateCost`), `internal/redis` (the only package that imports go-redis: client, transport guard,
+and closed/open failure modes; `EstimateCost` delegates to `internal/cost`, the pure estimator shared with the scheduler, ADR-022), `internal/redis` (the only package that imports go-redis: client, transport guard,
 password redaction, health tracking, best-effort request metadata). The gateway depends on the `ratelimit.Limiter` interface and
 asks it after the body is parsed and the model allowed, before routing; the slot is released on every exit path. Off by default.
 Redis stays ephemeral: losing it loses buckets, never data. See ADR-015 and `docs/operations/redis-and-rate-limits.md`.

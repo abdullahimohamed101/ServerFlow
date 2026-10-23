@@ -122,15 +122,19 @@ services:
       SERVERFLOW_WORKER_BACKEND_URL: http://mock-worker-1:9000
       SERVERFLOW_WORKER_ADVERTISE_URL: http://mock-worker-1:9000
       SERVERFLOW_WORKER_CONTROL_PLANE_URL: http://control-plane:9090
+      SERVERFLOW_WORKER_STATUS_LISTEN: 127.0.0.1:9102
       # The control plane listens on the private network, so the token crosses it in plain http: see ADR-021.
       SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT: "true"
       GOMEMLIMIT: 24MiB
     depends_on:
       mock-worker-1: {condition: service_healthy}
       control-plane: {condition: service_healthy}
-    # The agent has no HTTP endpoint (Phase 17 decides its liveness probe): restart on-failure covers crashes and
-    # dev-smoke checks registration and heartbeats through the control plane.
-    healthcheck: {disable: true}
+    # Healthy means registered with the control plane, a heartbeat accepted within worker.unhealthy_timeout, and the backend
+    # answering (the agent's /readyz, on a loopback-only status port; ADR-022 D6). Docker only reports it; nothing restarts
+    # a container for being unhealthy, and the control plane's view remains what dev-smoke checks.
+    healthcheck:
+      <<: *hc
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://127.0.0.1:9102/readyz"]
     mem_limit: 32m
 
   worker-agent-2:

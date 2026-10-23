@@ -56,6 +56,9 @@ func (r RedisConfig) String() string {
 // GoString implements fmt.GoStringer.
 func (r RedisConfig) GoString() string { return "config.RedisConfig" + r.String() }
 
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (r RedisConfig) Format(f fmt.State, verb rune) { writeRedacted(f, verb, r.String(), r.GoString()) }
+
 // LogValue implements slog.LogValuer.
 func (r RedisConfig) LogValue() slog.Value { return slog.StringValue(r.String()) }
 

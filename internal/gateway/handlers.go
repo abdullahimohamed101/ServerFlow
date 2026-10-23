@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
-	"serverflow/internal/ratelimit"
+	"serverflow/internal/cost"
 	"serverflow/pkg/protocol"
 )
 
@@ -144,11 +144,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One estimate per request, made here, after the cheap refusals (unknown model, shedding) whether or not a limiter is configured (ADR-022): the rate limiter
+	// charges exactly the sum, and the scheduler's work accounting reads the two parts.
+	ireq.EstInputTokens, ireq.EstOutputTokens = s.estimate(ireq.Messages, ireq.Prompt, len(body), ireq.MaxTokens, s.cfg.MaxTokensLimit)
+
 	if s.limitRequired {
 		// After parsing (the token cost needs the body) and the model checks, before any worker is touched.
 		// The slot is given back on every way out of this function: a normal return, an error, a client that
 		// left, and a panic.
-		release, ok := s.admit(w, r, info, ratelimit.EstimateRequestCost(ireq.Messages, ireq.Prompt, len(body), ireq.MaxTokens, s.cfg.MaxTokensLimit), ireq.Model)
+		release, ok := s.admit(w, r, info, ireq.EstInputTokens+ireq.EstOutputTokens, ireq.Model)
 		if !ok {
 			return
 		}
@@ -385,4 +389,12 @@ func copyResponseHeaders(dst, src http.Header) {
 			dst.Set(k, v)
 		}
 	}
+}
+
+// estimate is the one place a request's cost is computed (ADR-022).
+func (s *Server) estimate(msgs []protocol.Message, prompt string, bodyBytes, maxTokens, limit int) (input, output int) {
+	if s.estimator != nil {
+		return s.estimator(msgs, prompt, bodyBytes, maxTokens, limit)
+	}
+	return cost.Estimate(msgs, prompt, bodyBytes, maxTokens, limit)
 }

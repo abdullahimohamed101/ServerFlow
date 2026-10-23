@@ -36,9 +36,9 @@ scripts/quality.sh full
 The Kafka tests are named in `quality.sh integration` (`must_run kafka`), so a skipped one fails the gate. The broker is
 Redpanda; it is Kafka API compatible, not Apache Kafka (ADR-019).
 
-**Where the image comes from, honestly.** The Phase 16 container stack uses `mirror.gcr.io/redpandadata/redpanda` instead, pinned by the same digest
+**Where the image comes from, honestly.** The Phase 16 container stack uses `mirror.gcr.io/redpandadata/redpanda` instead: `docker-compose.yml` pins `v25.3.17` by digest, while `scripts/dev-kafka.sh` (the integration tests' broker) uses `v25.1.1`, whose digest is the same on Docker Hub
 (checked 2026-10-11: the manifest answers anonymously and the index lists linux/amd64 and linux/arm64); the survey below, which did not include
-`mirror.gcr.io`, is why the integration job still uses the Docker Hub front. `mirror.gcr.io` is a cache run by Google with no published
+`mirror.gcr.io`, is why the Docker Hub front (`docker.redpanda.com`) was first chosen. Today `scripts/dev-kafka.sh` pulls `mirror.gcr.io` first and falls back to the Docker Hub front (see the update below). `mirror.gcr.io` is a cache run by Google with no published
 availability or rate guarantee, so the compose job pulls with retries and caches the tarball; a full cold pull from a GitHub runner is not verified.
 
 `docker.redpanda.com` is not an independent registry: an anonymous request to
@@ -69,10 +69,10 @@ runner pulls those without retries and cannot fall back), through `scripts/ci-do
 throttled by request rate (`toomanyrequests: Rate exceeded`) and by data volume (`Data limit exceeded`), so the script tries a list of sources in order,
 3 rounds with 5 s then 15 s between rounds, tags the winner as the canonical reference, and saves a tarball that `actions/cache` restores
 (key = reference + digest from `scripts/ci-docker-pull.sh digest <image>`, so most runs pull nothing). Sources for `public.ecr.aws/docker/library/<name>`:
-that, `mirror.gcr.io/library/<name>`, `docker.io/library/<name>`. Checked anonymously on 2026-10-11 (manifest GET, body sha256): `postgres:16` is
+that, `mirror.gcr.io/library/<name>`, `docker.io/library/<name>`. Since 2026-10-16 `public.ecr.aws` has refused GitHub-hosted runners (PR #39), so on a runner the first source fails and the pull is served by `mirror.gcr.io`; the order is kept so a runner or laptop where ECR works still uses it. Checked anonymously on 2026-10-11 (manifest GET, body sha256): `postgres:16` is
 `sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d` and `redis:7` is
 `sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85` on all three. Optional: if `DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN` are in the
-step's environment (from repository secrets the owner creates; none exists and none is added) the script runs `docker login` first. `internal/ciguard`
+step's environment the script runs `docker login` first. The `Start PostgreSQL` and `Start Redis` steps of `ci.yml` and `nightly.yml` map them from the repository secrets of the same names; the repository owner creates those secrets (none exists and none is added here), and without them, or on a pull request from a fork, both values are empty and pulls stay anonymous. The Kafka and compose pulls (`scripts/dev-kafka.sh`, `scripts/dev-pull.sh`) do not log in. `internal/ciguard`
 fails the build if a workflow runs `docker run` or `docker pull` of a registry image without the script, or adds a `services:` container.
 Not verified: a cold pull from a GitHub-hosted runner.
 
@@ -92,7 +92,7 @@ local server deliberately requires one.
 | `observability (promtool, dashboards)` | `quality.sh observability` | pinned promtool 2.53.0 release archive, SHA-256 verified; no Docker Hub |
 | `vulncheck` | `quality.sh vuln` | advisory on pull requests (a new advisory is not the PR's fault), blocking nightly |
 | `deploy (lint, config, static tests)` | `quality.sh deploy` | Phase 16: pinned `hadolint` v2.15.1 release (SHA-256 verified), `shellcheck` and the compose CLI from the runner image; about 2 minutes, no image pulls |
-| `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers with `GATEWAYS=3` and 13 end-to-end checks that must all run (`0 failed, 0 skipped`; a single gateway skips S13); images from `public.ecr.aws`, `quay.io`, `mirror.gcr.io` and `gcr.io` (never Docker Hub) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
+| `compose smoke (advisory)` | `make dev-up`, `make dev-smoke`, `make dev-down` | Phase 16: the whole system in containers with `GATEWAYS=3` and 13 end-to-end checks that must all run (`0 failed, 0 skipped`; a single gateway skips S13); images from `mirror.gcr.io`, `quay.io` and `gcr.io` (never Docker Hub; `public.ecr.aws` was dropped on 2026-10-16 when it started refusing GitHub-hosted runners, PR #39, ADR-021) pulled by `scripts/dev-pull.sh` with retries and backoff; the Redpanda image is cached as a tarball like the integration job's; 25 minute limit; stack status and secret-free logs are uploaded on failure |
 
 A new push to a pull request cancels the run in progress. Every job has a timeout. Actions are pinned to
 commit SHAs with the version in a comment; Dependabot (`.github/dependabot.yml`) updates them and the Go
