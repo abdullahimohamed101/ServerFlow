@@ -159,7 +159,12 @@ func deploymentFiles(t *testing.T) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		files = append(files, m...)
+		for _, f := range m {
+			// deploy/*/* also matches directories (deploy/kubernetes/base, ...): their files are scanned by tests/k8s.
+			if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
+				files = append(files, f)
+			}
+		}
 	}
 	if len(files) < 8 {
 		t.Fatalf("expected the deployment files, found %d", len(files))
