@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -576,5 +577,65 @@ func TestAShedRequestIsOneFailedNoCapacityEvent(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if n := len(sink.Records()); n != 2 {
 		t.Fatalf("a request refused before admission emitted %d more events", n-2)
+	}
+}
+
+// ttft_ms comes from time.Duration.Milliseconds (truncated, so 999us is 0) and is capped by the schema at
+// protocol.MaxEventMillis. An absurd or negative value is a counted encode drop of that one event: it never reaches the
+// broker, never panics and never stops the events that follow.
+func TestTTFTMillisecondsAndItsCapThroughTheObserver(t *testing.T) {
+	capDur := time.Duration(protocol.MaxEventMillis) * time.Millisecond // 1e12 ms = 1e18 ns, below MaxInt64 (9.2e18)
+	cases := []struct {
+		name string
+		ttft time.Duration
+		want int64 // milliseconds in the event when it is delivered
+		ok   bool
+	}{
+		{"sub-millisecond truncates to zero", 999 * time.Microsecond, 0, true},
+		{"exactly one millisecond", time.Millisecond, 1, true},
+		{"1.999 ms truncates to 1", 1999 * time.Microsecond, 1, true},
+		{"a normal value", 250 * time.Millisecond, 250, true},
+		{"the cap", capDur, protocol.MaxEventMillis, true},
+		{"the cap plus a millisecond", capDur + time.Millisecond, 0, false},
+		{"max duration", time.Duration(math.MaxInt64), 0, false},
+		{"negative", -time.Millisecond, 0, false},
+	}
+	for i, c := range cases {
+		sink := &eventstest.RecordingSink{}
+		o := newObs(t, sink, 20)
+		id := rid(300 + i)
+		ctx := o.RequestStarted(context.Background(), gateway.RequestStart{ID: id})
+		o.RequestAdmitted(ctx, gateway.Admission{RequestID: id, Model: "m", TenantID: "ten_a", APIKeyID: "key_a", Stream: true})
+		actx := o.AttemptStarted(ctx, gateway.AttemptStart{RequestID: id, AttemptID: "att_a", Number: 1, WorkerID: "w1", Model: "m", Strategy: "rr"})
+		o.FirstToken(actx, gateway.FirstToken{RequestID: id, AttemptID: "att_a", TTFT: c.ttft})
+		o.AttemptEnded(actx, gateway.AttemptEnd{RequestID: id, AttemptID: "att_a", Number: 1, WorkerID: "w1", Outcome: gateway.AttemptOK, Duration: time.Millisecond})
+		o.RequestCompleted(ctx, gateway.Completion{RequestID: id, Status: 200, Handled: true, Model: "m", Stream: true, TTFT: c.ttft})
+		// received, routed, first_token, completed: the two that carry the TTFT are dropped together when it is out of range.
+		wantRecords, wantDrops := 4, 0
+		if !c.ok {
+			wantRecords, wantDrops = 2, 2
+		}
+		eventually(t, func() bool {
+			return len(sink.Records()) == wantRecords && o.Publisher().Dropped(events.ReasonEncode) == uint64(wantDrops)
+		}, c.name)
+		if !c.ok {
+			continue
+		}
+		evs, ok := sink.Events()
+		if !ok {
+			t.Fatalf("%s: an event did not decode", c.name)
+		}
+		for _, e := range evs {
+			switch e.EventType {
+			case protocol.EventFirstToken:
+				if e.FirstToken.TTFTMS != c.want {
+					t.Errorf("%s: first_token ttft_ms %d, want %d", c.name, e.FirstToken.TTFTMS, c.want)
+				}
+			case protocol.EventCompleted:
+				if e.Terminal.TTFTMS != c.want {
+					t.Errorf("%s: completed ttft_ms %d, want %d", c.name, e.Terminal.TTFTMS, c.want)
+				}
+			}
+		}
 	}
 }

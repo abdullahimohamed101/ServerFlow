@@ -1,0 +1,645 @@
+{
+  "variant": "registry-random-single",
+  "steps": [
+    {
+      "name": "plain",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "plain-again",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hello again\"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "stream",
+      "status": 200,
+      "headers": {
+        "Cache-Control": "no-cache",
+        "Content-Type": "text/event-stream",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "data: {\"worker\":\"w-a\",\"i\":0}\n\ndata: [DONE]\n\n",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":true,\"time\":\"\\u003cvolatile\\u003e\",\"ttft_ms\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-small",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-large",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-completion-tokens",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_completion_tokens\":300}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "non-ascii",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 héllo wörld 你好 \"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "big-body",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "<216077 bytes sha256=5ab334b9de3ca7b73e6d30133e256e85174e3cf5633740aa9904887e13c59026>",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "two-messages",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"system\",\"content\":\"be brief\"},{\"role\":\"user\",\"content\":\"hi\"}],\"temperature\":0.2}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "worker-500",
+      "status": 500,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"boom\",\"type\":\"server_error\"}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"FAIL500\"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"msg\":\"attempt finished\",\"outcome\":\"failed\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":500}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"WARN\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":500,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "unknown-model",
+      "status": 404,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"the model `nope` does not exist\",\"type\":\"invalid_request_error\",\"code\":\"MODEL_NOT_FOUND\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"error_code\":\"MODEL_NOT_FOUND\",\"level\":\"DEBUG\",\"msg\":\"no worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\"}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"MODEL_NOT_FOUND\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":404,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "parked-model",
+      "status": 503,
+      "headers": {
+        "Content-Type": "application/json",
+        "Retry-After": "1",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"no worker has capacity for the model `llama-8b` right now\",\"type\":\"api_error\",\"code\":\"NO_CAPACITY\",\"model\":\"llama-8b\",\"eligible_workers\":0}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"error_code\":\"NO_CAPACITY\",\"level\":\"INFO\",\"msg\":\"no worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\"}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"NO_CAPACITY\",\"level\":\"WARN\",\"method\":\"POST\",\"model\":\"llama-8b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":503,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "bad-json",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"body is not valid JSON\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "no-messages",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`messages` must be an array with at least one message\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "empty-body",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"body must be a JSON object\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "client-request-id",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"w-a\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "w-a",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Attempt-Id": "<att-id>",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"level\":\"DEBUG\",\"model\":\"qwen-7b\",\"msg\":\"worker selected\",\"request_id\":\"\\u003creq-id\\u003e\",\"strategy\":\"random\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}",
+        "{\"attempt\":1,\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"DEBUG\",\"msg\":\"attempt finished\",\"outcome\":\"ok\",\"request_id\":\"\\u003creq-id\\u003e\",\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\",\"worker_status\":200}",
+        "{\"attempt_id\":\"\\u003catt-id\\u003e\",\"attempts\":1,\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"time\":\"\\u003cvolatile\\u003e\",\"worker_id\":\"w-a\"}"
+      ]
+    },
+    {
+      "name": "get-models",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"id\":\"qwen-7b\",\"object\":\"model\",\"created\":0,\"owned_by\":\"serverflow\"}]}",
+      "worker_hits": null,
+      "logs": [
+        "{\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/v1/models\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "get-readyz",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"status\":\"ready\"}",
+      "worker_hits": null,
+      "logs": [
+        "{\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/readyz\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "get-healthz",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"status\":\"ok\"}",
+      "worker_hits": null,
+      "logs": [
+        "{\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/healthz\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "wrong-method",
+      "status": 405,
+      "headers": {
+        "Allow": "POST",
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "Method Not Allowed\n",
+      "worker_hits": null,
+      "logs": [
+        "{\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":405,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    }
+  ],
+  "series": [
+    "auth_rejections_total{status=\"401\"}",
+    "auth_rejections_total{status=\"403\"}",
+    "auth_rejections_total{status=\"500\"}",
+    "auth_rejections_total{status=\"503\"}",
+    "gateway_registry_refresh_failures_total",
+    "gateway_registry_snapshot_age_seconds",
+    "inference_attempts_total{model=\"qwen-7b\",outcome=\"failed\"}",
+    "inference_attempts_total{model=\"qwen-7b\",outcome=\"ok\"}",
+    "inference_failures_total{model=\"llama-8b\",reason=\"NO_CAPACITY\"}",
+    "inference_failures_total{model=\"unknown\",reason=\"INVALID_REQUEST\"}",
+    "inference_failures_total{model=\"unknown\",reason=\"MODEL_NOT_FOUND\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"+Inf\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.0001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.00025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.0005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.0025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.01\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"0.25\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"llama-8b\",le=\"5e-05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.00025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"5e-05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.00025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"5e-05\"}",
+    "inference_gateway_overhead_seconds_count{model=\"llama-8b\"}",
+    "inference_gateway_overhead_seconds_count{model=\"qwen-7b\"}",
+    "inference_gateway_overhead_seconds_count{model=\"unknown\"}",
+    "inference_gateway_overhead_seconds_sum{model=\"llama-8b\"}",
+    "inference_gateway_overhead_seconds_sum{model=\"qwen-7b\"}",
+    "inference_gateway_overhead_seconds_sum{model=\"unknown\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"+Inf\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.005\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.01\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.025\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.05\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.1\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.25\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"0.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"1\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"10\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"120\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"2.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"30\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"5\"}",
+    "inference_request_duration_seconds_bucket{model=\"llama-8b\",le=\"60\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.005\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"10\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"120\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"2.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"30\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"60\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.005\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"10\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"120\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"2.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"30\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"60\"}",
+    "inference_request_duration_seconds_count{model=\"llama-8b\"}",
+    "inference_request_duration_seconds_count{model=\"qwen-7b\"}",
+    "inference_request_duration_seconds_count{model=\"unknown\"}",
+    "inference_request_duration_seconds_sum{model=\"llama-8b\"}",
+    "inference_request_duration_seconds_sum{model=\"qwen-7b\"}",
+    "inference_request_duration_seconds_sum{model=\"unknown\"}",
+    "inference_requests_active",
+    "inference_requests_total{model=\"llama-8b\",status=\"503\"}",
+    "inference_requests_total{model=\"qwen-7b\",status=\"200\"}",
+    "inference_requests_total{model=\"qwen-7b\",status=\"500\"}",
+    "inference_requests_total{model=\"unknown\",status=\"400\"}",
+    "inference_requests_total{model=\"unknown\",status=\"404\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"+Inf\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.01\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.025\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.05\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.1\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.25\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"0.5\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"1\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"10\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"2.5\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"30\"}",
+    "inference_ttft_seconds_bucket{model=\"llama-8b\",le=\"5\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.5\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"10\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"2.5\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"30\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"10\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"2.5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"30\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"5\"}",
+    "inference_ttft_seconds_count{model=\"llama-8b\"}",
+    "inference_ttft_seconds_count{model=\"qwen-7b\"}",
+    "inference_ttft_seconds_count{model=\"unknown\"}",
+    "inference_ttft_seconds_sum{model=\"llama-8b\"}",
+    "inference_ttft_seconds_sum{model=\"qwen-7b\"}",
+    "inference_ttft_seconds_sum{model=\"unknown\"}",
+    "rate_limit_bypassed_total",
+    "rate_limit_decision_seconds_bucket{le=\"+Inf\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0001\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.00025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0005\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.001\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.005\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.01\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.05\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.1\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.25\"}",
+    "rate_limit_decision_seconds_count",
+    "rate_limit_decision_seconds_sum",
+    "rate_limit_rejections_total{limit=\"concurrency\"}",
+    "rate_limit_rejections_total{limit=\"model\"}",
+    "rate_limit_rejections_total{limit=\"requests\"}",
+    "rate_limit_rejections_total{limit=\"tokens\"}",
+    "rate_limit_rejections_total{limit=\"unavailable\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"+Inf\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.0001\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.00025\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.0005\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.001\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.0025\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.005\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.01\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.025\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.05\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.1\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"0.25\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"1\"}",
+    "scheduler_decision_duration_seconds_bucket{strategy=\"random\",le=\"5e-05\"}",
+    "scheduler_decision_duration_seconds_count{strategy=\"random\"}",
+    "scheduler_decision_duration_seconds_sum{strategy=\"random\"}",
+    "scheduler_decisions_total{model=\"llama-8b\",result=\"no_capacity\",strategy=\"random\"}",
+    "scheduler_decisions_total{model=\"qwen-7b\",result=\"selected\",strategy=\"random\"}",
+    "scheduler_decisions_total{model=\"unknown\",result=\"no_model\",strategy=\"random\"}",
+    "scheduler_ineligible_selections_total",
+    "scheduler_no_capacity_total{model=\"llama-8b\",reason=\"no_capacity\"}",
+    "scheduler_selections_total{model=\"qwen-7b\",worker_id=\"w-a\"}",
+    "serverflow_build_info{commit=\"<build>\",go_version=\"<build>\",version=\"<build>\"}"
+  ],
+  "counters": {
+    "auth_rejections_total{status=\"401\"}": "0",
+    "auth_rejections_total{status=\"403\"}": "0",
+    "auth_rejections_total{status=\"500\"}": "0",
+    "auth_rejections_total{status=\"503\"}": "0",
+    "gateway_registry_refresh_failures_total": "0",
+    "inference_attempts_total{model=\"qwen-7b\",outcome=\"failed\"}": "1",
+    "inference_attempts_total{model=\"qwen-7b\",outcome=\"ok\"}": "9",
+    "inference_failures_total{model=\"llama-8b\",reason=\"NO_CAPACITY\"}": "1",
+    "inference_failures_total{model=\"unknown\",reason=\"INVALID_REQUEST\"}": "4",
+    "inference_failures_total{model=\"unknown\",reason=\"MODEL_NOT_FOUND\"}": "1",
+    "inference_requests_total{model=\"llama-8b\",status=\"503\"}": "1",
+    "inference_requests_total{model=\"qwen-7b\",status=\"200\"}": "9",
+    "inference_requests_total{model=\"qwen-7b\",status=\"500\"}": "1",
+    "inference_requests_total{model=\"unknown\",status=\"400\"}": "4",
+    "inference_requests_total{model=\"unknown\",status=\"404\"}": "1",
+    "rate_limit_bypassed_total": "0",
+    "rate_limit_rejections_total{limit=\"concurrency\"}": "0",
+    "rate_limit_rejections_total{limit=\"model\"}": "0",
+    "rate_limit_rejections_total{limit=\"requests\"}": "0",
+    "rate_limit_rejections_total{limit=\"tokens\"}": "0",
+    "rate_limit_rejections_total{limit=\"unavailable\"}": "0",
+    "scheduler_decisions_total{model=\"llama-8b\",result=\"no_capacity\",strategy=\"random\"}": "1",
+    "scheduler_decisions_total{model=\"qwen-7b\",result=\"selected\",strategy=\"random\"}": "10",
+    "scheduler_decisions_total{model=\"unknown\",result=\"no_model\",strategy=\"random\"}": "1",
+    "scheduler_ineligible_selections_total": "0",
+    "scheduler_no_capacity_total{model=\"llama-8b\",reason=\"no_capacity\"}": "1",
+    "scheduler_selections_total{model=\"qwen-7b\",worker_id=\"w-a\"}": "10"
+  },
+  "catalogue": "auth_rejections_total | COUNTER | Requests refused by API key authentication, by HTTP status (401, 403, 500 or 503). | labels=status | buckets=\ngateway_registry_refresh_failures_total | COUNTER | Failed attempts to refresh the worker registry snapshot. | labels= | buckets=\ngateway_registry_snapshot_age_seconds | GAUGE | Seconds since the gateway last fetched the worker registry (since start before the first fetch). Above gateway.registry_max_staleness the gateway fails closed. | labels= | buckets=\ninference_attempts_total | COUNTER | Attempts to serve a request on a worker (registry mode), by model and outcome. | labels=model,outcome | buckets=\ninference_failures_total | COUNTER | Inference requests that ended with a gateway error, by model and API error code. | labels=model,reason | buckets=\ninference_gateway_overhead_seconds | HISTOGRAM | Time from request accepted to the first dispatch to a worker (authentication, rate limit, parsing and worker selection), by model. | labels=model | buckets=5e-05,0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,1\ninference_request_duration_seconds | HISTOGRAM | Total inference request duration as seen by the gateway. | labels=model | buckets=0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30,60,120\ninference_requests_active | GAUGE | Inference requests currently in flight. | labels= | buckets=\ninference_requests_total | COUNTER | Inference requests handled by the gateway, by model and HTTP status. | labels=model,status | buckets=\ninference_ttft_seconds | HISTOGRAM | Time from request accepted to the first streamed chunk of a streaming response. | labels=model | buckets=0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30\nrate_limit_bypassed_total | COUNTER | Requests admitted without a rate limit check because Redis was unavailable and redis.on_failure is open. | labels= | buckets=\nrate_limit_decision_seconds | HISTOGRAM | Time the rate limiter took to decide a request. | labels= | buckets=0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25\nrate_limit_rejections_total | COUNTER | Requests refused by rate limiting, by limit: requests, tokens, concurrency, model or unavailable (the check could not be made). | labels=limit | buckets=\nscheduler_decision_duration_seconds | HISTOGRAM | Time the scheduler took to choose a worker, by strategy. | labels=strategy | buckets=5e-05,0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,1\nscheduler_decisions_total | COUNTER | Scheduling decisions in registry mode, by strategy, model and result (selected, no_capacity, no_model or error). | labels=model,result,strategy | buckets=\nscheduler_ineligible_selections_total | COUNTER | Selections of a worker the registry view did not judge eligible (not READY, or past the heartbeat bound). Must stay 0: the scheduler never routes to a known-unhealthy worker. | labels= | buckets=\nscheduler_no_capacity_total | COUNTER | Requests refused because no worker could be chosen, by model and reason (no_capacity or worker_unavailable). | labels=model,reason | buckets=\nscheduler_selections_total | COUNTER | Workers chosen by the scheduler, by model and worker (worker_id is capped; later workers are \"other\"). | labels=model,worker_id | buckets=\nserverflow_build_info | GAUGE | A constant 1, labelled with the version, VCS revision and Go version of this binary. | labels=commit,go_version,version | buckets=\n"
+}

@@ -14,7 +14,7 @@ import (
 // Admin performs the few administrative calls the tests and runbook tooling need. The gateway never creates
 // topics (D7); production topics are created by an operator.
 type Admin struct {
-	cfg Config
+	cfg sealedConfig // see sealedConfig
 	cl  *kgo.Client
 }
 
@@ -28,7 +28,7 @@ func NewAdmin(cfg Config) (*Admin, error) {
 	if err != nil {
 		return nil, cfg.safe(err)
 	}
-	return &Admin{cfg: cfg, cl: cl}, nil
+	return &Admin{cfg: seal(cfg), cl: cl}, nil
 }
 
 // Close releases the connection.
@@ -48,7 +48,7 @@ func (a *Admin) CreateTopic(ctx context.Context, name string, partitions int) er
 	req.TimeoutMillis = 15000
 	resp, err := req.RequestWith(ctx, a.cl)
 	if err != nil {
-		return a.cfg.safe(err)
+		return a.cfg.c().safe(err)
 	}
 	for _, rt := range resp.Topics {
 		if err := kerr.ErrorForCode(rt.ErrorCode); err != nil && !errors.Is(err, kerr.TopicAlreadyExists) {
@@ -68,7 +68,7 @@ func (a *Admin) DeleteTopic(ctx context.Context, name string) error {
 	req.TimeoutMillis = 15000
 	resp, err := req.RequestWith(ctx, a.cl)
 	if err != nil {
-		return a.cfg.safe(err)
+		return a.cfg.c().safe(err)
 	}
 	for _, r := range resp.Topics {
 		if err := kerr.ErrorForCode(r.ErrorCode); err != nil && !errors.Is(err, kerr.UnknownTopicOrPartition) {
@@ -93,7 +93,7 @@ func (a *Admin) offsets(ctx context.Context, topic string, partitions []int32, t
 	req.SetVersion(1)
 	resp, err := req.RequestWith(ctx, a.cl)
 	if err != nil {
-		return nil, a.cfg.safe(err)
+		return nil, a.cfg.c().safe(err)
 	}
 	out := map[int32]int64{}
 	for _, t := range resp.Topics {
@@ -115,7 +115,7 @@ func (a *Admin) Partitions(ctx context.Context, topic string) ([]int32, error) {
 	req.Topics = append(req.Topics, rt)
 	resp, err := req.RequestWith(ctx, a.cl)
 	if err != nil {
-		return nil, a.cfg.safe(err)
+		return nil, a.cfg.c().safe(err)
 	}
 	var out []int32
 	for _, t := range resp.Topics {
@@ -174,7 +174,7 @@ func (a *Admin) GroupLag(ctx context.Context, group, topic string) (int64, error
 	req.SetVersion(5)
 	resp, err := req.RequestWith(ctx, a.cl)
 	if err != nil {
-		return 0, a.cfg.safe(err)
+		return 0, a.cfg.c().safe(err)
 	}
 	if err := kerr.ErrorForCode(resp.ErrorCode); err != nil {
 		return 0, fmt.Errorf("kafka: offset fetch: %w", err)
@@ -200,11 +200,11 @@ func (a *Admin) GroupLag(ctx context.Context, group, topic string) (int64, error
 // topic, such as a poison message).
 func (a *Admin) Produce(ctx context.Context, topic string, key, value []byte) error {
 	res := a.cl.ProduceSync(ctx, &kgo.Record{Topic: topic, Key: key, Value: value})
-	return a.cfg.safe(res.FirstErr())
+	return a.cfg.c().safe(res.FirstErr())
 }
 
 // Format implements fmt.Formatter: every verb prints the redacted configuration, never the password.
-func (x *Admin) Format(f fmt.State, _ rune) { redactedFormat(f, "Admin", x.cfg) }
+func (x *Admin) Format(f fmt.State, _ rune) { redactedFormat(f, "Admin", x.cfg.c()) }
 
 // LogValue implements slog.LogValuer.
-func (x *Admin) LogValue() slog.Value { return slog.StringValue("kafka.Admin" + x.cfg.String()) }
+func (x *Admin) LogValue() slog.Value { return slog.StringValue("kafka.Admin" + x.cfg.c().String()) }

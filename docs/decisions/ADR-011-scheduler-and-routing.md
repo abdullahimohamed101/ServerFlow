@@ -97,3 +97,9 @@ a burst is kept from piling onto one worker whose last heartbeat said it was idl
 - **Follow-ups**: retries and request attempts (Phase 6); coordination across gateways
   (Phase 8); scheduler metrics (Phase 10); weighted and latency-aware strategies (Phase 14);
   no strategy is claimed better than another until Phase 7 produces evidence.
+
+## Amendment (Phase 14, PR A; ADR-022)
+
+Strategies stay pure and the `Scheduler` interface is unchanged. Gateway-computed signals (the in-flight token ledger and later measurements) will reach strategies on the snapshot copy
+the router already builds: `protocol.WorkerSnapshot` has a new field `Observed` tagged `json:"-"`, so it never appears on the registry wire and a control plane cannot supply it. PR A adds the
+field and type only; nothing fills it yet and no choice changes. The strategies left to Phase 14 above follow in later pull requests of the phase (ADR-022): `least-tokens` and `least-work` (which ends the `least-work` refusal) and the opt-in overlay v2 are in the required slice; `latency-aware` is an optional follow-up; the default overlay stays `max(reported, local)`.

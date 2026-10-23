@@ -17,7 +17,8 @@
 #
 # Tries: 3 rounds over all sources; after a round in which every source failed, sleeps CI_DOCKER_PULL_DELAY seconds
 # (default 5, growing x3), never after the last failure. With DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN in the
-# environment, it runs `docker login` first (optional; no workflow sets them and no secret exists for them).
+# environment, it runs `docker login` first (optional: the Start PostgreSQL and Start Redis steps of ci.yml and nightly.yml pass them from the repository
+# secrets of the same names; no such secret exists unless the owner creates one, and without them pulls are anonymous).
 set -euo pipefail
 
 prefix="public.ecr.aws/docker/library/"
