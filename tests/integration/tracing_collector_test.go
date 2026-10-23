@@ -16,6 +16,7 @@ import (
 
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
+	"serverflow/internal/testutil"
 	"serverflow/internal/tracing"
 	"serverflow/internal/tracing/gwtrace"
 )
@@ -108,7 +109,7 @@ func TestADeadCollectorNeverTouchesRequests(t *testing.T) {
 	const n = 400
 	base := measure(t, staticGateway(t), n) // tracing off
 
-	closedURL := "http://" + refusedAddr()
+	closedURL := "http://" + testutil.RefusedAddr(t)
 
 	cases := map[string]string{"500": "", "hang": "", "slow": "", "closed port": closedURL}
 	for name, fixed := range cases {
