@@ -130,11 +130,11 @@ function Invoke-Check {
     Write-Host "  Running: $Name"
 
     try {
-        $LASTEXITCODE = 0
+        $global:LASTEXITCODE = 0
 
         & $Action
 
-        $exitCode = $LASTEXITCODE
+        $exitCode = $global:LASTEXITCODE
 
         if ($null -eq $exitCode) {
             $exitCode = 0
@@ -688,6 +688,121 @@ else {
 Write-Step "[5/8] Go"
 
 
+# Mirrors scripts/quality.sh (lint, unit, race, integration, build, vuln, tracing), with these DIFFERENCES, all
+# deliberate and none hidden:
+#   - Fast mode runs gofmt, go test, go vet only; everything else below is Full mode only (quality.sh `lint` runs
+#     golangci-lint on its own, here it is a Full-mode stage).
+#   - `observability` (scripts/promtool.sh is bash) and `deploy` (hadolint, shellcheck, `docker compose config`, bash
+#     scripts) are NOT mirrored and are reported as skips in Full mode; run `bash scripts/quality.sh observability` and
+#     `bash scripts/quality.sh deploy` from Git Bash or WSL.
+#   - `go test -race` needs cgo, so it runs only when gcc is on PATH (else a loud skip; the must-run stages then run
+#     without -race). quality.sh always uses -race.
+#   - govulncheck is part of Full here; in quality.sh it is its own stage that `full` does not run. A missing
+#     govulncheck or golangci-lint is a failure here (this script installs nothing); quality.sh installs govulncheck.
+#   - On Windows the ./tests/integration package (process tests that send SIGSTOP/SIGTERM) does not compile
+#     (syscall.SIGSTOP is undefined), so it is left out of the must-run stages and the named tests that live in it are
+#     not required; the skip is announced. Fixing that needs a platform split of those tests, not a one-line constraint.
+#   - Integration runs only when all of SERVERFLOW_TEST_POSTGRES_DSN, _REDIS_ADDR and _KAFKA_BROKERS are set (a loud
+#     skip otherwise, like `quality.sh full`).
+# Nothing here has been run on Windows by the people who wrote it; internal/ciguard only checks that the stage
+# invocations and test names have not drifted from quality.sh (it cannot check the PowerShell is correct).
+# Line endings: the repository has no .gitattributes; a checkout with CRLF makes `gofmt -l` list every .go file on
+# Windows (git's core.autocrlf=input or a .gitattributes with `*.go text eol=lf` avoids it). Unverified here.
+
+# The named tests that live in ./tests/integration, which does not compile on Windows (syscall.SIGSTOP is undefined).
+$WindowsExcludedTests = @(
+    "TestADeadCollectorNeverTouchesRequests",
+    "TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace",
+    "TestGatewayEventsEndToEnd",
+    "TestGatewayWithRealPostgresHotPathAndFloods",
+    "TestOneTraceAcrossGatewayAndWorker",
+    "TestProcessAuthEndToEnd",
+    "TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests",
+    "TestProcessRateLimitingEndToEnd",
+    "TestProcessUsageConsumerEndToEnd",
+    "TestRedisFailureMatrixThroughTheGateway",
+    "TestThreeGatewaysShareOneRequestQuota",
+    "TestUsageCrashBetweenDatabaseAndOffsetCommit",
+    "TestUsageStopAndReplay"
+)
+
+
+function Assert-NativeSucceeded {
+    param(
+        [string]$What
+    )
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "$What exited with code $LASTEXITCODE"
+    }
+}
+
+
+# Runs `go test` verbosely with its output in a log file, then fails if the test run failed, if any test skipped for
+# want of its server ($SkipMessage), or if a named test did not run and pass. A silent skip must not look like green.
+function Invoke-GoTestMustRun {
+    param(
+        [string]$Label,
+        [string[]]$GoArgs,
+        [string]$SkipMessage,
+        [string[]]$Tests
+    )
+
+    $log = Join-Path ([System.IO.Path]::GetTempPath()) ("serverflow-$Label-" + [guid]::NewGuid().ToString("N") + ".log")
+
+    # ./tests/integration does not compile on Windows (see the header of this section): drop it, and the tests that live
+    # in it, and say so.
+    if ($env:OS -eq "Windows_NT") {
+        $GoArgs = @($GoArgs | Where-Object { $_ -ne "./tests/integration/..." })
+
+        $skipped = @($Tests | Where-Object { $WindowsExcludedTests -contains $_ })
+
+        if ($skipped.Count -gt 0) {
+            Write-Host "  NOTE  $Label`: ./tests/integration does not compile on Windows; not run: $($skipped -join ', ')"
+        }
+
+        $Tests = @($Tests | Where-Object { $WindowsExcludedTests -notcontains $_ })
+    }
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+
+    try {
+        & go test @GoArgs 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $log -Encoding utf8
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($code -ne 0) {
+        Write-Host "--- failed tests, packages, panics and races in the full log ---"
+        Select-String -Path $log -Pattern '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' -Context 0, 12 |
+            Select-Object -First 100 |
+            ForEach-Object {
+                Write-Host $_.Line
+                $_.Context.PostContext | ForEach-Object { Write-Host $_ }
+            }
+        Write-Host "--- last 80 lines ---"
+        Get-Content -LiteralPath $log -Tail 80 | ForEach-Object { Write-Host $_ }
+        throw "$Label tests failed (full log kept at $log)"
+    }
+
+    if (($SkipMessage -ne "") -and (Select-String -Path $log -Pattern $SkipMessage -SimpleMatch -Quiet)) {
+        throw "$Label tests were skipped ($SkipMessage); the server is not configured (log: $log)"
+    }
+
+    foreach ($test in $Tests) {
+        if (-not (Select-String -Path $log -Pattern "--- PASS: $test " -SimpleMatch -Quiet)) {
+            throw "expected $test to run and pass (log: $log)"
+        }
+    }
+
+    Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+    Write-Host "  $Label`: $($Tests.Count) named tests ran and passed"
+}
+
+
 if (Test-Path -LiteralPath "go.mod") {
 
     if (-not (Test-CommandExists "go")) {
@@ -696,20 +811,216 @@ if (Test-Path -LiteralPath "go.mod") {
     }
     else {
 
+        # The packages `go test` and `go vet` cover. On Windows ./tests/integration cannot even be compiled (see the
+        # header of this section), so it is left out there and the omission is announced.
+        $GoPackages = @("./...")
+
+        if ($env:OS -eq "Windows_NT") {
+            $GoPackages = @(go list ./... | Where-Object { $_ -notlike "*/tests/integration" })
+            Write-Host "  NOTE  Windows: ./tests/integration does not compile here (syscall.SIGSTOP is undefined) and is not part of go test, go vet or go test -race."
+        }
+
+        # ----------------------------------------------------
+        # Fast checks (also the start of Full)
+        # ----------------------------------------------------
+
+        Invoke-Check "Go: gofmt" {
+            $unformatted = gofmt -l .
+
+            if (-not [string]::IsNullOrWhiteSpace(($unformatted -join ""))) {
+                $unformatted | ForEach-Object { Write-Host "    $_" }
+                throw "gofmt: the files above are not formatted (run gofmt -w .)"
+            }
+        }
+
+
         Invoke-Check "Go: test" {
-            go test ./...
+            go test @GoPackages
         }
 
 
         Invoke-Check "Go: vet" {
-            go vet ./...
+            go vet @GoPackages
         }
 
 
+        # ----------------------------------------------------
+        # Full checks
+        # ----------------------------------------------------
+
         if ($Mode -eq "Full") {
+
+            if (Test-CommandExists "golangci-lint") {
+                Invoke-Check "Go: golangci-lint" {
+                    golangci-lint run ./...
+                }
+            }
+            else {
+                Add-Failure `
+                    "Go: golangci-lint" `
+                    "golangci-lint is not installed (https://golangci-lint.run/welcome/install/)."
+            }
+
+
+            # The race detector needs cgo, which on Windows means a C compiler (gcc) on PATH.
+            $RaceFlags = @()
+
+            if (Test-CommandExists "gcc") {
+                $RaceFlags = @("-race")
+
+                Invoke-Check "Go: go test -race" {
+                    go test -race @GoPackages
+                }
+            }
+            else {
+                Add-Skip `
+                    "Go: go test -race" `
+                    "The race detector needs cgo and no C compiler (gcc) is on PATH; install one (for example MinGW-w64) or run it in CI. The integration and tracing tests below run without -race."
+            }
+
+
+            Invoke-Check "Go: tracing tests must run, not skip" {
+                Invoke-GoTestMustRun `
+                    -Label "tracing" `
+                    -GoArgs (@($RaceFlags) + @("-count=1", "-v", "./internal/tracing/...", "./internal/gateway/...", "./internal/mockworker/...", "./internal/config/...", "./tests/integration/...")) `
+                    -SkipMessage "" `
+                    -Tests @(
+                        "TestOneTraceAcrossGatewayAndWorker",
+                        "TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace",
+                        "TestNoSecretsInSpansAndOnlyAllowListedKeys",
+                        "TestADeadCollectorNeverTouchesRequests",
+                        "TestGatewayDoesNotDependOnOpenTelemetry",
+                        "TestExportReachesTheReceiver",
+                        "TestStreamingRequestSpanTree"
+                    )
+            }
+
+
+            # Integration needs the test servers of docs/development/ci.md. Like `quality.sh full`, an unset variable is a
+            # loud skip here (CI runs it), not a silent pass.
+            $HasPostgres = -not [string]::IsNullOrWhiteSpace($env:SERVERFLOW_TEST_POSTGRES_DSN)
+            $HasRedis = -not [string]::IsNullOrWhiteSpace($env:SERVERFLOW_TEST_REDIS_ADDR)
+            $HasKafka = -not [string]::IsNullOrWhiteSpace($env:SERVERFLOW_TEST_KAFKA_BROKERS)
+
+            if ($HasPostgres -and $HasRedis -and $HasKafka) {
+
+                Invoke-Check "Go: integration (postgres) must run, not skip" {
+                    Invoke-GoTestMustRun `
+                        -Label "postgres" `
+                        -GoArgs (@($RaceFlags) + @("-count=1", "-v", "./internal/postgres/...", "./internal/auth/...", "./cmd/admin/...", "./tests/integration/...")) `
+                        -SkipMessage "SERVERFLOW_TEST_POSTGRES_DSN is not set" `
+                        -Tests @(
+                            "TestMigrateUpCreatesSchemaAndIsIdempotent",
+                            "TestFullWorkflowAndKeyShownOnce",
+                            "TestProcessAuthEndToEnd",
+                            "TestGatewayWithRealPostgresHotPathAndFloods"
+                        )
+                }
+
+                Invoke-Check "Go: integration (redis) must run, not skip" {
+                    Invoke-GoTestMustRun `
+                        -Label "redis" `
+                        -GoArgs (@($RaceFlags) + @("-count=1", "-v", "./internal/redis/...", "./internal/ratelimit/...", "./internal/gateway/...", "./tests/integration/...")) `
+                        -SkipMessage "SERVERFLOW_TEST_REDIS_ADDR is not set" `
+                        -Tests @(
+                            "TestRunAndPingWithPassword",
+                            "TestRequestsBoundaryAgainstRedis",
+                            "TestScriptMatchesModelOnRandomSequences",
+                            "TestFailureClosedAcrossTheMatrix",
+                            "TestThreeGatewaysShareOneRequestQuota",
+                            "TestRedisFailureMatrixThroughTheGateway",
+                            "TestProcessRateLimitingEndToEnd"
+                        )
+                }
+
+                # Kafka (Phase 12). The usage tests also need the database.
+                Invoke-Check "Go: integration (kafka) must run, not skip" {
+                    Invoke-GoTestMustRun `
+                        -Label "kafka" `
+                        -GoArgs (@($RaceFlags) + @("-count=1", "-v", "./internal/kafka/...", "./internal/events/...", "./internal/usage/...", "./tests/integration/...")) `
+                        -SkipMessage "SERVERFLOW_TEST_KAFKA_BROKERS is not set" `
+                        -Tests @(
+                            "TestProducerDeliversToRealBroker",
+                            "TestBrokerOutageDoesNotBlockAndDropsAreCounted",
+                            "TestConsumerGroupCommitsAfterDatabase",
+                            "TestUsageStopAndReplay",
+                            "TestGatewayEventsEndToEnd",
+                            "TestUsageCrashBetweenDatabaseAndOffsetCommit",
+                            "TestProcessGatewaySIGTERMFlushesTheTerminalEventsOfInflightRequests",
+                            "TestProcessUsageConsumerEndToEnd"
+                        )
+                }
+
+                Invoke-Check "Go: integration (observability families) must run, not skip" {
+                    Invoke-GoTestMustRun `
+                        -Label "observability" `
+                        -GoArgs (@($RaceFlags) + @("-count=1", "-v", "./internal/observability/...")) `
+                        -SkipMessage "is not set; skipping the Redis and PostgreSQL families check" `
+                        -Tests @("TestRedisAndPostgresFamiliesAreExported")
+                }
+            }
+            else {
+                Add-Skip `
+                    "Go: integration (postgres, redis, kafka)" `
+                    "SERVERFLOW_TEST_POSTGRES_DSN, SERVERFLOW_TEST_REDIS_ADDR or SERVERFLOW_TEST_KAFKA_BROKERS is not set (see docs/development/ci.md). CI will run it."
+            }
+
+
+            Add-Skip `
+                "Go: observability (promtool)" `
+                "Not mirrored: scripts/promtool.sh is bash. Run: bash scripts/quality.sh observability"
+
+            Add-Skip `
+                "Go: deploy (hadolint, shellcheck, docker compose config)" `
+                "Not mirrored: these are bash and container checks. Run: bash scripts/quality.sh deploy"
+
 
             Invoke-Check "Go: build" {
                 go build ./...
+            }
+
+
+            foreach ($target in @("linux/amd64", "linux/arm64", "darwin/arm64", "windows/amd64")) {
+
+                $targetOS = $target.Split("/")[0]
+                $targetArch = $target.Split("/")[1]
+
+                Invoke-Check "Go: cross-compile $target" {
+                    $previousOS = $env:GOOS
+                    $previousArch = $env:GOARCH
+
+                    try {
+                        $env:GOOS = $targetOS
+                        $env:GOARCH = $targetArch
+                        go build ./...
+                    }
+                    finally {
+                        $env:GOOS = $previousOS
+                        $env:GOARCH = $previousArch
+                    }
+                }
+            }
+
+
+            Invoke-Check "Go: go mod verify" {
+                go mod verify
+            }
+
+            Invoke-Check "Go: go mod tidy (must change nothing)" {
+                go mod tidy -diff
+            }
+
+
+            # govulncheck: any called vulnerability fails (no exception list, ADR-018). This script installs nothing.
+            if (Test-CommandExists "govulncheck") {
+                Invoke-Check "Go: govulncheck" {
+                    govulncheck ./...
+                }
+            }
+            else {
+                Add-Failure `
+                    "Go: govulncheck" `
+                    "govulncheck is not installed (go install golang.org/x/vuln/cmd/govulncheck@v1.8.0)."
             }
         }
     }
