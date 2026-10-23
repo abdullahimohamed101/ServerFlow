@@ -56,7 +56,7 @@ func (m *refModel) overlay(nowMs int64, k Key, local, reported int, atMs int64) 
 		if ev.start && m.bucket(ev.ms) >= b {
 			s++
 		}
-		if !ev.start && m.bucket(ev.ms) >= b+finishLag {
+		if !ev.start && m.bucket(ev.ms) >= b+0 /* the specified rule: finishes are classified like starts; not the package constant, so changing it is detected */ {
 			f++
 		}
 	}

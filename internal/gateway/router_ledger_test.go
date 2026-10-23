@@ -800,3 +800,25 @@ func TestADeclinedHandOffLeavesTheLedgerUntouched(t *testing.T) {
 	}
 	wantTotals(t, tr, 0, 0, "after a declined hand-off")
 }
+
+// Restart detection works through the router's wiring: the registry's LastHeartbeat of a worker going backwards
+// resets that worker's history, and a refresh that carries the same heartbeat time again does not.
+func TestRouterWiringDetectsAHeartbeatGoingBackwards(t *testing.T) {
+	g := newGateWorker(t, "w1")
+	s := g.snap(2)
+	s.LastHeartbeat = time.Unix(1_700_000_100, 0)
+	e := newResEnv(t, []protocol.WorkerSnapshot{s}, noBreaker)
+	tr := withLedger(t, e.regEnv)
+	e.clock.Advance(time.Second)
+	e.refresh(t) // the same heartbeat time again
+	if tr.Stats().Resets != 0 {
+		t.Fatalf("resets %d after an unchanged heartbeat", tr.Stats().Resets)
+	}
+	s.LastHeartbeat = time.Unix(1_700_000_050, 0)
+	e.lister.set([]protocol.WorkerSnapshot{s}, nil)
+	e.clock.Advance(time.Second)
+	e.refresh(t)
+	if tr.Stats().Resets != 1 {
+		t.Fatalf("resets %d, want 1 after the heartbeat went backwards", tr.Stats().Resets)
+	}
+}

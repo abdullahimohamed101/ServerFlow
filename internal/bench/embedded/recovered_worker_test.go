@@ -46,7 +46,8 @@ const (
 // (TestStaleHighReportNoLongerHidesAnEmptiedWorker); this test is the real-time measurement. It is sensitive to a
 // starved machine (a test goroutine that is not scheduled for a second misses the heartbeat window it is built
 // around), so: a repetition whose abandonment came more than e0MaxGap after the heartbeat it relies on is not valid
-// by construction and is repeated (at most e0Attempts times in all); the assertions are on the medians of the valid
+// by construction and is repeated (the rule does not exclude a heartbeat that lands just after the abandonment,
+// which makes a `max` repetition answer early; the median assertion absorbs it) (at most e0Attempts times in all); the assertions are on the medians of the valid
 // repetitions. Numbers from it are simulator results from an idle machine, not hardware results.
 const (
 	e0Reps     = 5

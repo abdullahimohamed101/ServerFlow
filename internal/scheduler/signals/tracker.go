@@ -290,9 +290,10 @@ func (t *Tracker) Overlay(now time.Time, in Input) Result {
 		return res
 	}
 	b := t.bucket(at)
-	started, ok1 := e.hist.since(b, true)
-	finished, ok2 := e.hist.since(b+finishLag, false)
-	if !ok1 || !ok2 {
+	// finishLag is 0, so one pivot serves both counts and one check covers both.
+	started, ok := e.hist.since(b, true)
+	finished, _ := e.hist.since(b+finishLag, false)
+	if !ok {
 		res.Fallback = FallbackHistory
 		t.stats.FallbackHistory++
 		return res

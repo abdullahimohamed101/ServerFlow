@@ -3,8 +3,10 @@ package signals
 import (
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,6 +25,8 @@ var (
 	bannedTime = map[string]bool{
 		"Now": true, "Since": true, "Until": true, "Sleep": true, "After": true, "AfterFunc": true,
 		"NewTimer": true, "NewTicker": true, "Tick": true,
+		// the local time zone and zone database lookups read the environment and the file system
+		"Local": true, "LoadLocation": true, "LoadLocationFromTZData": true,
 	}
 )
 
@@ -55,8 +59,30 @@ func purityViolations(name string, src any) []string {
 			local[name] = path
 		}
 	}
+	// Types, to see through a channel that comes from an allowed package (for example a timer's C field). The
+	// protocol package cannot always be resolved from here; errors are ignored, and a range expression whose type
+	// is unknown is not flagged by this check (the import allowlist and the name bans still apply).
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil), Error: func(error) {}}
+	_, _ = conf.Check("signals", fset, []*ast.File{f}, info)
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
+		case *ast.RangeStmt:
+			if tv, ok := info.Types[x.X]; ok && tv.Type != nil {
+				if _, isChan := tv.Type.Underlying().(*types.Chan); isChan {
+					add(x.Pos(), "range over a channel")
+				}
+			}
+		case *ast.CallExpr:
+			if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
+				if sel.Sel.Name == "Go" { // sync.WaitGroup.Go (Go 1.25) and any other method that starts a goroutine
+					add(x.Pos(), "call of a method named Go starts a goroutine")
+				}
+				// Calls through the protocol package: only type references and constants are expected from it.
+				if id, ok := sel.X.(*ast.Ident); ok && id.Obj == nil && local[id.Name] == "serverflow/pkg/protocol" {
+					add(x.Pos(), "protocol.%s is called: the package may be used for types and constants only", sel.Sel.Name)
+				}
+			}
 		case *ast.GoStmt:
 			add(x.Pos(), "go statement")
 		case *ast.SelectStmt:

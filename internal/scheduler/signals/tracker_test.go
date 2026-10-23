@@ -59,7 +59,7 @@ func TestOverlayCases(t *testing.T) {
 		{name: "a finish in the report's own bucket counts as after the report (may under-count by one; the local floor bounds it)", events: []ev{{1000, true}, {5050, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
 		{name: "the same under-count is floored by the local count", events: []ev{{1000, true}, {5050, false}}, reported: 1, local: 1, reportMs: 5000, nowMs: 5800, want: 1},
 		{name: "finish in the bucket after the report's is subtracted", events: []ev{{1000, true}, {5150, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
-		{name: "finish in the bucket before the report's is not", events: []ev{{1000, true}, {4950, false}}, reported: 0, local: 0, reportMs: 5000, nowMs: 5800, want: 0},
+		{name: "finish in the bucket before the report's is not", events: []ev{{1000, true}, {4950, false}}, reported: 1, local: 0, reportMs: 5000, nowMs: 5800, want: 1},
 		{name: "start in the bucket before the report's is in reported", events: []ev{{4950, true}}, reported: 1, local: 1, reportMs: 5000, nowMs: 5800, want: 1},
 		{name: "report older than the window falls back to max", events: []ev{{1000, true}, {18000, false}}, reported: 5, local: 1, reportMs: 4000, nowMs: 17000, want: 5, wantFallback: FallbackHistory},
 		{name: "report older than the worker's history falls back to max", events: nil, reported: 3, local: 1, reportMs: -500, nowMs: 800, want: 3, wantFallback: FallbackHistory},
@@ -481,5 +481,30 @@ func TestHugeCountsAreClampedToMaxInt32(t *testing.T) {
 	seed(tr, k)
 	if got := tr.Overlay(at(1000), Input{Key: k, Local: 0, Reported: 1 << 40, At: at(900)}); got.Active != 1<<31-1 {
 		t.Fatalf("Active = %d, want MaxInt32", got.Active)
+	}
+}
+
+// The age taken from a snapshot is clamped before it becomes a duration, whatever the platform's float-to-int rules.
+func TestReportTimeClampsAbsurdAges(t *testing.T) {
+	now := at(10_000)
+	want := now.Add(-time.Duration(maxReportAge * float64(time.Second)))
+	for _, age := range []float64{maxReportAge, maxReportAge * 5, 1e10, 1e12, 1e300} {
+		if got := ReportTime(now, age); !got.Equal(want) {
+			t.Errorf("age %g: %v, want the clamped %v", age, got, want)
+		}
+	}
+	if got := ReportTime(now, maxReportAge/2); !got.Equal(now.Add(-time.Duration(maxReportAge / 2 * float64(time.Second)))) {
+		t.Errorf("an age under the clamp is exact: %v", got)
+	}
+}
+
+// Huge counts from a worker or from the router are clamped on every path, including the fallback.
+func TestHugeCountsAreClampedOnTheFallbackPath(t *testing.T) {
+	tr := newTracker()
+	for _, in := range []Input{{Key: key("none"), Local: 1 << 40, Reported: 0}, {Key: key("none"), Local: 0, Reported: 1 << 40}} {
+		in.At = at(900)
+		if got := tr.Overlay(at(1000), in); got.Active != 1<<31-1 {
+			t.Errorf("%+v: Active %d, want MaxInt32", in, got.Active)
+		}
 	}
 }

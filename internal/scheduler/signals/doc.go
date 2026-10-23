@@ -22,12 +22,12 @@
 // where "since the report" comes from the history. The report time is only known to about a bucket (round trip,
 // registry processing, the worker's sampling delay) and the history is bucketed, so starts and finishes in the
 // report's own bucket are classified alike (both as after the report): a request that starts and finishes inside
-// that bucket nets to zero. The classification can still be wrong in either direction for the requests in that one
-// bucket: a request that really started after the report but is counted as before it (or a finish that really
-// preceded the report) can make the result too low by a request or two for a moment; a request that started
-// before the report in that bucket can make it too high. The floor local bounds the low side (the gateway never
-// takes the effective load below what it knows it has sent), and the next report moves the boundary. There is no
-// "always an over-count" guarantee: an earlier version that classified finishes two buckets later gave one,
+// that bucket nets to zero. The requests in that one bucket remain ambiguous. The error is bounded: at most the number of in-flight requests that start or finish in the
+// report's own bucket (100 ms) can be mis-classified, in either direction. The floor local protects only this
+// gateway's own count: with several gateways the result can say free for a worker that is truly full, because
+// this gateway's finishes are subtracted while the other gateways' requests are invisible between reports (an
+// independent simulation measured that in a mean 4.8% of the truly-full samples, and the ledger still beat max
+// overall; see ADR-022). There is no "always an over-count" guarantee: an earlier version that classified finishes two buckets later gave one,
 // and at short request lengths made workers look full for the whole heartbeat interval. When the history cannot
 // answer (a worker the tracker has not followed since before the report, a report older than the window, a
 // history that was reset) the rule falls back to max(local, reported) and says so.

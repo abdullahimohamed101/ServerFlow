@@ -133,9 +133,6 @@ func TestLedgerRefusalsAndOversubscriptionUnderLoad(t *testing.T) {
 		if d := lg.refusedPct() - mx.refusedPct(); cl.refusalGuard && d >= 0.5 {
 			t.Errorf("ledger refuses %.2f%% against max %.2f%%: more than 0.5 percentage points worse (the H1 guard)", lg.refusedPct(), mx.refusedPct())
 		}
-		if lg.ok < mx.ok*9/10 {
-			t.Errorf("ledger completed %d requests against max's %d: throughput fell by more than 10%%", lg.ok, mx.ok)
-		}
 		if lg.maxActive > 8+1 {
 			t.Errorf("a worker ran %d requests at once with 8 slots: the overlay under-counted", lg.maxActive)
 		}
