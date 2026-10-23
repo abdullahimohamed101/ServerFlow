@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -20,6 +21,22 @@ func TestRefusedAddrRefuses(t *testing.T) {
 	}
 	if !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Fatalf("want connection refused, got %v", err)
+	}
+}
+
+// The address must lie where the kernel never allocates a port to a listener on port 0 (ephemeral ranges start at
+// 32768 on Linux and 49152 on macOS), and must be the same one every time.
+func TestRefusedAddrIsOutsideTheEphemeralRange(t *testing.T) {
+	_, port, err := net.SplitHostPort(RefusedAddr(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n >= 1024 {
+		t.Fatalf("port %q: want a privileged port, which the kernel never gives to a listener on :0", port)
+	}
+	if RefusedAddr(t) != RefusedAddr(t) {
+		t.Fatal("RefusedAddr must return the same address every time")
 	}
 }
 
