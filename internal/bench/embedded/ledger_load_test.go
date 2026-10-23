@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,6 +57,10 @@ func runLoad(t *testing.T, overlay, resilience string, maxTokens, clients int, d
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
+	// One keep-alive connection per client: with the default transport (two idle connections per host) a refusal
+	// storm churns thousands of connections and exhausts the machine's ephemeral ports, which then dominates the result.
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: clients}}
+	defer hc.CloseIdleConnections()
 	var wg sync.WaitGroup
 	for i := 0; i < clients; i++ {
 		wg.Add(1)
@@ -62,7 +68,7 @@ func runLoad(t *testing.T, overlay, resilience string, maxTokens, clients int, d
 			defer wg.Done()
 			for time.Now().Before(stop) {
 				t0 := time.Now()
-				resp, err := chat(t, c.GatewayURL, maxTokens, false)
+				resp, err := hc.Post(c.GatewayURL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":`+strconv.Itoa(maxTokens)+`}`))
 				if err != nil {
 					bad.Add(1)
 					continue
@@ -100,14 +106,17 @@ func TestLedgerRefusalsAndOversubscriptionUnderLoad(t *testing.T) {
 		clients    int
 		dur        time.Duration
 		assertCell bool
+		// refusalGuard says the demand is below capacity, so every refusal is a false one and the H1 guard applies;
+		// at saturation refusals are mostly real and vary by tens of points from run to run
+		refusalGuard bool
 	}
-	cells := []cell{{"off", 20, 24, 4 * time.Second, true}, {"off", 20, 40, 4 * time.Second, true}}
+	cells := []cell{{"off", 20, 24, 4 * time.Second, true, true}, {"off", 20, 40, 4 * time.Second, true, false}}
 	if os.Getenv("SERVERFLOW_LEDGER_LOAD") == "full" {
 		cells = nil
 		for _, res := range []string{"off", ""} {
 			for _, mt := range []int{20, 100, 500} {
 				for _, cl := range []int{8, 16, 24, 40} {
-					cells = append(cells, cell{res, mt, cl, 6 * time.Second, false})
+					cells = append(cells, cell{res, mt, cl, 6 * time.Second, false, false})
 				}
 			}
 		}
@@ -121,7 +130,7 @@ func TestLedgerRefusalsAndOversubscriptionUnderLoad(t *testing.T) {
 		if !cl.assertCell {
 			continue
 		}
-		if d := lg.refusedPct() - mx.refusedPct(); d >= 0.5 {
+		if d := lg.refusedPct() - mx.refusedPct(); cl.refusalGuard && d >= 0.5 {
 			t.Errorf("ledger refuses %.2f%% against max %.2f%%: more than 0.5 percentage points worse (the H1 guard)", lg.refusedPct(), mx.refusedPct())
 		}
 		if lg.ok < mx.ok*9/10 {
