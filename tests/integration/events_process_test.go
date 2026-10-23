@@ -62,6 +62,7 @@ func TestProcessGatewayStartsWithKafkaDownAndStopsOnTime(t *testing.T) {
 	eventually(t, 20*time.Second, func() bool {
 		return metricValue(t, metrics, `event_publish_failures_total{reason="delivery_failed"}`) > 0
 	}, "dropped events are counted as delivery failures")
+	p.waitLog(t, "kafka is unreachable")
 	if n := strings.Count(p.stderr.String(), "kafka is unreachable"); n != 1 {
 		t.Fatalf("the outage must be logged once, got %d:\n%s", n, p.stderr.String())
 	}

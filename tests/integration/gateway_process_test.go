@@ -302,9 +302,8 @@ func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
 	if retried < 25 || retried > 55 {
 		t.Fatalf("expected roughly a third to a half of the 90 requests to hit the flaky worker first: %d were retried", retried)
 	}
-	if !strings.Contains(gw.stderr.String(), `"outcome":"retried"`) || !strings.Contains(gw.stderr.String(), `"class":"status_503"`) {
-		t.Fatal("the retried attempts must be on record in the gateway log")
-	}
+	gw.waitLog(t, `"outcome":"retried"`) // the retried attempts must be on record in the gateway log
+	gw.waitLog(t, `"class":"status_503"`)
 	if strings.Contains(gw.stderr.String(), clusterToken) {
 		t.Fatal("the token leaked into the log")
 	}
@@ -318,9 +317,7 @@ func TestProcessGatewayEjectsAFlakyWorkerByDefault(t *testing.T) {
 	if retried > 10 {
 		t.Fatalf("%d of 90 requests were retried: the flaky worker should have been ejected after a few faults", retried)
 	}
-	if !strings.Contains(gw.stderr.String(), "circuit breaker changed state") {
-		t.Fatal("the breaker transition must be on record in the gateway log")
-	}
+	gw.waitLog(t, "circuit breaker changed state") // the breaker transition must be on record in the gateway log
 	if strings.Contains(gw.stderr.String(), clusterToken) {
 		t.Fatal("the token leaked into the log")
 	}
@@ -355,7 +352,5 @@ func TestProcessGatewayRetriesAroundABackendKilledMidRun(t *testing.T) {
 			t.Fatalf("request %d after the kill: %d %s", i, resp.StatusCode, body)
 		}
 	}
-	if !strings.Contains(gw.stderr.String(), `"class":"connect"`) {
-		t.Fatal("the connection failures that were retried must be on record")
-	}
+	gw.waitLog(t, `"class":"connect"`) // the connection failures that were retried must be on record
 }

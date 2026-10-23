@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"serverflow/internal/testwait"
 	"serverflow/pkg/protocol"
 )
 
@@ -172,6 +173,14 @@ func launchProc(t *testing.T, name, startMsg string, env []string, args []string
 		_ = cmd.Process.Kill()
 		return nil, fmt.Sprintf("%s did not log %q within 15s: %s", name, startMsg, p.stderr.String()), false
 	}
+}
+
+// waitLog waits until the process's stderr contains substr and returns all of it. The process writes its log
+// while the test runs and the pipe is copied by another goroutine, so a line is in the buffer some time after the
+// event it records, not with it; a log line a test depends on is waited for, not read.
+func (p *proc) waitLog(t *testing.T, substr string) string {
+	t.Helper()
+	return testwait.WaitForSubstring(t, p.stderr, substr, 10*time.Second)
 }
 
 // kill9 kills the process and waits for it to be reaped. It can be called any number of times, also after wait.
