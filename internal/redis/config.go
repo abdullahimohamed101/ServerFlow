@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -61,6 +62,15 @@ func (c Config) String() string {
 
 // GoString implements fmt.GoStringer.
 func (c Config) GoString() string { return "redis.Config" + c.String() }
+
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form; %#v keeps its GoString shape.
+func (c Config) Format(f fmt.State, verb rune) {
+	if verb == 'v' && f.Flag('#') {
+		_, _ = io.WriteString(f, c.GoString())
+		return
+	}
+	_, _ = io.WriteString(f, c.String())
+}
 
 // LogValue implements slog.LogValuer.
 func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }

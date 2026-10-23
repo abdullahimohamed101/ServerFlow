@@ -101,6 +101,12 @@ jobs:
           path: ${{ runner.temp }}/images/postgres.tar
           key: image-public.ecr.aws/docker/library/postgres:16-${{ steps.pgimg.outputs.digest }}
       - name: Start PostgreSQL
+        # Optional authenticated pull: scripts/ci-docker-pull.sh runs `docker login` only when BOTH values are non-empty. They are
+        # empty (anonymous pulls, as before) unless the repository owner creates the secrets DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN;
+        # none exists, and a pull request from a fork never receives them.
+        env:
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
         run: |
           scripts/ci-docker-pull.sh public.ecr.aws/docker/library/postgres:16 "$RUNNER_TEMP/images/postgres.tar"
           docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres public.ecr.aws/docker/library/postgres:16
@@ -121,6 +127,12 @@ jobs:
           path: ${{ runner.temp }}/images/redis.tar
           key: image-public.ecr.aws/docker/library/redis:7-${{ steps.redisimg.outputs.digest }}
       - name: Start Redis
+        # Optional authenticated pull: scripts/ci-docker-pull.sh runs `docker login` only when BOTH values are non-empty. They are
+        # empty (anonymous pulls, as before) unless the repository owner creates the secrets DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN;
+        # none exists, and a pull request from a fork never receives them.
+        env:
+          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
         run: |
           scripts/ci-docker-pull.sh public.ecr.aws/docker/library/redis:7 "$RUNNER_TEMP/images/redis.tar"
           docker run -d --name redis -p 127.0.0.1:6379:6379 public.ecr.aws/docker/library/redis:7 redis-server --requirepass "$SERVERFLOW_TEST_REDIS_PASSWORD" --save "" --appendonly no

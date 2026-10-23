@@ -112,3 +112,9 @@ limiting. The point of the phase: several gateways share one quota, and what hap
 - Redis 7 is used in CI and documentation (Redis 8 changed its license); Valkey is wire-compatible. The code uses plain commands and one Lua script.
 - Out of scope: admission control and queues (Phase 15), priority tiers (Phase 22), per-tenant metric labels (Phase 10), usage records
   (Phase 12), a response cache, Redis Cluster/Sentinel.
+
+## Amendment (Phase 14, PR A; ADR-022)
+
+The estimator described above moved, unchanged, from `internal/ratelimit` to the pure package `internal/cost`; `ratelimit.EstimateCost`, `EstimateRequestCost` and `MaxCost` delegate to it, and tests compare the delegates
+with a verbatim copy of the old code, so billing does not move. The gateway handler now computes the estimate for every request, with or without a limiter, and also passes its two parts (input tokens, output budget)
+to the scheduler on `InferenceRequest`. The limiter is charged the same number as before.

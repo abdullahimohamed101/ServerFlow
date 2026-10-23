@@ -207,7 +207,7 @@ func TestComposeLeavesNoDefaultSecrets(t *testing.T) {
 }
 
 // TestDevUpDoesNotUseComposeWait: `docker compose up --wait` fails on Compose 2.38 (the CI runner) for any service without a
-// healthcheck, and the worker agents have none; dev-up.sh waits itself.
+// healthcheck (the one-shot jobs and the admin tool have none); dev-up.sh waits itself.
 func TestDevUpDoesNotUseComposeWait(t *testing.T) {
 	for _, f := range []string{"scripts/dev-up.sh", "scripts/dev-smoke.sh", "Makefile", ".github/workflows/ci.yml", ".github/workflows/nightly.yml"} {
 		for i, line := range strings.Split(read(t, f), "\n") {

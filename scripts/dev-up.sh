@@ -433,8 +433,8 @@ cmd_up() {
     die "the image build failed (full log: $DEV_DIR/build.log)"
   fi
   say "starting"
-  # No `--wait`: Compose 2.38 (GitHub's runners) refuses it for services that have no healthcheck (the worker agents have
-  # no HTTP endpoint), Compose 5.6 tolerates that. wait_stack below does the waiting for every version.
+  # No `--wait`: Compose 2.38 (GitHub's runners) refuses it for services that have no healthcheck (the one-shot jobs have
+  # none), Compose 5.6 tolerates that. wait_stack below does the waiting for every version.
   if ! dc up -d --remove-orphans >"$DEV_DIR/up.log" 2>&1 || ! wait_stack "${DEV_UP_WAIT_TIMEOUT:-240}"; then
     tail -5 "$DEV_DIR/up.log" >&2
     wait_failed

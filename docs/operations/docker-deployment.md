@@ -152,6 +152,12 @@ development Mac (Colima), with the default heartbeat settings:
   as the agent re-registers (checked by smoke S11).
 - **Pause** (`... pause mock-worker-3`): the agent's probe times out and the worker is `FAILED` and not eligible after about 3 s (measured);
   `unpause` makes it eligible again within a few seconds. Requests during the pause all returned 200.
+- **Agent health.** Each agent serves a loopback-only status endpoint on `127.0.0.1:9102` inside its container
+  (`SERVERFLOW_WORKER_STATUS_LISTEN`, off by default in the binary, on here; see `docs/architecture/worker-lifecycle.md`) and Compose's
+  healthcheck runs the `healthcheck` binary on `/readyz`: `docker compose ps` shows an agent `healthy` once it is registered and
+  heartbeating, and `unhealthy` (after about 30 s of failed checks) when it lost its control plane, its registration or its backend, for
+  example during the `pause` and `kill mock-worker-3` drills above. Docker only reports this: nothing restarts or stops on `unhealthy`
+  (`make dev-up` does refuse to finish while a container is unhealthy). The port is not published and not reachable from other containers.
 - **Heartbeat loss.** `... kill worker-agent-3` (an `kill`, not a `stop`: a clean stop makes the agent deregister the worker at once): the
   control plane marks the worker `suspect` and not eligible after 5 s, `UNHEALTHY` after about 11 s and `LOST` after about 31 s (the default
   `worker.suspect_timeout`, `unhealthy_timeout` and `lost_timeout`); `... start worker-agent-3` re-registers it immediately.
@@ -190,5 +196,4 @@ Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose suppo
 ## What is deliberately not here
 
 TLS between services, secrets management, HA data stores, image signing or SBOMs, Kubernetes manifests (Phase 17 reuses these six images, the
-`healthcheck` binary as an exec probe and the variable names above), a liveness endpoint on the worker agent (Phase 17 decides), native Windows
-support for the scripts (use WSL2).
+`healthcheck` binary as an exec probe and the variable names above), native Windows support for the scripts (use WSL2).
