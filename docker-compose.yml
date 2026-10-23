@@ -205,7 +205,7 @@ services:
   postgres:
     <<: *hardened
     profiles: [data]
-    image: ${POSTGRES_IMAGE:-mirror.gcr.io/library/postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815}
+    image: ${POSTGRES_IMAGE:-mirror.gcr.io/library/postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36}
     user: "70:70"
     env_file: [.dev/postgres.env]
     environment:
@@ -224,7 +224,7 @@ services:
   redis:
     <<: *hardened
     profiles: [data]
-    image: ${REDIS_IMAGE:-mirror.gcr.io/library/redis:7-alpine@sha256:892022f9f18c26c92c30e15194d132f90044af87b94a491a75429bbc3982eab1}
+    image: ${REDIS_IMAGE:-mirror.gcr.io/library/redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541}
     user: "999:1000"
     env_file: [.dev/redis.env]
     # The password reaches redis-server through a config file on tmpfs, not on the command line (visible in `docker top`).
