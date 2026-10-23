@@ -15,6 +15,7 @@ import (
 
 	"serverflow/internal/bench/collect"
 	"serverflow/internal/bench/workload"
+	"serverflow/internal/testutil"
 )
 
 func wl(t *testing.T, name string, stream float64) *workload.Workload {
@@ -237,9 +238,7 @@ func TestResponseFailuresAreClassified(t *testing.T) {
 }
 
 func TestConnectionRefusedAndTimeoutAreClassified(t *testing.T) {
-	ts := httptest.NewServer(http.NotFoundHandler())
-	url := ts.URL
-	ts.Close()
+	url := "http://" + testutil.RefusedAddr(t) // refused, and never a port the kernel can give to another test
 	out, _ := Run(context.Background(), closedCfg(url, wl(t, workload.UniformShort, 0), 1, 0, 30*time.Millisecond))
 	if len(out.Records) == 0 || out.Records[0].ErrClass != ErrConnect || out.Records[0].Status != 0 {
 		t.Fatalf("%+v", out.Records)
