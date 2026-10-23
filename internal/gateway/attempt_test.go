@@ -16,6 +16,7 @@ import (
 
 	"serverflow/internal/config"
 	"serverflow/internal/scheduler"
+	"serverflow/internal/testutil"
 	"serverflow/pkg/protocol"
 )
 
@@ -71,7 +72,7 @@ func status(code int, body string) func(http.ResponseWriter, *http.Request) {
 func refusing(t *testing.T, id string) protocol.WorkerSnapshot {
 	t.Helper()
 	s := snapWorker(id, "qwen-7b", 0)
-	s.Address, s.MaxConcurrency = "http://"+holdRefusedPort(t), 8
+	s.Address, s.MaxConcurrency = "http://"+testutil.RefusedAddr(t), 8
 	return s
 }
 
