@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"serverflow/internal/testwait"
 )
 
 // fakeStore is an in-memory KeyStore that counts lookups and can be told to fail or block.
@@ -362,13 +364,7 @@ func TestMalformedKeysNeverTouchStoreOrCache(t *testing.T) {
 
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Eventually(t, 10*time.Second, cond, what)
 }
 
 func TestSingleflight(t *testing.T) {

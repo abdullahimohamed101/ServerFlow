@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"serverflow/internal/testwait"
 )
 
 // simRouter is a stand-in for the gateway router: one mutex, a slot count, and the rules the queue exists for.
@@ -143,13 +145,7 @@ func (s *simRouter) refresh(models ...string) {
 
 func waitFor(t *testing.T, d time.Duration, cond func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testwait.Eventually(t, d, cond, what)
 }
 
 // Many goroutines hammer arrivals, releases, cancellations and timeouts. Invariants: capacity is never exceeded,

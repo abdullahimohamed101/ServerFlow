@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"serverflow/internal/events/eventstest"
+	"serverflow/internal/testwait"
 	"serverflow/internal/usage"
 	"serverflow/pkg/protocol"
 )
@@ -68,12 +69,7 @@ func start(t *testing.T, b *eventstest.MemBroker, st usage.Store, group string, 
 
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Millisecond) {
-		if cond() {
-			return
-		}
-	}
-	t.Fatal("timed out: " + msg)
+	testwait.Eventually(t, 5*time.Second, cond, msg)
 }
 
 func TestOnlyTerminalEventsCreateRowsAndOffsetsPassTheRest(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"serverflow/internal/events"
 	"serverflow/internal/events/eventstest"
 	"serverflow/internal/gateway"
+	"serverflow/internal/testwait"
 	"serverflow/pkg/protocol"
 )
 
@@ -46,14 +47,7 @@ func newObs(t *testing.T, sink events.Sink, buf int) *events.Observer {
 
 func eventually(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("timed out: " + msg)
+	testwait.Eventually(t, 5*time.Second, cond, msg)
 }
 
 // drive runs one request's observer calls the way the gateway makes them.

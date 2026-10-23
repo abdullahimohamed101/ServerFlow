@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+
+	"serverflow/internal/testwait"
 )
 
 type syncBuf struct {
@@ -37,14 +39,7 @@ func emit(p *Provider, n int) {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.Eventually(t, 5*time.Second, cond, what)
 }
 
 func TestExportReachesTheReceiver(t *testing.T) {

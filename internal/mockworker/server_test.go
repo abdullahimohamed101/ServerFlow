@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"serverflow/internal/testwait"
 )
 
 type lockedBuffer struct {
@@ -115,14 +117,7 @@ func (e *env) stats(t *testing.T) Stats {
 
 func eventually(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("timed out after %v waiting for: %s", d, msg)
+	testwait.Eventually(t, d, cond, msg)
 }
 
 type sseEvent struct {
