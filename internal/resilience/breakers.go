@@ -9,6 +9,11 @@ import (
 // Member is one worker of the current registry view, as the gateway reports it to Sync.
 type Member struct {
 	Key Key
+	// Model is the model the worker serves (a worker serves one). The ejection cap is applied per model: it
+	// divides by the eligible workers of the same model and counts the open breakers of that model only, so the sole
+	// worker of a model is never ejected however many other models the gateway serves (D9). Left empty, all
+	// workers form one group.
+	Model string
 	// Eligible is true when the registry would route to the worker right now (healthy, not draining, fresh
 	// heartbeat in the aged view). Only eligible workers count towards the ejection cap (D9).
 	Eligible bool
@@ -70,7 +75,8 @@ type Breakers struct {
 
 	mu         sync.Mutex
 	byID       map[string]*breaker
-	eligible   int
+	eligible   int            // registry-eligible workers, all models (Counts)
+	eligibleBy map[string]int // registry-eligible workers per model: the ejection cap's denominator
 	suppressed uint64
 	pending    []Change
 }
@@ -137,7 +143,6 @@ func (bs *Breakers) Sync(members []Member) {
 	bs.mu.Lock()
 	defer bs.unlock()
 	keep := make(map[string]struct{}, len(members))
-	bs.eligible = 0
 	for _, m := range members {
 		keep[m.Key.ID] = struct{}{}
 		b := bs.lookup(m.Key)
@@ -146,15 +151,14 @@ func (bs *Breakers) Sync(members []Member) {
 			bs.byID[m.Key.ID] = b
 		}
 		b.eligible = m.Eligible
-		if m.Eligible {
-			bs.eligible++
-		}
+		b.model = m.Model
 	}
 	for id := range bs.byID {
 		if _, ok := keep[id]; !ok {
 			delete(bs.byID, id)
 		}
 	}
+	bs.recountEligible()
 	bs.enforceCap()
 }
 
@@ -182,34 +186,38 @@ func (bs *Breakers) Prune(keep []Key) {
 // larger worker ID) are closed first, so the longest-standing evidence is kept; a closed breaker starts with a
 // fresh window and keeps its cool-down level.
 func (bs *Breakers) enforceCap() {
-	limit := MaxOpen(bs.p.MaxOpenFraction, bs.eligible)
 	now := bs.now()
-	for {
-		var victim *breaker
-		open := 0
-		for _, b := range bs.byID {
-			if !b.eligible || b.state == Closed {
-				continue
+	for model, eligible := range bs.eligibleBy {
+		limit := MaxOpen(bs.p.MaxOpenFraction, eligible)
+		for {
+			var victim *breaker
+			open := 0
+			for _, b := range bs.byID {
+				if b.model != model || !b.eligible || b.state == Closed {
+					continue
+				}
+				open++
+				if victim == nil || b.ejectedAt.After(victim.ejectedAt) || (b.ejectedAt.Equal(victim.ejectedAt) && b.key.ID > victim.key.ID) {
+					victim = b
+				}
 			}
-			open++
-			if victim == nil || b.ejectedAt.After(victim.ejectedAt) || (b.ejectedAt.Equal(victim.ejectedAt) && b.key.ID > victim.key.ID) {
-				victim = b
+			if open <= limit || victim == nil {
+				break
 			}
+			from := victim.state
+			victim.close(now)
+			bs.emit(Change{Key: victim.key, From: from, To: Closed, Reason: ReasonCapRelaxed})
 		}
-		if open <= limit || victim == nil {
-			return
-		}
-		from := victim.state
-		victim.close(now)
-		bs.emit(Change{Key: victim.key, From: from, To: Closed, Reason: ReasonCapRelaxed})
 	}
 }
 
 func (bs *Breakers) recountEligible() {
 	bs.eligible = 0
+	bs.eligibleBy = make(map[string]int, len(bs.eligibleBy))
 	for _, b := range bs.byID {
 		if b.eligible {
 			bs.eligible++
+			bs.eligibleBy[b.model]++
 		}
 	}
 }
@@ -428,11 +436,11 @@ func (bs *Breakers) roomToOpen(b *breaker) bool {
 	}
 	open := 0
 	for _, o := range bs.byID {
-		if o.eligible && o.state != Closed {
+		if o.eligible && o.model == b.model && o.state != Closed {
 			open++
 		}
 	}
-	return open < MaxOpen(bs.p.MaxOpenFraction, bs.eligible)
+	return open < MaxOpen(bs.p.MaxOpenFraction, bs.eligibleBy[b.model])
 }
 
 // Snapshot lists the breakers that are not closed (the state gauge), after applying the lazy transitions.

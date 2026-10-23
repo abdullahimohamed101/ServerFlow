@@ -80,6 +80,7 @@ belong here (they are generated).
 | `GATEWAYS` | `1` | gateway replicas (1-8); more than 1 puts nginx in front |
 | `GATEWAY_PORT`, `CONTROL_PLANE_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`, `JAEGER_UI_PORT` | `18080`, `19090`, `19091`, `13000`, `16686` | host ports (127.0.0.1). Empty `CONTROL_PLANE_PORT=` does not publish the control plane. |
 | `SF_STRATEGY` | `round-robin` | `random`, `round-robin`, `least-active`, `least-queue` |
+| `SF_RESILIENCE_MODE` | `on` | `on` or `off`: the gateway's fault tolerance (circuit breakers, retry budget, bounded queue and shedding, drain; ADR-020, `docs/operations/resilience.md`). `off` is the kill switch; recreate the gateway after changing it. |
 | `WORKER_CONCURRENCY`, `WORKER_QUEUE` | `8`, `64` | mock worker slots and queue (12 benchmark clients overload smaller ones) |
 | `MOCK_n_TPS`, `MOCK_n_TTFT` | 100/60/20, 100ms/150ms/300ms | speed and time to first token of worker n |
 | `MOCK_n_FAILURE_RATE`, `MOCK_n_FAILURE_MODE`, `MOCK_n_STARTUP_DELAY`, `MOCK_n_SEED` | 0, `error`, 0s, n | failure injection (modes: `error`, `unavailable`, `drop`, `midstream`) |
@@ -122,7 +123,7 @@ on a failure and never prints a key, token or password. Every wait is a poll wit
 | S5 | 24 requests reach at least two workers (`scheduler_selections_total` in Prometheus) |
 | S6 | a throwaway tenant limited to 3 requests per minute gets 200 200 200 then 429 with `Retry-After` |
 | S7 | Prometheus reports the gateway(s), control plane and three mock workers up, and requests counted |
-| S8 | Grafana is healthy and the four dashboards exist |
+| S8 | Grafana is healthy and the five dashboards exist (the four of spec section 30 and `sf-resilience`) |
 | S9 | usage rows for tenant `dev` appear (Redpanda to PostgreSQL) |
 | S10 | one Jaeger trace holds gateway and mock-worker spans |
 | S11 | `kill mock-worker-3`: it leaves the pool, requests stay 200, and it returns after `start` |

@@ -1,0 +1,47 @@
+{
+ "requests": [
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=false",
+   "status": 200,
+   "headers": {
+    "Content-Length": "69",
+    "Content-Type": "application/json"
+   },
+   "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}"
+  },
+  {
+   "request": "POST /v1/chat/completions model=qwen-7b stream=true",
+   "status": 200,
+   "headers": {
+    "Cache-Control": "no-cache",
+    "Content-Type": "text/event-stream",
+    "X-Accel-Buffering": "no"
+   },
+   "body": "data: {\"worker\":\"static\",\"i\":0}\n\ndata: {\"worker\":\"static\",\"i\":1}\n\ndata: {\"worker\":\"static\",\"i\":2}\n\ndata: [DONE]\n\n"
+  }
+ ],
+ "series": [
+  "auth_rejections_total{status=401} counter 0",
+  "auth_rejections_total{status=403} counter 0",
+  "auth_rejections_total{status=500} counter 0",
+  "auth_rejections_total{status=503} counter 0",
+  "inference_gateway_overhead_seconds{model=qwen-7b} histogram count=2",
+  "inference_request_duration_seconds{model=qwen-7b} histogram count=2",
+  "inference_requests_active{} gauge 0",
+  "inference_requests_total{model=qwen-7b,status=200} counter 2",
+  "inference_ttft_seconds{model=qwen-7b} histogram count=1",
+  "rate_limit_bypassed_total{} counter 0",
+  "rate_limit_decision_seconds{} histogram count=0",
+  "rate_limit_rejections_total{limit=concurrency} counter 0",
+  "rate_limit_rejections_total{limit=model} counter 0",
+  "rate_limit_rejections_total{limit=requests} counter 0",
+  "rate_limit_rejections_total{limit=tokens} counter 0",
+  "rate_limit_rejections_total{limit=unavailable} counter 0",
+  "scheduler_ineligible_selections_total{} counter 0",
+  "serverflow_build_info{commit=unknown,go_version=GOVERSION,version=unknown} gauge 1"
+ ],
+ "logs": [
+  "{\"attempt_id\":\"\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":200,\"stream\":false}",
+  "{\"attempt_id\":\"\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\",\"status\":200,\"stream\":true}"
+ ]
+}

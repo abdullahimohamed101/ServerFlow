@@ -97,6 +97,7 @@ const jitterSpan = 0.2
 // breaker is one worker's state machine. All methods run under Breakers.mu.
 type breaker struct {
 	key      Key
+	model    string // the ejection-cap group (Member.Model)
 	eligible bool
 	state    State
 

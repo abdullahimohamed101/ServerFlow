@@ -200,6 +200,40 @@ func TestTheEjectionCapKeepsOneOfTwoWorkersAndASingleWorkerNeverOpens(t *testing
 	}
 }
 
+// The ejection cap is per model (D9): a model with one worker keeps it in service however many workers the gateway's other
+// models have, while a model with three workers can lose one but not two. (Before this was fixed the cap divided by every
+// eligible worker of the gateway, so the sole worker of a model in a larger fleet could be ejected and its model answered
+// NO_CAPACITY until the cool-down ended.)
+func TestTheEjectionCapIsPerModel(t *testing.T) {
+	flag := &workerFlag{}
+	flag.set(openAPI503("mock_failure"))
+	solo := newScriptWorker(t, "solo", flag.serve)
+	var ws []protocol.WorkerSnapshot
+	ws = append(ws, solo.snapshot("qwen-7b"))
+	for _, id := range []string{"t-1", "t-2", "t-3"} {
+		ws = append(ws, newScriptWorker(t, id, flag.serve).snapshot("llama-8b"))
+	}
+	e := newResEnv(t, ws)
+	for i := 0; i < 30; i++ {
+		if resp, _ := e.chat(t, "qwen-7b"); resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("request %d: status %d, want the worker's own 503 (it is the only worker)", i, resp.StatusCode)
+		}
+		e.chat(t, "llama-8b")
+	}
+	if st := e.state("solo"); st != resilience.Closed {
+		t.Fatalf("the sole worker of qwen-7b is %v: the cap must be per model", st)
+	}
+	open := 0
+	for _, id := range []string{"t-1", "t-2", "t-3"} {
+		if e.state(id) != resilience.Closed {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("%d of llama-8b's three workers are ejected, want exactly 1 (floor(0.5 x 3))", open)
+	}
+}
+
 // With every eligible worker ejected (fraction 1) the gateway answers 503 NO_CAPACITY at once with Retry-After
 // the time to the first probe, while /readyz does not look at breakers (D9, D10).
 func TestAllBreakersOpenAnswersFastWithRetryAfterAndReadyzIgnoresBreakers(t *testing.T) {
