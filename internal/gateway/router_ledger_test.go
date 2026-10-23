@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -719,5 +720,43 @@ func TestLoadOverlayConfigIsWiredByNewRegistry(t *testing.T) {
 		if got := gw.router.sig != nil; got != tc.want {
 			t.Fatalf("load_overlay %q: ledger enabled = %v, want %v", tc.overlay, got, tc.want)
 		}
+	}
+}
+
+// BenchmarkRouteLedger is BenchmarkRoute with the ledger overlay on (plan D18 budget for decisions: 25 us at 50
+// workers, 400 us at 1,000). The workers carry a report so the overlay does its history lookups, and every
+// iteration is a reserve plus a release (a start and a finish in the history).
+func BenchmarkRouteLedger(b *testing.B) {
+	for _, n := range []int{3, 50, 1000} {
+		b.Run("w"+strconv.Itoa(n), func(b *testing.B) {
+			var ws []protocol.WorkerSnapshot
+			for i := 0; i < n; i++ {
+				s := snapWorker("w"+strconv.Itoa(i), "m", 0.3)
+				s.Address, s.MaxConcurrency = "http://127.0.0.1:1", 1<<30
+				s.Metrics.ActiveRequests = i % 4
+				ws = append(ws, s)
+			}
+			lister := &fakeLister{workers: ws}
+			gw, err := newRegistryServer(testConfig("http://127.0.0.1:1"), "least-active", 5*time.Second, lister, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			if err != nil {
+				b.Fatal(err)
+			}
+			gw.router.enableLedger(ledgerCfg())
+			if err := gw.router.cache.Refresh(context.Background()); err != nil {
+				b.Fatal(err)
+			}
+			req := &protocol.InferenceRequest{Model: "m", EstInputTokens: 100, EstOutputTokens: 400}
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					rt, apiErr := gw.router.Route(context.Background(), req)
+					if apiErr != nil {
+						b.Fatal(apiErr)
+					}
+					rt.release()
+				}
+			})
+		})
 	}
 }

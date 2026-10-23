@@ -124,7 +124,30 @@ API response.
 | `gateway.retry_statuses` | `[502, 503]` | worker statuses that may be retried on another worker (5xx only, at most 10) |
 | `resilience.mode` | `on` | `on` (registry mode only) adds per-worker circuit breakers, a retry budget on top of `max_attempts`, a bounded admission queue with shedding and gateway drain; `off` is the kill switch. All `resilience.*` keys: `docs/operations/resilience.md` |
 | `scheduler.strategy` | `round-robin` | random, round-robin, least-active, least-queue |
+| `scheduler.load_overlay` | `max` | how the gateway combines a worker's reported active count with its own in-flight count: `max` (the larger of the two; the original rule) or `ledger` (opt-in, see below) |
 | `worker.suspect_timeout` | `5s` | the gateway shares this with the control plane |
+
+## The load overlay: `max` and `ledger`
+
+A worker's reported active count is up to one heartbeat old (plus one registry refresh). The gateway therefore overlays what it knows itself: the requests it has in flight on the worker.
+
+- `max` (default, unchanged behaviour): effective load is `max(reported, local)`. A stale **low** report is covered by the local count. A stale **high** report is not: after this gateway
+  finishes or abandons everything it sent to a worker, the worker still looks full until its next heartbeat, so it can sit unpicked for about a heartbeat (recorded in
+  `docs/operations/resilience.md`; measured as experiment E0 below).
+- `ledger` (opt-in, Phase 14, ADR-022): effective load is `max(local, reported + started_since_report - finished_since_report)`. The gateway keeps a short, bucketed (100 ms) history of when it started and
+  finished requests per worker, and measures "since the report" from the gateway-local time the report was made (snapshot fetch time minus the worker's heartbeat age). It never returns less than the local
+  count. When the history cannot answer (the gateway has not followed the worker since before the report, the report is older than `registry_max_staleness` plus one heartbeat interval, the control plane's
+  heartbeat time for the worker went backwards, or more than 4,096 workers are tracked) it uses `max` for that worker. The bucket holding the report time is classified so that the error is an **over-count**,
+  never an under-count: a start in it counts as after the report, a finish in it or the next bucket as before it. Requests shorter than a bucket that start and finish around a report therefore keep a worker
+  slightly fuller than it is until the next report (about the number of such requests in 0.2 s); at high rates of very short requests this can make a nearly full worker look full.
+- The same function answers the scheduler's capacity check (`reserve`) and the admission queue's free-slot count (`freeSlots`), each with the instant of its own snapshot view, so the two never disagree about
+  whether a worker has room. The overlay changes `ActiveRequests` for **all** strategies.
+- With `ledger` on, the gateway also keeps a ledger of the estimated token cost (`input + max_tokens`, the same estimate the rate limiter uses) of its in-flight requests per worker and puts it, with the
+  effective active count, on the private snapshot copy the strategies see (`WorkerSnapshot.Observed`, never serialised). The strategies of Phase 5 ignore it; the token-aware strategies of a later change read it.
+  A slot handed to a queued request by the admission queue carries no cost until the request that receives it adds its own; for those microseconds the ledger undercounts by one request (admission uses slot counts, so
+  nothing is over-admitted).
+- E0, the recovered-worker experiment (`internal/bench/embedded/recovered_worker_test.go`): two workers, the stuck requests of one abandoned by the client, a probe sent at once. Embedded cluster
+  (heartbeat 1 s, refresh 100 ms): the probe waits about 0.8 s under `max` and is served in about 15 ms under `ledger`.
 
 ## Operating notes
 
