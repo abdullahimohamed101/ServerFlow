@@ -183,14 +183,41 @@ func (p *proc) wait(t *testing.T, d time.Duration) error {
 	}
 }
 
+// handedOut is every port freePort has returned in this test binary. The kernel is free to give the same
+// ephemeral port to two bind(0) calls in a row once the first listener is closed (Linux does, about once in
+// 2000 triples measured), and the processes a test starts hold their port for the rest of the test, so a
+// port returned twice means the second process dies with "address already in use" however often it is
+// retried.
+var (
+	handedOutMu sync.Mutex
+	handedOut   = map[string]bool{}
+)
+
 func freePort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	return pickPort(t, func() string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = ln.Close() }()
+		return ln.Addr().String()
+	})
+}
+
+// pickPort asks next for a free address until it returns one that was not handed out before.
+func pickPort(t *testing.T, next func() string) string {
+	t.Helper()
+	handedOutMu.Lock()
+	defer handedOutMu.Unlock()
+	for range 1000 {
+		if addr := next(); !handedOut[addr] {
+			handedOut[addr] = true
+			return addr
+		}
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().String()
+	t.Fatal("the kernel keeps returning ports that were already handed out")
+	return ""
 }
 
 // clusterEnv is the environment shared by the control plane and agents, with
@@ -734,5 +761,55 @@ func TestStartProcRetriesWhenItsPortIsBrieflyTaken(t *testing.T) {
 	cp := startControlPlaneProc(t, cpAddr, clusterToken)
 	if cp.addr == "" {
 		t.Fatal("the control plane started without reporting an address")
+	}
+}
+
+// A port the kernel hands out a second time (it does, once the first listener is closed) is never returned
+// again: the first holder is still running.
+func TestFreePortNeverReturnsAPortTwice(t *testing.T) {
+	// Made-up addresses on ports below the ephemeral range: the process-wide registry is shared with every other test of
+	// this binary, and a made-up port inside the kernel's ephemeral range (32768 and up on Linux) can already have been
+	// handed out to a real test, which made this test panic once on CI (run 39957...: the sequence ran out).
+	a, b, c := "127.0.0.1:41", "127.0.0.1:42", "127.0.0.1:43"
+	seq := []string{a, a, b, a, c}
+	next := func() string {
+		if len(seq) == 0 {
+			t.Fatal("pickPort asked for more candidates than the test supplied")
+		}
+		x := seq[0]
+		seq = seq[1:]
+		return x
+	}
+	t.Cleanup(func() { // the registry is process-wide (and -count repeats this test): forget the made-up ports
+		handedOutMu.Lock()
+		defer handedOutMu.Unlock()
+		for _, x := range []string{a, b, c} {
+			delete(handedOut, x)
+		}
+	})
+	got := []string{pickPort(t, next), pickPort(t, next), pickPort(t, next)}
+	want := []string{a, b, c}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// refusedAddr is an address nothing listens on. Binding a port and closing it again does not make one: the kernel
+// hands a just-closed port to the next listener that asks for any port (Linux does), and a test that starts a
+// server after taking its "closed" address finds that server answering (run 39884944207: a collector the test
+// itself started received the exports meant to hit a closed port). Port 1 is below the ephemeral range, so no
+// test server is ever given it, and nothing listens there on a developer machine or a CI runner.
+func refusedAddr() string { return "127.0.0.1:1" }
+
+func TestRefusedAddrRefuses(t *testing.T) {
+	c, err := net.DialTimeout("tcp", refusedAddr(), 2*time.Second)
+	if err == nil {
+		_ = c.Close()
+		t.Fatal("something listens on " + refusedAddr() + ": pick another address that is outside the ephemeral range")
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("want connection refused, got %v", err)
 	}
 }
