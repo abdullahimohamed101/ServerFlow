@@ -463,6 +463,7 @@ func TestProcessWorkerRollUnderLoad(t *testing.T) {
 
 			// Two clients on the four slots of the one worker left serving: within the safe share (0.6), so a stale
 			// reported load cannot turn the roll into NO_CAPACITY (a known scheduler property, Phase 14).
+			cur := [2]string{"a1", "b1"} // the worker ids now serving
 			res, stop := runDrainLoad(gwAddr, 2)
 			waitFor(t, 15*time.Second, "the load to be flowing", func() bool { return res.ok.Load() >= 5 })
 			for i, next := range []string{"a2", "b2"} {
@@ -475,10 +476,25 @@ func TestProcessWorkerRollUnderLoad(t *testing.T) {
 				drained := time.Since(began)
 				start(i, next)
 				t.Logf("replacing worker %d: the old mock drained in %v, the replacement started in %v", i, drained, time.Since(began)-drained)
-				waitWorkers(t, cpAddr, clusterToken, 10*time.Second, next+" eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return ws[next].Eligible })
-				// The roll goes on once the gateway has sent the replacement its first request.
-				waitFor(t, 15*time.Second, "the gateway to route to the replacement "+next, func() bool { return completed(t, addrs[i]) > 0 })
+				prev := cur[i]
+				waitWorkers(t, cpAddr, clusterToken, 10*time.Second, next+" eligible and "+prev+" withdrawn", func(ws map[string]protocol.WorkerSnapshot) bool {
+					return ws[next].Eligible && !ws[prev].Eligible
+				})
+				cur[i] = next
+				// The next worker is replaced only when the gateway too has moved on: a few requests in a row have gone
+				// through without a retry, so it no longer offers the dead worker. (Rolling on earlier leaves the gateway
+				// two dead workers to try, which no retry can cover; that is the stale view this step waits out.)
+				retries := countRetries(t, mAddr)
+				okAt := res.ok.Load()
+				waitFor(t, 15*time.Second, "the gateway to serve requests without retries after replacing "+prev, func() bool {
+					if r := countRetries(t, mAddr); r != retries {
+						retries, okAt = r, res.ok.Load()
+						return false
+					}
+					return res.ok.Load() >= okAt+5
+				})
 			}
+			waitFor(t, 30*time.Second, "the load to complete 20 requests", func() bool { return res.ok.Load() >= 20 })
 			stop()
 			retries := countRetries(t, mAddr) - retries0
 			t.Logf("roll with announce %s: %d requests ok, %d failed, %v retries", tc.announce, res.ok.Load(), res.failed.Load(), retries)
