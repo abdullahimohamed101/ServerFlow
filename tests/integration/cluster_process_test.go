@@ -183,14 +183,41 @@ func (p *proc) wait(t *testing.T, d time.Duration) error {
 	}
 }
 
+// handedOut is every port freePort has returned in this test binary. The kernel is free to give the same
+// ephemeral port to two bind(0) calls in a row once the first listener is closed (Linux does, about once in
+// 2000 triples measured), and the processes a test starts hold their port for the rest of the test, so a
+// port returned twice means the second process dies with "address already in use" however often it is
+// retried.
+var (
+	handedOutMu sync.Mutex
+	handedOut   = map[string]bool{}
+)
+
 func freePort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	return pickPort(t, func() string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = ln.Close() }()
+		return ln.Addr().String()
+	})
+}
+
+// pickPort asks next for a free address until it returns one that was not handed out before.
+func pickPort(t *testing.T, next func() string) string {
+	t.Helper()
+	handedOutMu.Lock()
+	defer handedOutMu.Unlock()
+	for range 1000 {
+		if addr := next(); !handedOut[addr] {
+			handedOut[addr] = true
+			return addr
+		}
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().String()
+	t.Fatal("the kernel keeps returning ports that were already handed out")
+	return ""
 }
 
 // clusterEnv is the environment shared by the control plane and agents, with
@@ -734,5 +761,26 @@ func TestStartProcRetriesWhenItsPortIsBrieflyTaken(t *testing.T) {
 	cp := startControlPlaneProc(t, cpAddr, clusterToken)
 	if cp.addr == "" {
 		t.Fatal("the control plane started without reporting an address")
+	}
+}
+
+// A port the kernel hands out a second time (it does, once the first listener is closed) is never returned
+// again: the first holder is still running.
+func TestFreePortNeverReturnsAPortTwice(t *testing.T) {
+	seq := []string{"127.0.0.1:40099", "127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40099", "127.0.0.1:40101"}
+	next := func() string { a := seq[0]; seq = seq[1:]; return a }
+	t.Cleanup(func() { // the registry is process-wide (and -count repeats this test): forget the made-up ports
+		handedOutMu.Lock()
+		defer handedOutMu.Unlock()
+		for _, a := range []string{"127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40101"} {
+			delete(handedOut, a)
+		}
+	})
+	got := []string{pickPort(t, next), pickPort(t, next), pickPort(t, next)}
+	want := []string{"127.0.0.1:40099", "127.0.0.1:40100", "127.0.0.1:40101"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }
