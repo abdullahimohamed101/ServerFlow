@@ -536,6 +536,12 @@ func TestRefreshesAreCappedAtMaxLookups(t *testing.T) {
 	}
 	// Six are shed and answered from their stale copies at once; four lookups are blocked.
 	waitUntil(t, "the excess refreshes to be shed", func() bool { return len(errs) >= n-4 })
+	// The lookups run on their own goroutines, so the store's counter lags the admission decision
+	// (which is made before the caller returns): wait for the four admitted lookups to arrive
+	// rather than sampling the counter the moment the sheds are answered.
+	waitUntil(t, "the four admitted refreshes to reach the store", func() bool { return st.lookups.Load()-base >= 4 })
+	// Every request has been answered or is parked, so nothing more can be admitted: exactly the
+	// cap (not one fewer, not one more) is in the store.
 	if got := st.lookups.Load() - base; got != 4 {
 		t.Fatalf("%d concurrent refreshes reached the store, cap is 4", got)
 	}

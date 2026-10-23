@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"serverflow/internal/gateway"
 	"serverflow/internal/kafka"
 	"serverflow/internal/kafka/kafkatest"
+	"serverflow/internal/testutil"
 )
 
 // TestEventsOverhead measures what publishing lifecycle events costs the gateway (D20, acceptance 14): the same load
@@ -75,9 +75,7 @@ func TestEventsOverhead(t *testing.T) {
 			}
 		}
 	}
-	dead, _ := net.Listen("tcp", "127.0.0.1:0")
-	deadAddr := dead.Addr().String()
-	_ = dead.Close()
+	deadAddr := testutil.RefusedAddr(t)
 	downCfg := kcfg
 	downCfg.Brokers = []string{deadAddr}
 	scenarios := []scenario{

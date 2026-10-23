@@ -26,6 +26,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 
 	"serverflow/internal/events"
+	"serverflow/internal/testutil"
 )
 
 const canary = "CANARY-kafka-p4ss-91c2"
@@ -254,9 +255,7 @@ func TestHostileBrokerCannotMakeTheClientEchoThePassword(t *testing.T) {
 
 // With nothing listening, the producer still starts, never blocks, and refuses at its bound with ErrFull.
 func TestProducerStartsWithoutABrokerAndBoundsItsBuffer(t *testing.T) {
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := l.Addr().String()
-	_ = l.Close() // nothing listens here any more
+	addr := testutil.RefusedAddr(t) // nothing listens here, and the kernel never gives this port to a listener
 	var logs syncBuffer
 	p, err := NewProducer(Config{Brokers: []string{addr}, ClientID: "t", Topic: "t", MaxBufferedRecords: 50, DeliveryTimeout: time.Hour, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	if err != nil {

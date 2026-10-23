@@ -115,16 +115,38 @@ fi
 if want S4; then
   # Incremental delivery: the seconds between the first and the last data line must be well above zero. A hop that
   # buffers the response (nginx without proxy_buffering off, for example) hands over all lines at once. perl (core
-  # Time::HiRes) timestamps the lines; without perl only the chunk count and the final [DONE] are checked.
+  # Time::HiRes) timestamps each line as it reads it; without perl only the chunk count and the final [DONE] are
+  # checked.
+  #
+  # What is measured: the mock worker streams 16 tokens at 50 tokens/s, so the 19 data lines are about 15 x 20 ms =
+  # 0.3 s apart end to end; 0.08 s is a quarter of that. Two things keep a loaded machine from faking a burst. (1) curl
+  # is only started once perl is up and reading (a perl that starts after the answer has finished finds every line
+  # already waiting and stamps them all within a millisecond: the "0.000 to 0.000" seen on a loaded CI runner, with a
+  # first line at 0.000 s which no buffering hop could produce, since it would delay the first line by the whole
+  # stream). (2) A client that is not scheduled for a moment can still read lines in a batch, so a run that looks
+  # like a burst is repeated, up to three times: a hop that buffers does it every time, a stall does not.
   if command -v perl >/dev/null 2>&1; then
-    gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions" |
-      perl -MTime::HiRes=time -ne 'BEGIN{$t0=time} if (/^data:/) {$n++; $f//=time-$t0; $l=time-$t0; $last=$_} END{printf "%d %.3f %.3f %s\n", $n, $f, $l, ($last =~ /\[DONE\]/ ? "done" : "open")}' >"$SCRATCH/stream.txt"
-    read -r n first last done_flag <"$SCRATCH/stream.txt"
-    gap_ok="$(awk -v f="$first" -v l="$last" 'BEGIN{print ((l - f) >= 0.08) ? "yes" : "no"}')"
-    if [ "${n:-0}" -ge 2 ] && [ "$done_flag" = "done" ] && [ "$gap_ok" = yes ]; then
+    s4_once() { # -> "N FIRST LAST done|open" on stdout
+      local ready="$SCRATCH/s4.ready"
+      rm -f "$ready"
+      {
+        until [ -e "$ready" ]; do sleep 0.02; done
+        gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions"
+      } | perl -MTime::HiRes=time -e 'BEGIN{open(R,">",$ARGV[0]) or die; close R; $t0=time} while(<STDIN>){ if (/^data:/) {$n++; $f//=time-$t0; $l=time-$t0; $last=$_} } printf "%d %.3f %.3f %s\n", $n, $f, $l, ($last =~ /\[DONE\]/ ? "done" : "open")' "$ready"
+    }
+    s4_attempts="" s4_try=0 s4_ok=no
+    while [ "$s4_try" -lt 3 ] && [ "$s4_ok" = no ]; do
+      s4_try=$((s4_try + 1))
+      s4_once >"$SCRATCH/stream.txt"
+      read -r n first last done_flag <"$SCRATCH/stream.txt"
+      s4_attempts="$s4_attempts [${n:-0} chunks, $first to $last s]"
+      gap_ok="$(awk -v f="${first:-0}" -v l="${last:-0}" 'BEGIN{print ((l - f) >= 0.08) ? "yes" : "no"}')"
+      if [ "${n:-0}" -ge 2 ] && [ "$done_flag" = "done" ] && [ "$gap_ok" = yes ]; then s4_ok=yes; fi
+    done
+    if [ "$s4_ok" = yes ]; then
       pass "S4 streaming completion: $n data chunks over $(awk -v f="$first" -v l="$last" 'BEGIN{printf "%.2f", l - f}')s, ends with [DONE], delivered incrementally"
     else
-      fail "S4 streaming completion: ${n:-0} data chunks, ends with [DONE]: $done_flag, spread between first and last chunk: $first to $last s (must be at least 0.08 s apart)"
+      fail "S4 streaming completion: ends with [DONE]: ${done_flag:-open}; spread between first and last chunk must be at least 0.08 s on one of 3 attempts:$s4_attempts"
     fi
   else
     gw_curl "$KEY" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GW/v1/chat/completions" >"$SCRATCH/stream.txt"
