@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"serverflow/internal/testutil"
 )
 
 func probe(t *testing.T, to time.Duration, args ...string) (int, string) {
@@ -83,7 +85,9 @@ func TestNonHTTPPortAndClosedPort(t *testing.T) {
 		t.Errorf("non-HTTP port: exit %d, want 1", code)
 	}
 	_ = ln.Close()
-	if code, _ := probe(t, time.Second, "http://"+addr+"/"); code != 1 {
+	// A port that was just closed is no closed port: the next test server on :0 may be given it. Probe an address the
+	// kernel never hands out instead.
+	if code, _ := probe(t, time.Second, "http://"+testutil.RefusedAddr(t)+"/"); code != 1 {
 		t.Errorf("closed port: exit %d, want 1", code)
 	}
 }
