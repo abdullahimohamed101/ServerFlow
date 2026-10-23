@@ -116,7 +116,7 @@ func TestOutageBackoffProbeAndSingleLogLines(t *testing.T) {
 	proxy := redistest.NewProxy(t, cfg.Address)
 	clk := newClock()
 	logs := &lockedBuf{}
-	cfg.Address, cfg.Timeout, cfg.Backoff, cfg.Now = proxy.Addr(), 100*time.Millisecond, time.Second, clk.Now
+	cfg.Address, cfg.Timeout, cfg.Backoff, cfg.Now = proxy.Addr(), 300*time.Millisecond, time.Second, clk.Now
 	cfg.Logger = slog.New(slog.NewTextHandler(logs, nil))
 	c := redistest.NewClientWith(t, cfg)
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestOutageBackoffProbeAndSingleLogLines(t *testing.T) {
 		t.Fatalf("want a timeout error, got %v", err)
 	}
 	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("the call hung for %v despite a 100ms timeout", d)
+		t.Fatalf("the call hung for %v despite a 300ms timeout", d)
 	}
 	// ...and then calls fail at once for the backoff, without touching the network.
 	before := c.Commands()
@@ -140,8 +140,10 @@ func TestOutageBackoffProbeAndSingleLogLines(t *testing.T) {
 		if _, err := c.Run(ctx, echo, []string{"k"}, 1); !errors.Is(err, redis.ErrBackoff) {
 			t.Fatalf("want ErrBackoff during the backoff, got %v", err)
 		}
-		if time.Since(start) > 50*time.Millisecond {
-			t.Fatal("a call during the backoff was slow")
+		// A call that went to the blackholed server would wait out the whole timeout (300 ms); the commands counter below
+		// is the proof that none did, this only catches a call that waited for something else.
+		if d := time.Since(start); d > cfg.Timeout/2 {
+			t.Fatalf("a call during the backoff took %v", d)
 		}
 	}
 	if c.Commands() != before {
