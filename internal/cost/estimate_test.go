@@ -1,4 +1,4 @@
-package ratelimit
+package cost
 
 import (
 	"math"
@@ -144,5 +144,49 @@ func TestPromptIsCharged(t *testing.T) {
 	prompt := strings.Repeat("a", 3000)
 	if got, base := EstimateCost(nil, prompt, 10, 4096), EstimateCost(nil, "", 10, 4096); got-base < 1000 {
 		t.Fatalf("a 3000 byte prompt added only %d tokens", got-base)
+	}
+}
+
+func TestEstimateSplitsIntoInputAndOutputThatSumToTheTotal(t *testing.T) {
+	r := rand.New(rand.NewSource(7))
+	for i := 0; i < 20_000; i++ {
+		m := msgs(randText(r, r.Intn(300)), randText(r, r.Intn(30)))
+		prompt := randText(r, r.Intn(50))
+		body, maxTokens, limit := r.Intn(4000), r.Intn(10_000)-100, r.Intn(10_000)-100
+		if r.Intn(10) == 0 {
+			maxTokens = math.MaxInt
+		}
+		in, out := Estimate(m, prompt, body, maxTokens, limit)
+		total := EstimateRequestCost(m, prompt, body, maxTokens, limit)
+		if in < 0 || out < 0 || in+out != total || total < 1 || total > MaxCost {
+			t.Fatalf("Estimate = (%d, %d), EstimateRequestCost = %d", in, out, total)
+		}
+	}
+}
+
+func TestEstimateOutputIsTheBudgetAndInputExcludesIt(t *testing.T) {
+	in, out := Estimate(msgs("hello world"), "", 0, 100, 4096)
+	if out != 100 || in != 4+2+4+3 {
+		t.Fatalf("explicit max_tokens: input=%d output=%d", in, out)
+	}
+	if _, out = Estimate(msgs("hi"), "", 0, 0, 4096); out != 4096 {
+		t.Fatalf("absent max_tokens must use the gateway limit, got %d", out)
+	}
+	if _, out = Estimate(msgs("hi"), "", 0, -3, 0); out != 0 {
+		t.Fatalf("no budget and no limit must be 0, got %d", out)
+	}
+	in, out = Estimate(msgs("x"), "", 0, math.MaxInt, 1)
+	if in+out != MaxCost {
+		t.Fatalf("the sum must clamp to MaxCost, got %d + %d", in, out)
+	}
+}
+
+func BenchmarkEstimateRequestCost100KB(b *testing.B) {
+	text := strings.Repeat("the quick brown fox ", 5000) // 100,000 bytes
+	m := msgs(text)
+	b.SetBytes(int64(len(text)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = EstimateRequestCost(m, "", len(text)+60, 256, 4096)
 	}
 }
