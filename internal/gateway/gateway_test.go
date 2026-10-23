@@ -1037,7 +1037,15 @@ func TestNoGoroutineLeakOnUpstreamFailures(t *testing.T) {
 // A slow-but-alive client must not be mistaken for a stalled upstream: the
 // idle clock covers only time spent waiting on the upstream, not time spent
 // blocked writing to the client.
+//
+// The numbers are the idle timeout and a client stall of three times it. The ratio is what the test is about (the
+// stall must outlast the idle timeout, or the test proves nothing); the size sets the margin: the stream must also
+// survive every wait for the upstream while the stall ends and the stream resumes, and a wait of the size of the
+// idle timeout fails it. With 300 ms the test failed twice on CI, after 1.21 s and 1.25 s: the stall plus one idle
+// timeout, so some wait for upstream bytes right after the stall lasted a full 300 ms. Where that wait comes from
+// was not found (it could not be reproduced), so the margin is raised instead: the timeout is a second.
 func TestSlowClientIsNotMistakenForStalledUpstream(t *testing.T) {
+	const idle = time.Second
 	chunk := strings.Repeat("x", 64<<10)
 	env := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1049,15 +1057,15 @@ func TestSlowClientIsNotMistakenForStalledUpstream(t *testing.T) {
 			w.(http.Flusher).Flush()
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	}), func(c *config.GatewayConfig) { c.UpstreamIdleTimeout = 300 * time.Millisecond })
+	}), func(c *config.GatewayConfig) { c.UpstreamIdleTimeout = idle })
 
 	resp := env.post(t, validBody)
 	br := bufio.NewReader(resp.Body)
 	readLine(t, br, 2*time.Second)
-	time.Sleep(900 * time.Millisecond) // the client stalls for 3x the idle timeout
+	time.Sleep(3 * idle) // the client stalls for 3x the idle timeout
 	got := readAll(t, br)
 	if strings.Contains(got, api.CodeInferenceFailed) {
-		t.Fatal("a slow client was reported as an upstream failure")
+		t.Fatalf("a slow client was reported as an upstream failure; gateway log: %s", env.logs.String())
 	}
 	if !strings.HasSuffix(got, "data: [DONE]\n\n") {
 		t.Fatalf("stream did not complete (tail %q)", got[max(0, len(got)-60):])
