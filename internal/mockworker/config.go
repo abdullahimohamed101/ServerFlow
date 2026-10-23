@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"serverflow/internal/config"
+	"serverflow/internal/sim/engine"
 )
 
 // FailureMode selects how an injected failure manifests.
@@ -51,6 +52,35 @@ type Config struct {
 	// (Phase 11). TraceInsecureOK permits plaintext http:// to a non-loopback endpoint.
 	OTLPEndpoint    string
 	TraceInsecureOK bool
+
+	// ModelEngine selects how generation is timed: "" or ModelEngineSimple (the default) is the constant
+	// TTFT and per-request speed above; ModelEngineSim runs the continuous-batching simulator of
+	// internal/sim/engine (Phase 14), which ignores TTFT and TokensPerSecond. MaxConcurrency, QueueSize,
+	// OutputTokens (the mean natural output length) and Seed still apply.
+	ModelEngine string
+	// SimProfile names a built-in simulator profile and SimParamsFile a parameter file; ParseFlags
+	// resolves either into Sim. With ModelEngineSim and a nil Sim the "default" profile is used.
+	SimProfile    string
+	SimParamsFile string
+	Sim           *engine.Params
+}
+
+// Model engines.
+const (
+	ModelEngineSimple = "simple"
+	ModelEngineSim    = "sim"
+)
+
+// UsesSim reports whether the simulator engine is selected.
+func (c Config) UsesSim() bool { return c.ModelEngine == ModelEngineSim }
+
+// SimParams returns the simulator parameters in effect: Sim, or the "default" profile.
+func (c Config) SimParams() engine.Params {
+	if c.Sim != nil {
+		return *c.Sim
+	}
+	p, _ := engine.Profile("default")
+	return p
 }
 
 // Limits on flag values, to keep a typo from exhausting memory or CPU.
@@ -117,6 +147,18 @@ func (c Config) Validate() error {
 	}
 	if c.DrainAnnounce < 0 || c.DrainAnnounce > maxDrainAnnounce {
 		return fmt.Errorf("drain-announce must be in 0-%v, got %v", maxDrainAnnounce, c.DrainAnnounce)
+	}
+	switch c.ModelEngine {
+	case "", ModelEngineSimple:
+		if c.Sim != nil || c.SimProfile != "" || c.SimParamsFile != "" {
+			return fmt.Errorf("profile and sim-params need model-engine=%s", ModelEngineSim)
+		}
+	case ModelEngineSim:
+		if err := (engine.Config{Params: c.SimParams(), MaxSeqs: c.MaxConcurrency, MaxQueue: c.QueueSize, OutputMeanTokens: c.OutputTokens}).Validate(); err != nil {
+			return fmt.Errorf("model-engine sim: %w", err)
+		}
+	default:
+		return fmt.Errorf("model-engine %q is not supported (%s, %s)", c.ModelEngine, ModelEngineSimple, ModelEngineSim)
 	}
 	if c.OTLPEndpoint != "" {
 		if err := config.CheckTraceEndpoint(c.OTLPEndpoint, c.TraceInsecureOK); err != nil {

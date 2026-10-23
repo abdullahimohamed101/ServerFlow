@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +80,10 @@ func TestConcurrentFlushersDeliverEveryTransitionOnceAndInOrder(t *testing.T) {
 					return
 				default:
 					e.rs.flush()
+					// Yield: with more spinning flushers than processors (GOMAXPROCS is 2 to 4 on a CI runner),
+					// the goroutine that sleeps inside the slow observer only gets a processor back when the
+					// scheduler preempts a spinner (about 10 ms), so 400 deliveries took 10 s and more.
+					runtime.Gosched()
 				}
 			}
 		}()

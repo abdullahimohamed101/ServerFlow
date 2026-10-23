@@ -65,6 +65,11 @@ func (t TracingConfig) String() string {
 // GoString implements fmt.GoStringer.
 func (t TracingConfig) GoString() string { return "config.TracingConfig" + t.String() }
 
+// Format implements fmt.Formatter, so every verb (%d and %t included) prints the redacted form.
+func (t TracingConfig) Format(f fmt.State, verb rune) {
+	writeRedacted(f, verb, t.String(), t.GoString())
+}
+
 // LogValue implements slog.LogValuer.
 func (t TracingConfig) LogValue() slog.Value { return slog.StringValue(t.String()) }
 

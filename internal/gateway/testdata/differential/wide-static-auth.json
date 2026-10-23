@@ -1,0 +1,492 @@
+{
+  "variant": "wide-static-auth",
+  "steps": [
+    {
+      "name": "body-at-cap",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "<1048576 bytes sha256=a69f58248343910e7ae8f46790a5e54478175c10da8fcca48cf5c389ee03d9fe>",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "body-over-cap",
+      "status": 413,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"request body exceeds the maximum allowed size\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":413,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-0",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens--1",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-1",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-256",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":256}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-257",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":257}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-4096",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4096}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-4097",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-9223372036854775807",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-4294967296",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-1.5",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` has the wrong type\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-\"12\"",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_tokens` has the wrong type\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-tokens-null",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":null}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "max-completion-tokens-0",
+      "status": 400,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"`max_completion_tokens` must be between 1 and 4096\",\"type\":\"invalid_request_error\",\"code\":\"INVALID_REQUEST\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"INVALID_REQUEST\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":400,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "both-token-fields",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":10,\"max_completion_tokens\":300}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "plain",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"worker\":\"static\",\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}",
+      "worker_hits": [
+        {
+          "worker": "static",
+          "body": "{\"model\":\"qwen-7b\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+          "headers": {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "X-Request-Id": "<req-id>"
+          }
+        }
+      ],
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"attempt_id\":\"\\u003catt-id\\u003e\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"POST\",\"model\":\"qwen-7b\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"stream\":false,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "noauth-plain",
+      "status": 401,
+      "headers": {
+        "Content-Type": "application/json",
+        "Www-Authenticate": "Bearer",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"invalid or missing API key\",\"type\":\"invalid_request_error\",\"code\":\"UNAUTHORIZED\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"auth_failure\":\"missing\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"UNAUTHORIZED\",\"level\":\"INFO\",\"method\":\"POST\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":401,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "badkey-plain",
+      "status": 401,
+      "headers": {
+        "Content-Type": "application/json",
+        "Www-Authenticate": "Bearer",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"error\":{\"message\":\"invalid or missing API key\",\"type\":\"invalid_request_error\",\"code\":\"UNAUTHORIZED\"}}",
+      "worker_hits": null,
+      "logs": [
+        "{\"auth_failure\":\"invalid\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"error_code\":\"UNAUTHORIZED\",\"level\":\"INFO\",\"method\":\"POST\",\"msg\":\"request\",\"path\":\"/v1/chat/completions\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":401,\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    },
+    {
+      "name": "get-models",
+      "status": 200,
+      "headers": {
+        "Content-Type": "application/json",
+        "X-Request-Id": "<req-id>"
+      },
+      "body": "{\"object\":\"list\",\"data\":[{\"id\":\"qwen-7b\",\"object\":\"model\",\"created\":0,\"owned_by\":\"serverflow\"}]}",
+      "worker_hits": null,
+      "logs": [
+        "{\"api_key_id\":\"key_acme\",\"duration_ms\":\"\\u003cvolatile\\u003e\",\"level\":\"INFO\",\"method\":\"GET\",\"msg\":\"request\",\"path\":\"/v1/models\",\"request_id\":\"\\u003creq-id\\u003e\",\"status\":200,\"tenant_id\":\"ten_acme\",\"time\":\"\\u003cvolatile\\u003e\"}"
+      ]
+    }
+  ],
+  "series": [
+    "auth_rejections_total{status=\"401\"}",
+    "auth_rejections_total{status=\"403\"}",
+    "auth_rejections_total{status=\"500\"}",
+    "auth_rejections_total{status=\"503\"}",
+    "inference_failures_total{model=\"unknown\",reason=\"INVALID_REQUEST\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.00025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.0025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"qwen-7b\",le=\"5e-05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.00025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.001\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.0025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.005\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_gateway_overhead_seconds_bucket{model=\"unknown\",le=\"5e-05\"}",
+    "inference_gateway_overhead_seconds_count{model=\"qwen-7b\"}",
+    "inference_gateway_overhead_seconds_count{model=\"unknown\"}",
+    "inference_gateway_overhead_seconds_sum{model=\"qwen-7b\"}",
+    "inference_gateway_overhead_seconds_sum{model=\"unknown\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.005\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"0.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"10\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"120\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"2.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"30\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"5\"}",
+    "inference_request_duration_seconds_bucket{model=\"qwen-7b\",le=\"60\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.005\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"0.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"10\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"120\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"2.5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"30\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"5\"}",
+    "inference_request_duration_seconds_bucket{model=\"unknown\",le=\"60\"}",
+    "inference_request_duration_seconds_count{model=\"qwen-7b\"}",
+    "inference_request_duration_seconds_count{model=\"unknown\"}",
+    "inference_request_duration_seconds_sum{model=\"qwen-7b\"}",
+    "inference_request_duration_seconds_sum{model=\"unknown\"}",
+    "inference_requests_active",
+    "inference_requests_total{model=\"qwen-7b\",status=\"200\"}",
+    "inference_requests_total{model=\"unknown\",status=\"400\"}",
+    "inference_requests_total{model=\"unknown\",status=\"413\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"+Inf\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.01\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.025\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.05\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.1\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.25\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"0.5\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"1\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"10\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"2.5\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"30\"}",
+    "inference_ttft_seconds_bucket{model=\"qwen-7b\",le=\"5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"+Inf\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.01\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.025\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.05\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.1\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.25\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"0.5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"1\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"10\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"2.5\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"30\"}",
+    "inference_ttft_seconds_bucket{model=\"unknown\",le=\"5\"}",
+    "inference_ttft_seconds_count{model=\"qwen-7b\"}",
+    "inference_ttft_seconds_count{model=\"unknown\"}",
+    "inference_ttft_seconds_sum{model=\"qwen-7b\"}",
+    "inference_ttft_seconds_sum{model=\"unknown\"}",
+    "rate_limit_bypassed_total",
+    "rate_limit_decision_seconds_bucket{le=\"+Inf\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0001\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.00025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0005\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.001\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.0025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.005\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.01\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.025\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.05\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.1\"}",
+    "rate_limit_decision_seconds_bucket{le=\"0.25\"}",
+    "rate_limit_decision_seconds_count",
+    "rate_limit_decision_seconds_sum",
+    "rate_limit_rejections_total{limit=\"concurrency\"}",
+    "rate_limit_rejections_total{limit=\"model\"}",
+    "rate_limit_rejections_total{limit=\"requests\"}",
+    "rate_limit_rejections_total{limit=\"tokens\"}",
+    "rate_limit_rejections_total{limit=\"unavailable\"}",
+    "scheduler_ineligible_selections_total",
+    "serverflow_build_info{commit=\"<build>\",go_version=\"<build>\",version=\"<build>\"}"
+  ],
+  "counters": {
+    "auth_rejections_total{status=\"401\"}": "2",
+    "auth_rejections_total{status=\"403\"}": "0",
+    "auth_rejections_total{status=\"500\"}": "0",
+    "auth_rejections_total{status=\"503\"}": "0",
+    "inference_failures_total{model=\"unknown\",reason=\"INVALID_REQUEST\"}": "9",
+    "inference_requests_total{model=\"qwen-7b\",status=\"200\"}": "8",
+    "inference_requests_total{model=\"unknown\",status=\"400\"}": "8",
+    "inference_requests_total{model=\"unknown\",status=\"413\"}": "1",
+    "rate_limit_bypassed_total": "0",
+    "rate_limit_rejections_total{limit=\"concurrency\"}": "0",
+    "rate_limit_rejections_total{limit=\"model\"}": "0",
+    "rate_limit_rejections_total{limit=\"requests\"}": "0",
+    "rate_limit_rejections_total{limit=\"tokens\"}": "0",
+    "rate_limit_rejections_total{limit=\"unavailable\"}": "0",
+    "scheduler_ineligible_selections_total": "0"
+  },
+  "catalogue": "auth_rejections_total | COUNTER | Requests refused by API key authentication, by HTTP status (401, 403, 500 or 503). | labels=status | buckets=\ninference_failures_total | COUNTER | Inference requests that ended with a gateway error, by model and API error code. | labels=model,reason | buckets=\ninference_gateway_overhead_seconds | HISTOGRAM | Time from request accepted to the first dispatch to a worker (authentication, rate limit, parsing and worker selection), by model. | labels=model | buckets=5e-05,0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25,1\ninference_request_duration_seconds | HISTOGRAM | Total inference request duration as seen by the gateway. | labels=model | buckets=0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30,60,120\ninference_requests_active | GAUGE | Inference requests currently in flight. | labels= | buckets=\ninference_requests_total | COUNTER | Inference requests handled by the gateway, by model and HTTP status. | labels=model,status | buckets=\ninference_ttft_seconds | HISTOGRAM | Time from request accepted to the first streamed chunk of a streaming response. | labels=model | buckets=0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,30\nrate_limit_bypassed_total | COUNTER | Requests admitted without a rate limit check because Redis was unavailable and redis.on_failure is open. | labels= | buckets=\nrate_limit_decision_seconds | HISTOGRAM | Time the rate limiter took to decide a request. | labels= | buckets=0.0001,0.00025,0.0005,0.001,0.0025,0.005,0.01,0.025,0.05,0.1,0.25\nrate_limit_rejections_total | COUNTER | Requests refused by rate limiting, by limit: requests, tokens, concurrency, model or unavailable (the check could not be made). | labels=limit | buckets=\nscheduler_ineligible_selections_total | COUNTER | Selections of a worker the registry view did not judge eligible (not READY, or past the heartbeat bound). Must stay 0: the scheduler never routes to a known-unhealthy worker. | labels= | buckets=\nserverflow_build_info | GAUGE | A constant 1, labelled with the version, VCS revision and Go version of this binary. | labels=commit,go_version,version | buckets=\n"
+}

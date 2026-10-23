@@ -18,9 +18,10 @@ func resilienceRegistryConfig() Config {
 
 func TestResilienceDefaults(t *testing.T) {
 	r := Default().Resilience
-	// The shipped default becomes "on" in the last Phase 15 pull request; until then it is "off".
-	if r.Mode != ResilienceOff {
-		t.Errorf("mode = %q, want off until the default flip (PR G)", r.Mode)
+	// Plan D1: the shipped default is "on" (effective in registry mode only); "off" is the kill switch. Flipping this
+	// is a behaviour change for every registry-mode deployment (docs/operations/resilience.md, ADR-020 D25).
+	if r.Mode != ResilienceOn {
+		t.Errorf("mode = %q, want on (the Phase 15 default, plan D1)", r.Mode)
 	}
 	want := defaultResilience()
 	want.Breaker = ResilienceBreakerConfig{
@@ -60,6 +61,13 @@ func TestResilienceDefaults(t *testing.T) {
 	}
 }
 
+// The global cap becomes live with the default flip (D25 item 4): its default is part of the contract the documents state.
+func TestDefaultGlobalRequestCapIs1000(t *testing.T) {
+	if got := Default().Admission.MaxGlobalRequests; got != 1000 {
+		t.Errorf("admission.max_global_requests default = %d, want 1000 (README, ADR-020 and the operations guide say so)", got)
+	}
+}
+
 func TestResilienceEffective(t *testing.T) {
 	for _, tc := range []struct {
 		mode, source string
@@ -95,7 +103,8 @@ type resilienceEnvCase struct {
 }
 
 var resilienceEnvCases = []resilienceEnvCase{
-	{"MODE", "ON", func(r ResilienceConfig) bool { return r.Mode == ResilienceOn }},
+	// The default is "on", so the kill switch is the value that changes something.
+	{"MODE", "OFF", func(r ResilienceConfig) bool { return r.Mode == ResilienceOff }},
 	{"BREAKER_CONSECUTIVE_FAILURES", "7", func(r ResilienceConfig) bool { return r.Breaker.ConsecutiveFailures == 7 }},
 	{"BREAKER_FAILURE_RATIO", "0.75", func(r ResilienceConfig) bool { return r.Breaker.FailureRatio == 0.75 }},
 	{"BREAKER_MIN_VOLUME", "33", func(r ResilienceConfig) bool { return r.Breaker.MinVolume == 33 }},
@@ -238,6 +247,37 @@ resilience:
 	}
 	if r.Breaker.MinVolume != 10 { // untouched keys keep their defaults
 		t.Errorf("untouched default lost: %+v", r.Breaker)
+	}
+}
+
+// The default flip (PR G): a configuration file with no resilience section gets the feature on in registry mode, and
+// "mode: off" (or the environment) switches it off. A static-worker file is unaffected either way.
+func TestResilienceDefaultOnAndTheKillSwitch(t *testing.T) {
+	load := func(t *testing.T, body string) Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	registry := "gateway:\n  worker_source: registry\n"
+	if cfg := load(t, registry); !cfg.Resilience.Effective(cfg.Gateway.WorkerSource) {
+		t.Errorf("a registry-mode file without a resilience section must have the feature on: %+v", cfg.Resilience)
+	}
+	if cfg := load(t, registry+"resilience:\n  mode: off\n"); cfg.Resilience.Effective(cfg.Gateway.WorkerSource) {
+		t.Error("mode: off must switch the feature off")
+	}
+	if cfg := load(t, "gateway:\n  worker_source: static\n"); cfg.Resilience.Effective(cfg.Gateway.WorkerSource) {
+		t.Error("static workers: the feature is never effective")
+	}
+	t.Setenv("SERVERFLOW_RESILIENCE_MODE", "off")
+	if cfg := load(t, registry); cfg.Resilience.Effective(cfg.Gateway.WorkerSource) {
+		t.Error("SERVERFLOW_RESILIENCE_MODE=off must switch the feature off")
 	}
 }
 

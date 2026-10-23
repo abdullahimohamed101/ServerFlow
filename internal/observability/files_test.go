@@ -127,12 +127,15 @@ var requiredPanels = map[string][]string{
 	"sf-worker":           {"Queue depth", "Active requests", "GPU utilisation", "Tokens per second", "Request latency p95", "Time to first token p95", "Error rate"},
 	"sf-scheduler":        {"Routed requests per second", "Queue imbalance", "Scheduling decisions per second", "Selection distribution", "No-capacity events"},
 	"sf-model":            {"Requests per second", "Tokens per second", "Active replicas", "Queue depth", "Request latency p50 / p95 / p99", "Time to first token p95"},
+	// Phase 15 (plan D14, D24): breakers, retries, the admission queue, shedding and drain.
+	"sf-resilience": {"Circuit breakers open", "Breaker state by worker", "Breaker transitions", "Probes and held-back trips", "Retries made and denied",
+		"Admission queue depth", "Queue wait p50 / p95", "Requests shed per second", "Gateways draining", "Workers draining", "Requests shed while draining"},
 }
 
-func TestFourDashboardsWithTheSpecPanels(t *testing.T) {
+func TestFiveDashboardsWithTheSpecPanels(t *testing.T) {
 	ds := dashboards(t)
-	if len(ds) != 4 {
-		t.Fatalf("%d dashboards, want the four of spec section 30", len(ds))
+	if len(ds) != 5 {
+		t.Fatalf("%d dashboards, want the four of spec section 30 and the Phase 15 resilience dashboard", len(ds))
 	}
 	uids := map[string]string{}
 	for _, d := range ds {
@@ -213,7 +216,7 @@ func TestDashboardStructure(t *testing.T) {
 		}
 	}
 	// No dashboard may name a datasource by its display name or point at another uid.
-	for _, f := range []string{"cluster-overview", "worker", "scheduler", "model"} {
+	for _, f := range []string{"cluster-overview", "worker", "scheduler", "model", "resilience"} {
 		raw := string(read(t, "observability/grafana/dashboards/"+f+".json"))
 		if strings.Contains(raw, "ServerFlow Prometheus\"") && !strings.Contains(raw, `"regex": "/^ServerFlow Prometheus$/"`) {
 			t.Errorf("%s names the datasource inline", f)

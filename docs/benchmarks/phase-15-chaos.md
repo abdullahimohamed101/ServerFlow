@@ -1,3 +1,77 @@
+# Phase 15 — Final benchmark note (PR G): defaults on against off, and what the whole phase measured
+
+**Simulator results, not production results.** Everything here ran on one Apple M5 Pro laptop (15 CPUs, loopback, `caffeinate`), in the embedded benchmark cluster with **mock workers** (no GPU, no batching, no real network), or against the Phase 16 compose stack with mock workers. They show shapes, not capacity. The plan defines no success target, so none is asserted, and an effect is claimed only where the min-max ranges of the 3 repeats do not overlap (the Phase 7 spread rule).
+
+## Defaults on against off (PR G, the shipped default)
+
+Three groups per scenario, 3 repeats each, same seed, binaries built from `git archive` of master 16dda6b (**absent**: it has no resilience section, `--resilience off` is a no-op and the result records `absent`) and of this branch (**off**: `--resilience off`; **default = on**: no flag, so the shipped default is measured). All 36 chaos runs and 9 Run A runs of the batch are in the tables; every chaos run was valid under the gate (battery 98% falling to 76% while discharging, clock drift 0.0000 s over 5 s before the batch, no sleep or clock step, `--allow-dirty` because the archives carry no VCS stamp). Fault window, min / median / max:
+
+| scenario | group | success % (primary) | attempts per request (primary) | time to isolate s | success p95 / p99 ms | failed requests |
+|---|---|---|---|---|---|---|
+| worker-freeze (header timeout 2 s) | absent | 93.45 / 93.45 / 93.45 | 1.000 | not reached | 165 / 169 | 72 |
+| | off | 93.45 / 93.45 / 93.45 | 1.000 | not reached | 165 / 169-170 | 72 |
+| | **default** | **99.44 / 99.44 / 99.44** | 1.000 | 14.0 / 14.0 / 14.0 | 164 / 168-169 | 12 |
+| midstream | absent | 87.57 / 87.58 / 87.58 | 1.000 | not reached | 165 / 169 | 323 |
+| | off | 87.58 / 87.58 / 87.58 | 1.000 | not reached | 165 / 169 | 323 |
+| | **default** | **91.89 / 92.01 / 92.39** | 1.000 | 12.0 / 13.0 / 13.0 | 164-165 / 168-169 | 190-203 |
+| overload (48 clients on 32 slots) | absent | 67.58 / 67.90 / 67.95 | 0.675-0.678 | n/a | 163-164 / 168 | 1280-1296 |
+| | off | 62.73 / 67.97 / 68.00 | 0.626-0.679 | n/a | 163-164 / 169 | 1280-1377 |
+| | **default** | **100 / 100 / 100** | 1.000 | n/a | 227-228 / 238-239 | 0 (5379-5384 queued, deepest queue 16 of 128) |
+| drain-roll (announce 1.5 s) | absent / off / default | 100 / 100 / 100 in all three | 1.000 in all three | n/a | 164-165 / 168-169 | 0 |
+
+By the spread rule: **off agrees with master within spread on both primary measures in all four scenarios** (the behavioural check of the kill switch). Default differs from both on success in freeze, midstream and overload (ranges disjoint), on attempts per request in overload only, and not at all in drain-roll. The scenario-level reading is in the sections below; in short: a frozen worker costs 12 failures instead of 72 (the requests in flight on the worker when it froze, then ejection by the breaker), mid-stream aborts are only partly handled (the symmetric accounting makes the ratio rule slow, ADR-020), and the surplus load of the overload scenario waits in the queue instead of getting 503, at the price of about 60 ms more at p95. The overload comparison offers different loads to the groups (closed-loop clients that get a 503 back off), see the PR E caveat below.
+
+**Run A (decision D21)**: 3 workers x concurrency 4 (12 slots), 12 closed-loop clients, least-active, 30 s window, seed 1 (`benchmark run ... --allow-overload`; master and off with `--allow-errors` so the repeats run):
+
+| group | valid runs | error rate % | requests/s | latency p95 ms |
+|---|---|---|---|---|
+| absent (master) | 0 of 3 | 19.33 / 19.62 / 19.67 | 49.1 / 49.7 / 49.9 | 164.5-164.8 |
+| off (branch) | 0 of 3 | 17.99 / 18.86 / 21.16 | 46.4 / 50.2 / 52.1 | 165.3-165.4 |
+| default = on (branch) | 3 of 3 | 0 / 0 / 0 | 88.5 / 89.1 / 90.3 | 183.3-187.7 |
+
+`resilience.mode: off` **reproduces the Phase 10 Run A failure** (about 19% `NO_CAPACITY`; Phase 10 measured 19.44% with 8 clients on real worker processes) and agrees with master within spread; the default produces none, because the hand-off gives a freed slot straight to the head waiter, so the stale-load shortage no longer turns into 503. The Run A estimator problem itself is untouched (Phase 14). The load average printed at the start of the last Run A group was high (36.7, a leftover of the batch's own workers; the groups ran back to back); that group was valid and its numbers are in line with the PR E group (89-90 requests/s, 0% errors).
+
+### What is NOT shown here
+- Real workers, GPUs, batching, vLLM's real 503 vocabulary and drain behaviour; real packet loss, partitions, balancers or Kubernetes (Phase 13, 17, 18). Linux behaviour (TCP resets differ; CI only).
+- More than one gateway (each decides alone: N times the budget, N breakers, N caps), open-loop overload, a real crowd at the default cap of 1000 (no run reached it), `max_attempts` above 2, fault windows longer than 20 s against the default 10 s cool-down.
+- `worker-crash` was not repeated in this batch (the registry removes the worker before any breaker could act; the PR B baseline showed 100% success and 1.009 attempts per request and PR D changed nothing there, see below), and neither were `slow-worker`, `error-burst-*` and `conn-reset` (PR D's table below holds them, with the same off-equals-master result).
+- Time to isolate for freeze and midstream is the harness' descriptive figure and is inflated by how it counts probes (PR D section); the spec's 10 s bound is met by the breaker itself, not demonstrated by that figure. It is not asserted.
+- Latency of failures, goroutine and memory returns to baseline after chaos runs were checked in the PR D-F verification, not re-measured here.
+
+## Silent-agent detection (decision D23): the Phase 10 kill experiment, repeated
+
+Phase 10 killed a worker's agent and saw the critical alert fire 16.3 s later. Repeated on the Phase 16 compose stack (`make dev-up`, default on, one gateway, about 4 requests/s of load, Prometheus scraping the control plane every 5 s and evaluating the fleet rules every 5 s), script and raw output in `docs/benchmarks/phase-15-assets/`:
+
+| event, seconds after SIGKILL of the agent container (2 runs) | run 1 | run 2 |
+|---|---|---|
+| control plane stops offering the worker (heartbeat age passes the 5 s suspect threshold; the gateway then stops routing to it) | 4.2 | 4.1 |
+| `ServerFlowWorkerHeartbeatLate` (new warning, age above 5 s) firing | 15.4 | 15.8 |
+| `ServerFlowWorkerHeartbeatStale` (critical, age above 10 s) and `ServerFlowWorkerNotServing` firing | 20.5 | 20.9 |
+| UNHEALTHY / LOST in the registry | 9.3 / 29.1 | 9.2 / 29.0 |
+
+(Only run 1's raw data and the committed text file survive; run 2's figures were copied from its console output.) 158 of 158 requests after the kill succeeded in both runs (none needed a second attempt: the worker was already out of routing and its backend kept answering what it had). **Isolation is fast (about 4 s plus the gateway's refresh), the alerts are slow: about 11 s of scrape, evaluation and Prometheus lag sit on top of the age they test**, so the critical alert is still above the 10 s target of spec §31, as the plan said it might be; this run is 4 s slower than Phase 10's 16.3 s on a different setup (containers rather than host processes), and the cause of the extra seconds was not isolated. The warning at 5 s was added as planned (the critical alert stays at 10 s so one late heartbeat never pages; promtool cases prove it).
+With the backend frozen instead (`docker pause`, its agent still running): the agent reported FAILED 2.6 s after the pause (the control plane stopped offering the worker), `ServerFlowWorkerNotServing` fired at 10.8 s, 395 requests were sent and 5 failed: the ones already in flight on the frozen worker, which stalled until the gateway's header timeout (not retried by design; their faults later opened the breaker of the already-ejected worker). Embedded freeze (above) is the case where the agent keeps saying READY and the breaker is the only detector.
+
+## What the whole phase measured (PR B to PR F, collected; all simulator)
+
+| PR / scenario | absent (master) | default on | note |
+|---|---|---|---|
+| B baseline `worker-crash` | 100% success, 1.009 attempts/request | not repeated | registry-plus-retry, the breaker is not the detector |
+| D `worker-freeze` | 93.45% | 99.44% | repeated in this note |
+| D slow worker beyond the header timeout | 96.15% | 99.59% | |
+| D slow worker below the header timeout | 100%, 1.000 | identical | the false-positive check: no breaker opens |
+| D `error-burst-unavailable` 100% / 50% | attempts 1.333 / 1.143 | 1.005 / 1.019-1.056 | success 100% in both |
+| D always-500 worker | 74.99% | 93.40-93.78% | via the ratio rule; 500s are never retried |
+| D `midstream` | 87.58% | 91.61-91.82% (this note: 91.89-92.39%) | partly handled, ADR-020 limits |
+| D `conn-reset` | attempts 1.333 | 1.005 | |
+| E `overload` | 63.7-68.4% | 100% | p95 164 to 227 ms; closed-loop clients offered more load |
+| E Run A | 19% errors | 0% | |
+| F `drain-roll` | 100%, 1.000 | 100%, 1.000 (no announce: 1.002-1.003) | process-level rolls: worker roll 0 failed; gateway roll behind a polling balancer 0 failed with a 1 s grace, 1-5 failed with none |
+
+No scenario got worse on the two pre-registered measures. Where the feature costs something it is stated: p95 of successes rises about 60 ms in `overload` (waiting), a probe of a frozen worker can cost one client a 504, and a worker aborting 20-30% of its streams is never ejected. Invalid runs of the earlier batches are listed at the end of the PR D section; the PR G batch had none.
+
+---
+
 # Phase 15 — Chaos benchmark, PR F (drain): drain-roll and process-level rolls
 
 **Simulator results.** Embedded cluster on one Apple M5 Pro laptop (loopback, `caffeinate`, mock workers, no GPU), plus process tests on the same machine with real binaries and a test balancer. They show the shape of the drain, not production behaviour; the plan defines no success target. Battery 88% and charging, clock drift 0.0000 s over 5 s before the runs, all runs valid under the gate, load average 2.4-3.5. Raw results are in the scratchpad (not committed).
@@ -90,7 +164,7 @@ Open-loop overload, the shed path under a realistic crowd, several gateways each
 
 # Phase 15 — Chaos benchmark, PR D (circuit breakers, retry budget, first-byte deadline, failure taxonomy)
 
-Part of the seven-PR delivery of Phase 15 (plan `docs/plans/active/phase-15-fault-tolerance.md`, decisions D18 to D20). This section is **PR D**: the breaker, budget, deadline and taxonomy are wired
+Part of the seven-PR delivery of Phase 15 (plan `docs/plans/completed/phase-15-fault-tolerance.md`, decisions D18 to D20). This section is **PR D**: the breaker, budget, deadline and taxonomy are wired
 (ADR-020), and the PR B chaos harness is run on the branch with `resilience.mode` **off** and **on** against the PR B baseline of master (`docs/benchmarks/phase-15-baseline/`, resilience `absent`, commit
 92c5488). The queue, shedding, drain and the overload and drain-roll scenarios belong to PRs E and F; worker-crash is a registry-plus-retry baseline and was not repeated.
 Every number describes this machine on this day (Apple M5 Pro, 15 CPUs, loopback, mock workers); none is a capacity claim, and the plan defines no success target, so none is asserted.

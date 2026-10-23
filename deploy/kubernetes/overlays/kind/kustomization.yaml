@@ -1,0 +1,9 @@
+# The tested target: the kind cluster. `images:` is the single place that sets where ServerFlow's own images come from
+# (D5): they are built from deploy/docker/Dockerfile and loaded into the node by scripts/k8s-up.sh, never pushed. A
+# registry and a digest would be set here. PR 3 adds NodePorts, replica counts and the worker CIDR.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - {name: serverflow/admin, newTag: dev}

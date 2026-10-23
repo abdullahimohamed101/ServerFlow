@@ -253,6 +253,50 @@ tests:
             exp_annotations:
               summary: "Worker w1 has not sent a heartbeat for more than 10 s"
               runbook: "docs/operations/observability.md#runbook-worker-down"
+  # --- silent agent (Phase 15, plan D23): a warning at the suspect age (5 s), the critical alert stays at 10 s ----------------
+  - name: a worker silent for more than 5 s fires the warning only; below 5 s it does not
+    interval: 5s
+    input_series:
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w1",model="m"}', values: '1 2 3 4 5 6 7 8 9 10 11 12'}
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w2",model="m"}', values: '1 2 1 2 1 2 1 2 1 2 1 2'}
+    alert_rule_test:
+      - {eval_time: 15s, alertname: ServerFlowWorkerHeartbeatLate, exp_alerts: []} # age 4 (rules are evaluated every 15 s in this file)
+      - eval_time: 30s
+        alertname: ServerFlowWorkerHeartbeatLate
+        exp_alerts:
+          - exp_labels: {severity: warning, worker_id: w1, model: m}
+            exp_annotations:
+              summary: "Worker w1 has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+      - {eval_time: 30s, alertname: ServerFlowWorkerHeartbeatStale, exp_alerts: []} # age 7: not critical
+  - name: "the warning threshold is exactly 5 s, so an age of 5.5 s fires it and 4.5 s does not"
+    interval: 5s
+    input_series:
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w1",model="m"}', values: '4.5x12'}
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w2",model="m"}', values: '5.5x12'}
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: ServerFlowWorkerHeartbeatLate
+        exp_alerts:
+          - exp_labels: {severity: warning, worker_id: w2, model: m}
+            exp_annotations:
+              summary: "Worker w2 has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+  - name: one late heartbeat (age 7 s, then back to normal) warns for one evaluation and never pages critical
+    interval: 5s
+    input_series:
+      - {series: 'worker_heartbeat_age_seconds{worker_id="w1",model="m"}', values: '1 2 3 4 5 6 7 1 2 3 4 5'}
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: ServerFlowWorkerHeartbeatLate
+        exp_alerts:
+          - exp_labels: {severity: warning, worker_id: w1, model: m}
+            exp_annotations:
+              summary: "Worker w1 has not sent a heartbeat for more than 5 s (the gateway has stopped routing to it)"
+              runbook: "docs/operations/observability.md#runbook-worker-down"
+      - {eval_time: 45s, alertname: ServerFlowWorkerHeartbeatLate, exp_alerts: []}
+      - {eval_time: 30s, alertname: ServerFlowWorkerHeartbeatStale, exp_alerts: []}
+      - {eval_time: 60s, alertname: ServerFlowWorkerHeartbeatStale, exp_alerts: []}
   - name: a FAILED worker fires; a READY, a WARMING and an UNHEALTHY-then-recovered worker do not
     interval: 5s
     input_series:
@@ -393,3 +437,48 @@ tests:
             exp_annotations:
               summary: "Requests are waiting for a PostgreSQL connection (pool exhausted)"
               runbook: "docs/operations/observability.md#runbook-postgres-pool-exhausted"
+
+  # --- fault tolerance (Phase 15): circuit breakers and shedding -----------------------------------------------------
+  - name: a breaker that stays open for two minutes fires; the 15 s samples before the hold do not
+    interval: 15s
+    input_series:
+      - {series: 'circuit_breakers_open{instance="g1",model="m"}', values: '0x4 1x30'}
+    alert_rule_test:
+      - {eval_time: 170s, alertname: ServerFlowCircuitOpen, exp_alerts: []} # open since 60 s: held for 110 s only
+      - eval_time: 200s
+        alertname: ServerFlowCircuitOpen
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: g1, model: m}
+            exp_annotations:
+              summary: "A gateway has kept 1 circuit breaker(s) for model m open for 2 minutes: a worker is ejected from routing"
+              runbook: "docs/operations/observability.md#runbook-circuit-open"
+  - name: a one-minute ejection and a model with no open breaker raise no circuit alert
+    interval: 15s
+    input_series:
+      - {series: 'circuit_breakers_open{instance="g1",model="m"}', values: '0x4 1x4 0x30'}
+      - {series: 'circuit_breakers_open{instance="g1",model="n"}', values: '0x40'}
+    alert_rule_test:
+      - {eval_time: 5m, alertname: ServerFlowCircuitOpen, exp_alerts: []}
+      - {eval_time: 9m, alertname: ServerFlowCircuitOpen, exp_alerts: []}
+  - name: shedding at one request every five seconds for two minutes fires; a draining shed does not
+    interval: 15s
+    input_series:
+      - {series: 'admission_rejections_total{instance="g1",model="m",reason="queue_timeout"}', values: '0+3x40'}
+      - {series: 'admission_rejections_total{instance="g1",model="m",reason="draining"}', values: '0+30x40'}
+    alert_rule_test:
+      - {eval_time: 90s, alertname: ServerFlowShedding, exp_alerts: []} # not held for 2 minutes yet
+      - eval_time: 4m
+        alertname: ServerFlowShedding
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: g1, reason: queue_timeout}
+            exp_annotations:
+              summary: "A gateway is refusing requests with 503 NO_CAPACITY (reason queue_timeout) at more than one every 20 seconds"
+              runbook: "docs/operations/observability.md#runbook-shedding"
+  - name: a burst the queue absorbs, a steady shed every 30 s and a flat counter raise no shedding alert
+    interval: 15s
+    input_series:
+      - {series: 'admission_rejections_total{instance="g1",model="a",reason="queue_full"}', values: '0x4 20x40'}
+      - {series: 'admission_rejections_total{instance="g1",model="b",reason="global_limit"}', values: '0+0.5x40'} # a steady one shed every 30 s (0.033/s): continuously above zero, below the 0.05/s threshold
+    alert_rule_test:
+      - {eval_time: 3m, alertname: ServerFlowShedding, exp_alerts: []}
+      - {eval_time: 8m, alertname: ServerFlowShedding, exp_alerts: []}
