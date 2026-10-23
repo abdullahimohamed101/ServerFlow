@@ -16,6 +16,7 @@ import (
 
 	"serverflow/internal/kafka/kafkatest"
 	"serverflow/internal/mockworker"
+	"serverflow/internal/testutil"
 	"serverflow/pkg/protocol"
 )
 
@@ -51,7 +52,7 @@ func metricValue(t *testing.T, gw, prefix string) float64 {
 // outage once, and still shuts down on time on SIGTERM.
 func TestProcessGatewayStartsWithKafkaDownAndStopsOnTime(t *testing.T) {
 	mock, _ := startMock(t)
-	dead := freePort(t)                     // nothing listens here
+	dead := testutil.RefusedAddr(t)         // nothing listens here, and the kernel never gives this port to a listener
 	gw, metrics := freePort(t), freePort(t) // /metrics has a listener of its own since Phase 10
 	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL, "SERVERFLOW_EVENTS_BROKERS="+dead, "SERVERFLOW_METRICS_LISTEN="+metrics))
 	for i := 0; i < 20; i++ {
@@ -221,7 +222,7 @@ func TestProcessUsageConsumerEndToEnd(t *testing.T) {
 // the two flush bounds (spans: 5s; events: events.shutdown_flush_timeout, 2s here), not their product or never.
 func TestProcessGatewayWithDeadKafkaAndDeadCollectorStopsOnTime(t *testing.T) {
 	mock, _ := startMock(t)
-	deadKafka, deadCollector := freePort(t), freePort(t)
+	deadKafka, deadCollector := testutil.RefusedAddr(t), testutil.RefusedAddr(t)
 	gw, metrics := freePort(t), freePort(t)
 	p := startProc(t, "gateway", "gateway starting", eventsGatewayEnv(gw, mock.URL,
 		"SERVERFLOW_EVENTS_BROKERS="+deadKafka, "SERVERFLOW_METRICS_LISTEN="+metrics,
