@@ -37,6 +37,9 @@ type simDriver struct {
 type simStream struct {
 	evs    []engine.Event
 	notify chan struct{}
+	// startAt is the engine's virtual time of the request's admission (its EvStart event). The time to the first token
+	// is measured on the same clock, so a handler that wakes late on a slow machine reports the same value.
+	startAt time.Duration
 }
 
 func newSimDriver(cfg Config) *simDriver {
@@ -198,6 +201,7 @@ func (s *Server) chatSim(w http.ResponseWriter, r *http.Request, ireq *protocol.
 			return
 		}
 		if ev.Kind == engine.EvStart {
+			st.startAt = ev.At
 			break
 		}
 	}
@@ -240,7 +244,7 @@ func (s *Server) chatSim(w http.ResponseWriter, r *http.Request, ireq *protocol.
 
 // simTokens feeds emit with each token of the request as the engine produces it and returns the
 // finish reason and token count of the end of the request. A preemption only delays tokens.
-func (s *Server) simTokens(ctx context.Context, st *simStream, abortAt int, emit func(i int) error) (finish string, tokens int, err error) {
+func (s *Server) simTokens(ctx context.Context, st *simStream, abortAt int, emit func(i int, at time.Duration) error) (finish string, tokens int, err error) {
 	for {
 		ev, err := s.sim.next(ctx, st)
 		if err != nil {
@@ -252,7 +256,7 @@ func (s *Server) simTokens(ctx context.Context, st *simStream, abortAt int, emit
 				return "", 0, errMidstream
 			}
 			s.engine.RecordTokens(1)
-			if err := emit(ev.Index); err != nil {
+			if err := emit(ev.Index, ev.At); err != nil {
 				return "", 0, err
 			}
 		case engine.EvDone:
@@ -275,10 +279,11 @@ func (s *Server) simStreamResponse(w http.ResponseWriter, ctx context.Context, s
 		}
 		return rc.Flush()
 	}
-	started := time.Now()
-	finish, count, err := s.simTokens(ctx, st, abortAt, func(i int) error {
+	finish, count, err := s.simTokens(ctx, st, abortAt, func(i int, at time.Duration) error {
 		if i == 0 {
-			rl.ttftDur = time.Since(started)
+			// Virtual time from admission to the first token (prefill and the first step), not the wall time since
+			// the headers went out: a handler that wakes late would otherwise find the first token already due.
+			rl.ttftDur = max(at-st.startAt, 0)
 			rl.ttftMillis = rl.ttftDur.Milliseconds()
 			rl.firstTokenAt = time.Now()
 			if err := send(api.NewChunk(id, s.cfg.Model, created, api.Delta{Role: "assistant", Content: api.Str("")}, "")); err != nil {
@@ -302,7 +307,7 @@ func (s *Server) simStreamResponse(w http.ResponseWriter, ctx context.Context, s
 
 func (s *Server) simFullResponse(w http.ResponseWriter, ctx context.Context, st *simStream, rl *chatLog, id string, created time.Time, abortAt int) error {
 	var content strings.Builder
-	finish, count, err := s.simTokens(ctx, st, abortAt, func(i int) error { content.WriteString(tokenText(i)); return nil })
+	finish, count, err := s.simTokens(ctx, st, abortAt, func(i int, _ time.Duration) error { content.WriteString(tokenText(i)); return nil })
 	if errors.Is(err, errMidstream) {
 		// Promise a body, deliver half of it, then drop the connection.
 		body := api.NewCompletion(id, s.cfg.Model, created, content.String(), "stop",
