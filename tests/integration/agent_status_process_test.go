@@ -90,7 +90,7 @@ func TestProcessAgentStatusFollowsRegistrationAndDrain(t *testing.T) {
 	waitProbe(t, status, "/readyz", 200, 15*time.Second)
 
 	// Drain with a frozen control plane so the shutdown lasts long enough to watch.
-	_ = cp.cmd.Process.Signal(syscall.SIGSTOP)
+	freeze(t, cp.cmd.Process) // returns once the process is really stopped (kill returns when the signal is queued)
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
 	signalled := time.Now()
 	sigterm(t, agent)
@@ -164,7 +164,7 @@ func TestProcessASecondSignalForcesTheAgentWithTheStatusEndpointOn(t *testing.T)
 	agent := startStatusAgent(t, cpAddr, clusterToken, "w1", mock, status)
 	waitProbe(t, status, "/readyz", 200, 15*time.Second)
 
-	_ = cp.cmd.Process.Signal(syscall.SIGSTOP)
+	freeze(t, cp.cmd.Process) // returns once the process is really stopped (kill returns when the signal is queued)
 	t.Cleanup(func() { _ = cp.cmd.Process.Signal(syscall.SIGCONT) })
 	sigterm(t, agent)
 	time.Sleep(50 * time.Millisecond)
