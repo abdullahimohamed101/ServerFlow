@@ -1,7 +1,9 @@
 package embedded
 
 import (
+	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"sync"
@@ -42,7 +44,7 @@ func runLoad(t *testing.T, overlay, resilience string, maxTokens, clients int, d
 	go func() {
 		defer close(sampDone)
 		for time.Now().Before(stop) {
-			for _, a := range activeNow(t, c.Specs()) {
+			for _, a := range sampleActive(c.Specs()) {
 				for {
 					cur := maxActive.Load()
 					if int64(a) <= cur || maxActive.CompareAndSwap(cur, int64(a)) {
@@ -130,3 +132,25 @@ func TestLedgerRefusalsAndOversubscriptionUnderLoad(t *testing.T) {
 		}
 	}
 }
+
+// sampleActive reads each worker's active-request count, ignoring a worker that cannot be reached right now (a
+// refusal storm can use up the machine's ephemeral ports; a sample is optional, the load is not).
+func sampleActive(specs []WorkerSpec) []int {
+	out := make([]int, 0, len(specs))
+	for _, s := range specs {
+		resp, err := sampleClient.Get(s.URL + "/stats")
+		if err != nil {
+			continue
+		}
+		var v struct {
+			Active int `json:"active_requests"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&v) == nil {
+			out = append(out, v.Active)
+		}
+		_ = resp.Body.Close()
+	}
+	return out
+}
+
+var sampleClient = &http.Client{Timeout: time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 8}}
