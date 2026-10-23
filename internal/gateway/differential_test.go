@@ -269,6 +269,7 @@ func registryVariant(name, strategy string, reported []int, limiter bool) diffVa
 		ws = append(ws, parked)
 
 		cfg := testConfig("http://127.0.0.1:1")
+		diffGenerousTimeouts(&cfg)
 		cfg.WorkerSource = config.WorkerSourceRegistry
 		cfg.Models = nil
 		logs := &lockedBuffer{}
@@ -294,6 +295,7 @@ func staticVariant(name string, limiter bool) diffVariant {
 		up := httptest.NewServer(diffWorkerHandler("static", hits))
 		t.Cleanup(up.Close)
 		cfg := testConfig(up.URL)
+		diffGenerousTimeouts(&cfg)
 		logs := &lockedBuffer{}
 		log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		var opts []Option
@@ -484,4 +486,13 @@ func firstDifference(want, got diffRecord) string {
 		return "the series catalogue differs"
 	}
 	return "the counter values differ"
+}
+
+// diffGenerousTimeouts: no recorded step is about a timeout, so the gateway's upstream timeouts only matter as a
+// source of flakes: a 1 MiB body proxied under the race detector on a loaded runner (the nightly CPU-load job) can take
+// longer than testConfig's 2 s header timeout and turn a recorded 200 into a 504. The values are not part of any
+// recorded output.
+func diffGenerousTimeouts(cfg *config.GatewayConfig) {
+	cfg.UpstreamHeaderTimeout = 60 * time.Second
+	cfg.UpstreamIdleTimeout = 60 * time.Second
 }
