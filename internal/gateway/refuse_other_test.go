@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !linux
 
 package gateway
 
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// holdRefusedPort: where a bound-but-not-listening socket is not available, take a free port and release it. The
+// holdRefusedPort: where a bound-but-not-listening socket does not refuse (macOS: the connect hangs until the dial timeout) or is not available, take a free port and release it. The
 // port can in principle be reused by another test before the refused connection is made.
 func holdRefusedPort(t *testing.T) string {
 	t.Helper()

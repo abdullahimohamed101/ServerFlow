@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package gateway
 
@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// holdRefusedPort returns an address on which every connection is refused, and keeps the port reserved until the
-// test ends. The socket is bound but never listens: connect() gets a reset (ECONNREFUSED), and no other test's
+// holdRefusedPort (Linux) returns an address on which every connection is refused, and keeps the port reserved until the
+// test ends. The socket is bound but never listens: connect() gets a reset (ECONNREFUSED) on Linux (on macOS a connect to a bound, non-listening socket hangs until the dial timeout, so the other file keeps the old behaviour there), and no other test's
 // listener can be given the same ephemeral port, which is what happens when a closed httptest server's port is reused.
 func holdRefusedPort(t *testing.T) string {
 	t.Helper()
