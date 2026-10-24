@@ -150,5 +150,5 @@ The control plane is scraped every 5 s and the fleet rule group is evaluated eve
 Two families exist only when `scheduler.strategy` is `least-tokens` or `least-work`; every other configuration scrapes the series it did before. `scheduler_predicted_wait_seconds{model}` is a histogram (the
 `DurationBuckets`) of the wait the strategy predicted for the worker it chose, at decision time, observed once per scheduler-chosen attempt that has a capacity estimate (a slot handed over by the admission queue is
 not a scheduling decision and is not observed). `scheduler_signal_fallbacks_total{model,reason}` counts decisions in which a signal was missing for the chosen worker, with the reasons `cold_start`, `untracked` and `invalid`.
-No new label name; `model` goes through the existing cap, so the families add at most `metrics.max_models` x (1 histogram of 14 buckets plus 3 counters) series. The remaining Phase 14 instruments (prediction error, the
+No new label name; `model` goes through the existing cap, so the families add at most 20 series per model (a histogram of 14 buckets is 17 series, plus 3 counters), `metrics.max_models` models at most. The remaining Phase 14 instruments (prediction error, the
 estimated in-flight gauge, span attributes) are not part of this change. The pinned catalogue is `internal/gateway/testdata/metrics_series_workaware.golden`.
