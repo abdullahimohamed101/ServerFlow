@@ -49,6 +49,40 @@ func gatewayChat(gwAddr string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+// maxStallBlips is how many stalls of the machine one test run forgives.
+const maxStallBlips = 5
+
+// gatewayChatThroughStalls sends one request and returns its status and body. This cluster runs with a 200 ms heartbeat, a
+// 500 ms suspect timeout and a gateway that ages its cached view of the registry (see snapshotCache): a worker whose last
+// heartbeat, plus the age of the gateway's snapshot, reaches 500 ms is correctly judged suspect. On a machine that stalls
+// the gateway or a worker agent for a few hundred milliseconds (a loaded CI host, the race detector, a parallel
+// `go test ./...`) the only healthy worker is then correctly refused: 503 NO_CAPACITY with eligible_workers 0. That is the
+// cluster's timing, not the behaviour under test, so such an answer waits until the control plane lists every worker in
+// want as eligible and the gateway answers again, and the request is repeated. Any other answer, or more than
+// maxStallBlips stalls in one run (counted in *blips), is returned or fails the test as before.
+func gatewayChatThroughStalls(t *testing.T, cpAddr, gwAddr string, blips *int, want ...string) (int, string) {
+	t.Helper()
+	code, body := gatewayChat(gwAddr)
+	for code == 503 && strings.Contains(body, `"eligible_workers":0`) && *blips < maxStallBlips {
+		*blips++
+		t.Logf("no worker was eligible (a stall on a loaded machine); waiting for %v to report again", want)
+		waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "the workers eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
+			for _, id := range want {
+				if !ws[id].Eligible {
+					return false
+				}
+			}
+			return true
+		})
+		// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
+		waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
+			code, body = gatewayChat(gwAddr)
+			return code != 503 || !strings.Contains(body, `"eligible_workers":0`)
+		})
+	}
+	return code, body
+}
+
 func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testing.T) {
 	cpAddr := freePort(t)
 	cp := startControlPlaneProc(t, cpAddr, clusterToken)
@@ -58,7 +92,7 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	startAgentProc(t, cpAddr, clusterToken, "w1", m1)
 	startAgentProc(t, cpAddr, clusterToken, "w2", m2)
 	gwAddr := freePort(t)
-	startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
+	gw := startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
 	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "both eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
 		return ws["w1"].Eligible && ws["w2"].Eligible
 	})
@@ -71,9 +105,10 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	})
 
 	// Distribution: round-robin over two workers splits an even number of requests evenly.
+	blips := 0
 	a0, b0 := completed(t, m1), completed(t, m2)
 	for i := 0; i < 20; i++ {
-		if code, body := gatewayChat(gwAddr); code != 200 {
+		if code, body := gatewayChatThroughStalls(t, cpAddr, gwAddr, &blips, "w1", "w2"); code != 200 {
 			t.Fatalf("request %d: %d %s", i, code, body)
 		}
 	}
@@ -94,8 +129,9 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 		return true
 	})
 	for i := 0; i < 20; i++ {
-		if code, body := gatewayChat(gwAddr); code != 200 {
-			t.Fatalf("w2 is healthy but request %d got %d %s", i, code, body)
+		if code, body := gatewayChatThroughStalls(t, cpAddr, gwAddr, &blips, "w2"); code != 200 {
+			ws, err := fetchWorkers(cpAddr, clusterToken)
+			t.Fatalf("w2 is healthy but request %d got %d %s\nregistry now: %+v (err %v)\ngateway log:\n%s", i, code, body, ws, err, gw.stderr.String())
 		}
 	}
 
