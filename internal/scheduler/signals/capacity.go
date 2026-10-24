@@ -34,7 +34,7 @@ func (t *Tracker) sample(e *entry, m Observation, now time.Time) {
 	}
 	e.capHB = m.LastHeartbeat
 	v := m.ReportedTPS
-	if !(v >= minTPS) { // also catches NaN
+	if !(v >= minTPS) || math.IsInf(v, 0) { // the first test also catches NaN; an infinite rate is garbage, not "fast"
 		return
 	}
 	v = math.Min(v, maxTPS)
