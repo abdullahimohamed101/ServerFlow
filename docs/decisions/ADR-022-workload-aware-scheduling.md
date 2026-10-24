@@ -1,7 +1,7 @@
 # ADR-022: Workload-Aware Scheduling (Signals, Ledger Overlay, Simulator Validation)
 
 Status: Proposed, delivered in parts. Phase 14 is a sequence of pull requests (plan: `docs/plans/active/phase-14-workload-aware-scheduler.md`, decisions D1 to D29).
-This record grows with each of them. Sections are marked **[PR A]** (delivered: the seam and the estimator extraction, no behaviour change) or
+This record grows with each of them. Sections are marked **[PR A]** (delivered: the seam and the estimator extraction, no behaviour change), **[PR B]** (the signals library, the ledger and the opt-in overlay v2) or
 **[later PR]** (placeholder: the decision is in the plan, the text lands with the pull request that implements it).
 Date: 2026-10-22
 
@@ -44,9 +44,45 @@ A differential test replays a fixed request script through seven gateway set-ups
 received, what the limiter was charged, the structured logs and the Prometheus series with fixtures recorded once from unmodified master (`scripts/record-differential.sh`; the fixtures were committed before any
 production code changed). Go version, build info, IDs, ports and timing are normalised so CI on another toolchain does not differ.
 
-### [later PR] Ledger, overlay v2, signals, strategies, observability, simulator, experiments (D4 to D28)
+### [PR B] The in-flight ledger and the `ledger` load overlay (D4, D14, D17, D18)
 
-The in-flight token ledger and the opt-in `load_overlay: ledger` (PR B), `least-tokens` and `least-work` (PR C1), the simulator (PR E), the experiment framework (G-lite), the pre-registered predictions (PR I)
+`internal/scheduler/signals` (pure: standard library and `pkg/protocol` only, no clock read, no goroutine, enforced by a test) keeps per worker incarnation (worker ID and `RegisteredAt`) the number of this gateway's in-flight
+requests, their summed estimated token cost, and a bounded history of starts and finishes in 100 ms buckets (cumulative counters per non-empty bucket, so a query is a binary search whatever the rate). The `Tracker` has
+its own lock; the router calls it while holding `r.mu` (lock order router, then tracker; the tracker never calls out). Everything is opt-in: `scheduler.load_overlay` is `max` by default, the router then holds no tracker,
+runs none of this code and the differential fixtures of PR A pass unchanged.
+
+- **Ledger.** `reserve` calls `Begin` (count and history start) and `AddCost` next to `inflight[id]++`; the lease (token and cost) travels with `routed`; `release`, inside its `sync.Once`, calls `End` with exactly the cost
+  that was added, so every path that releases a slot (success, error, retry, client cancel, panic, abandoned waiter) returns the ledger to zero. The token carries the entry's generation, so a request that outlives its
+  worker's re-registration, or a pruned and re-created entry, cannot subtract from the new entry. Entries are pruned at each registry refresh when the worker (or its incarnation) leaves the snapshot, and capped at 4,096
+  workers (the others are untracked: counted, logged once, and use the `max` rule).
+- **Hand-off (the likeliest bug site).** `handoffLocked` runs under `r.mu`, knows only the model, and `internal/resilience` is untouched, so the router cannot know the head waiter's request. The `routed` created by a hand-off
+  has cost 0 (its count and history start are recorded under `r.mu`, the finished request's own entry is removed by its own `End` just before); the waiter adds its request's cost when it receives the slot
+  (`router.charge`, in `awaitSlot`, outside `r.mu`). In that window the ledger undercounts by one request and the slot count is exact, so nothing is over-admitted. A hand-off the waiter never consumes comes back through
+  `release` with cost 0 and subtracts nothing. A declined hand-off ends the token it took with nothing to subtract.
+- **Overlay v2.** `effective = max(local, reported + started_since_report - finished_since_report)`, one function (`Tracker.Overlay`) used by both `reserve` and `freeSlots`, each with the instant of its own snapshot view
+  (`snapshotCache.viewAt`), so `AtCapacity` and the queue's wake-ups cannot diverge (a randomised test fails if they do). The report time is `view time - aged heartbeat age`, which equals the snapshot's fetch time minus the
+  heartbeat age at the registry: one clock domain, no registry clock involved. Classification at the report's bucket `b`: starts and finishes in buckets `>= b` both count as after the report. The report time
+  is only known to about a bucket (round trip, registry processing, the worker's sampling delay), so the requests in that one bucket are ambiguous: the classification error is bounded: with 100 ms buckets the result can differ from an exact (1 ms) classification by at most the number of in-flight requests that start or finish in the report's own 100 ms bucket. An independent verifier measured that against a 1 ms-bucket reference over 28 million simulated samples: 71.3% identical, 19.1% off by one in either direction, 9.6% off by two or more (worst -11 and +9, at 32 slots with short requests). The floor `local` protects only this gateway's own count. With several gateways the ledger can say "free" where `max` would have said "full" while the worker is truly full, because it subtracts this gateway's own finishes while the other gateways' requests are invisible between reports: in the verifier's multi-gateway simulation that happened in a mean 4.8% of the truly-full samples (up to 14.5% at 32 slots with three gateways and 200 ms to 3 s requests); with 1 ms buckets the rate is about the same (4.6%), so the exposure comes from subtracting own finishes, not from the boundary rule. Overall the ledger is still better than `max` there (wrong-full 11.5% against 13.4%; oversubscription time 278 against 391, summed over 44 uncoordinated configurations; one gateway: wrong-free 0.0%). These are simulator-validated, not hardware-validated results from the independent verifier's simulation (not part of the repository); the repository guards the relative claim in `signals/multigateway_test.go` (ledger within 3 points of `max` for wrong-free and 5 for wrong-full, fixed seeds). The embedded cluster has a single gateway, so none of this multi-gateway exposure appears in the H1 measurement (0.00 pp rise in refusals below saturation). **This replaces the plan's D4(a) rule**
+  (boundary always classified as an over-count: starts from `b`, finishes from `b+2`): the independent verification showed it keeps every request that starts and finishes around the report as a permanent +1 until the next
+  report, so with short requests a worker looked full for the whole heartbeat interval (simulated wrong-full 99.7% against 0.9% for `max` at 8 slots, 20 ms requests, 30% load; 84-94% refusals in the embedded cluster). With the symmetric
+  rule the same cases are 4.0% against 0.9%, 12.6% against 12.7%, 4.5% against 1.6% and 5.0% against 8.8% (simulator results, guarded by `internal/scheduler/signals/overcount_test.go`). The guarantee "always an over-count" is given up deliberately.
+- **Fallback to `max`, never below local.** The rule gives way to `max(local, reported)` for a worker the tracker does not follow, for a report made before the tracker began following the worker (a new gateway, a new
+  incarnation, a reset history), for a report older than the window (`registry_max_staleness` plus one heartbeat interval), and when the history no longer reaches back. A registry restart that keeps `RegisteredAt` shows as the
+  worker's `LastHeartbeat` going backwards; the worker's history (not its ledger: its requests are still in flight) is then reset like a re-registration.
+- **Observed.** With the overlay on, the router fills `WorkerSnapshot.Observed` on its private copy (in-flight requests, work ahead in tokens from the ledger, effective active, a cold-start flag when the history fell back).
+  The capacity estimate, TTFT and the queued-token term are not filled yet (PR C1 and later); the strategies of Phase 5 ignore the field.
+- **Deviations from the plan text, recorded.** (1) No new Prometheus series in this change: the plan's minimum observability (`scheduler_signal_fallbacks_total`) lands with the first strategy that reads the signals (PR C1);
+  the tracker exposes the counters (`Stats`) and the router logs once when the worker cap is reached. (2) The slow terms the plan computes "at refresh time into an immutable per-worker struct" (capacity peak, TTFT, medians) do not exist yet;
+  what exists per refresh is `Sync` (entries, pruning, restart detection), and the per-request work is the overlay lookup. (3) E0 resets the abandoned requests by a client cancel rather than through a breaker; the mechanism
+  (a stale-high report) is the same and a breaker adds timing the experiment does not need. (4) An invalid `SERVERFLOW_SCHEDULER_LOAD_OVERLAY` fails startup (validated with the rest, like `SERVERFLOW_SCHEDULER_STRATEGY`)
+  where plan criterion 9 says invalid env values are ignored; an enumeration is not a numeric override, and silently running the other overlay would hide a typo. (5) The boundary rule above (D4(a)).
+- **For PR C1's strategies.** A worker that flaps out of the snapshot and back loses its ledger entry while its requests are in flight (the entry is pruned at the refresh, and the old requests' tokens go stale), so the ledger's
+  in-flight count can be below the slot count (`r.inflight`, which is keyed by worker ID and survives). That is the safe direction (the overlay falls back to `max`, admission uses slot counts), but a strategy that reads
+  `Observed.WorkAheadTokens` must treat it as a lower bound. The signals package is 32-bit safe (counts are clamped to `MaxInt32`); the repository as a whole does not build for 386 on master (`internal/ratelimit`).
+
+### [later PR] Strategies, observability, simulator, experiments (D5 to D28)
+
+`least-tokens` and `least-work` (PR C1), the simulator (PR E), the experiment framework (G-lite), the pre-registered predictions (PR I)
 and the results (PR J) are recorded here as they land. Until then the plan is the source of truth. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
 
 ## Consequences

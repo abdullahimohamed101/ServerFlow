@@ -74,7 +74,8 @@ func Default() Config {
 			RetryStatuses:         []int{502, 503},
 		},
 		Scheduler: SchedulerConfig{
-			Strategy: "round-robin",
+			Strategy:    "round-robin",
+			LoadOverlay: LoadOverlayMax,
 		},
 		Worker: WorkerConfig{
 			HeartbeatInterval: 2 * time.Second,
@@ -141,6 +142,9 @@ func (c *Config) Validate() error {
 	case "random", "round-robin", "least-active", "least-queue", "least-work":
 	default:
 		return fmt.Errorf("scheduler.strategy %q is not supported", c.Scheduler.Strategy)
+	}
+	if err := c.Scheduler.validate(); err != nil {
+		return err
 	}
 	if err := c.validateWorkerSource(); err != nil {
 		return err

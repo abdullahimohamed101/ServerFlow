@@ -143,7 +143,9 @@ func (s *Server) awaitSlot(r *http.Request, ireq *protocol.InferenceRequest, inf
 		switch g.Kind {
 		case resilience.Handoff:
 			finish(QueueServed)
-			return g.Value.(*routed), nil
+			rt := g.Value.(*routed)
+			s.router.charge(rt, ireq) // the slot came without a cost: this request's goes on the ledger now, outside r.mu
+			return rt, nil
 		case resilience.Flushed:
 			return shed(QueueDrained, api.OverloadDraining)
 		}

@@ -124,7 +124,32 @@ API response.
 | `gateway.retry_statuses` | `[502, 503]` | worker statuses that may be retried on another worker (5xx only, at most 10) |
 | `resilience.mode` | `on` | `on` (registry mode only) adds per-worker circuit breakers, a retry budget on top of `max_attempts`, a bounded admission queue with shedding and gateway drain; `off` is the kill switch. All `resilience.*` keys: `docs/operations/resilience.md` |
 | `scheduler.strategy` | `round-robin` | random, round-robin, least-active, least-queue |
+| `scheduler.load_overlay` | `max` | how the gateway combines a worker's reported active count with its own in-flight count: `max` (the larger of the two; the original rule) or `ledger` (opt-in, see below) |
 | `worker.suspect_timeout` | `5s` | the gateway shares this with the control plane |
+
+## The load overlay: `max` and `ledger`
+
+A worker's reported active count is up to one heartbeat old (plus one registry refresh). The gateway therefore overlays what it knows itself: the requests it has in flight on the worker.
+
+- `max` (default, unchanged behaviour): effective load is `max(reported, local)`. A stale **low** report is covered by the local count. A stale **high** report is not: after this gateway
+  finishes or abandons everything it sent to a worker, the worker still looks full until its next heartbeat, so it can sit unpicked for about a heartbeat (recorded in
+  `docs/operations/resilience.md`; measured as experiment E0 below).
+- `ledger` (opt-in, Phase 14, ADR-022): effective load is `max(local, reported + started_since_report - finished_since_report)`. The gateway keeps a short, bucketed (100 ms) history of when it started and
+  finished requests per worker, and measures "since the report" from the gateway-local time the report was made (snapshot fetch time minus the worker's heartbeat age). It never returns less than the local
+  count. When the history cannot answer (the gateway has not followed the worker since before the report, the report is older than `registry_max_staleness` plus one heartbeat interval, the control plane's
+  heartbeat time for the worker went backwards, or more than 4,096 workers are tracked) it uses `max` for that worker. The report time is known only to about a bucket, so starts and finishes in the report's own bucket are
+  classified alike (as after the report): a request that starts and finishes inside that bucket nets to zero. For the requests in that one bucket the classification is ambiguous, and the error is bounded: with 100 ms buckets the result can differ from an exact (1 ms) classification by at most the number of in-flight requests that start or finish in the report's own 100 ms bucket. An independent verifier measured that against a 1 ms-bucket reference over 28 million simulated samples: 71.3% identical, 19.1% off by one in either direction, 9.6% off by two or more (worst -11 and +9, at 32 slots with short requests). The floor `local` protects only this gateway's own count. With several gateways the ledger can say "free" where `max` would have said "full" while the worker is truly full, because it subtracts this gateway's own finishes while the other gateways' requests are invisible between reports: in the verifier's multi-gateway simulation that happened in a mean 4.8% of the truly-full samples (up to 14.5% at 32 slots with three gateways and 200 ms to 3 s requests); with 1 ms buckets the rate is about the same (4.6%), so the exposure comes from subtracting own finishes, not from the boundary rule. Overall the ledger is still better than `max` there (wrong-full 11.5% against 13.4%; oversubscription time 278 against 391, summed over 44 uncoordinated configurations; one gateway: wrong-free 0.0%). These are simulator-validated, not hardware-validated results from the independent verifier's simulation (not part of the repository); the repository guards the relative claim in `signals/multigateway_test.go` (ledger within 3 points of `max` for wrong-free and 5 for wrong-full, fixed seeds). The embedded cluster has a single gateway, so none of this multi-gateway exposure appears in the H1 measurement (0.00 pp rise in refusals below saturation).
+  This replaces an earlier rule that guaranteed an over-count and, at short request lengths, made workers look full for the whole heartbeat interval. Simulator results (one worker, Poisson
+  arrivals, the real tracker; share of requests for which the estimator says "full" while the gateway's own count has room, ledger against max, heartbeat 1 s): 8 slots, 20 ms requests, 30% load: 4.0% against 0.9%;
+  8 slots, 100 ms, 70%: 12.6% against 12.7%; 32 slots, 100 ms, 70%: 4.5% against 1.6%; 8 slots, 500 ms, 70%: 5.0% against 8.8%. They are guarded by `overcount_test.go`.
+- The same function answers the scheduler's capacity check (`reserve`) and the admission queue's free-slot count (`freeSlots`), each with the instant of its own snapshot view, so the two never disagree about
+  whether a worker has room. The overlay changes `ActiveRequests` for **all** strategies.
+- With `ledger` on, the gateway also keeps a ledger of the estimated token cost (`input + max_tokens`, the same estimate the rate limiter uses) of its in-flight requests per worker and puts it, with the
+  effective active count, on the private snapshot copy the strategies see (`WorkerSnapshot.Observed`, never serialised). The strategies of Phase 5 ignore it; the token-aware strategies of a later change read it.
+  A slot handed to a queued request by the admission queue carries no cost until the request that receives it adds its own; for those microseconds the ledger undercounts by one request (admission uses slot counts, so
+  nothing is over-admitted).
+- E0, the recovered-worker experiment (`internal/bench/embedded/recovered_worker_test.go`): two workers, the stuck requests of one abandoned by the client, a probe sent at once. Embedded cluster
+  (heartbeat 1 s, refresh 100 ms): the probe waits 0.71 s (median; 0.70 to 0.80 s over 20 runs) under `max` and is served in 12 ms under `ledger` (20 runs). Simulator-validated, not hardware-validated: embedded mock workers on an idle machine; the real-time test discards repetitions a busy machine invalidates and asserts on medians.
 
 ## Operating notes
 
