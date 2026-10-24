@@ -164,6 +164,8 @@ A worker's reported active count is up to one heartbeat old (plus one registry r
 
 Both read the gateway's own view of the work on each worker (`WorkerSnapshot.Observed`, ADR-022), so they need the in-flight ledger: choosing either with the default `scheduler.load_overlay: max` fails at
 startup ("needs scheduler.load_overlay: ledger"). Nothing else changes with the defaults: `round-robin` stays the default strategy and `max` the default overlay.
+Under `docker-compose.yml` only the strategy is wired to a variable (`SF_STRATEGY`), so `SF_STRATEGY=least-work` alone makes the gateway refuse to start. Add `SERVERFLOW_SCHEDULER_LOAD_OVERLAY: ledger` to the
+gateway's environment in a compose override file (the cost and signals keys below are optional, with the same `SERVERFLOW_SCHEDULER_*` names).
 
 - **Work ahead** of a request on a worker is the estimated cost of this gateway's in-flight requests there (the ledger) plus the load other gateways and clients appear to add (the reported active count minus
   this gateway's own, priced at the model's mean request cost) plus the worker's reported queued input tokens times `scheduler.cost.input_weight`.
@@ -172,6 +174,8 @@ startup ("needs scheduler.load_overlay: ledger"). Nothing else changes with the 
   a slow idle one. Ties (within a relative 1e-9) take turns in ID order.
 - **Token rate** of a worker is a decayed peak of its reported `recent_tokens_per_second`, sampled only while it had work, decaying toward the median of its model's peaks (never below `capacity_floor` times it).
   A worker with no sample, or a re-registered one, uses that median; with no sample anywhere `least-work` scores like `least-tokens`.
+  A sample is also cut to 10 times the median of the model's other workers' peaks, so one worker cannot claim an absurd rate and win every decision (ADR-022 states what this does not cover: a cold fleet, a majority of liars).
+- A worker the gateway cannot track (beyond 4,096) is neither favoured for its empty ledger nor exiled: it scores the median of the others.
 - Missing or invalid signals never exile a worker and never choose an ineligible one: see ADR-022 for the exact fallbacks. `scheduler_signal_fallbacks_total{model,reason}` and
   `scheduler_predicted_wait_seconds{model}` exist only for these two strategies.
 - **What is not shown.** These are simulator-validated, not hardware-validated: no experiment has compared them with the others yet (PR J), the mock worker has no batching (its tokens per second grows with its load), the

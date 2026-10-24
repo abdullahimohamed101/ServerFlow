@@ -124,8 +124,8 @@ inflates a worker's capacity by at most K times the honest median (a worker that
 of the honest workers, a majority of liars moves the median itself, a fleet that is really more than K times heterogeneous has its fastest workers under-estimated, and a **cold fleet is unprotected**: with no
 other peak (a lone worker, or no peer has been sampled yet) only the 1e7 bound applies. The estimate is a decayed **peak**, not the latest
 value: an idle or lightly loaded worker reports little and must not look slow. The peak decays toward the median of the model's stored peaks with the half-life `scheduler.signals.capacity_halflife` (default
-60 s), continuously (no snap), and never below `capacity_floor` (default 0.25) times that median, so no worker is estimated zero or infinitely slow and an estimate that is not refreshed is within 10% of the median after
-four half-lives (a test pins it). A worker with no sample, or a re-registered one, takes the **fleet prior**, the median of the model's sampled estimates, flagged `ObservedPriorCapacity`; with one sampled worker its
+60 s), continuously (no snap), and never below `capacity_floor` (default 0.25) times that median, so no worker is estimated zero or infinitely slow. After four half-lives an estimate that is not refreshed is within 10% of the median only if its peak was
+at most about 2.6 times the median; otherwise the remaining difference is (peak - median) / 16 (a test pins the 2.6x case), and the floor holds it up from below. A worker with no sample, or a re-registered one, takes the **fleet prior**, the median of the model's sampled estimates, flagged `ObservedPriorCapacity`; with one sampled worker its
 estimate is its own peak. The per-request work (the ledger terms, `F`, `Q`, the overlay) is evaluated inside `r.mu` by `Tracker.Load`, one tracker lock per candidate; the slow terms were computed at refresh time.
 
 **Configuration (D19), checked only when one of the two strategies is selected in registry mode:**
@@ -149,7 +149,8 @@ window after which a worker snaps to the prior, because a hard window contradict
 estimates, so the definition is not circular. (4) `scheduler.signals.ewma_alpha`, `ttft_halflife`, `min_samples` and `latency_aware.*` belong to PR C2 and are not added. (5) The model mean cost uses a fixed alpha of 0.1
 (not a key). (6) The strategy flags the copy it returns (`ObservedDegraded`, `ObservedInvalid`) as the only pure channel back to the router for the fallback counter. (7) The `Observed.Flags` byte is now full (eight flags); a
 later flag needs a wider type. (8) `signals` may import `math` (the purity test's allow-list gained it; the clock, goroutine and I/O bans are unchanged). (9) Plan criterion 9 asks for a startup log line when an env value is ignored; the config
-package has no logger and no other numeric override logs, so none is added.
+package has no logger and no other numeric override logs, so none is added. (10) `internal/gateway/attempt.go` changes by two lines the plan's wording does not spell out: `startAttempt` builds the `AttemptStart` event into a variable and sets `started.Signals = schedulerSignals(target)`
+(the observer-seam field that carries the cold-start, untracked and invalid flags to the metrics) before passing it to the observers.
 
 **Cost of a decision (D18), benchmarked on this machine (Apple silicon, battery), `BenchmarkRouteWorkAware`, 3,000 iterations per cell, one thread / 15 threads:** `least-tokens` 0.8 / 1.0 us at 3 workers,
 5.5 / 6.7 us at 50, 118 / 96 us at 1,000; `least-work` 0.8 / 1.0, 5.6 / 6.8, 113 / 101 us. The ledger path with `least-active` costs the same (5.8 / 7.1 us at 50). The budget is 25 us at 50 workers and 400 us at 1,000.
@@ -161,7 +162,10 @@ demand seen, not a hardware limit), and it has no batching: on it `least-work`'s
 (`max_tokens` is an upper bound on output, the input estimate is low for dense text, ADR-015) and a request counts its full cost until it ends; (c) other gateways' load is visible only through the reported active count and priced at
 the mean; with several gateways each gateway's ledger sees its own share (Phase 8); (d) a worker that flaps out of the snapshot loses its ledger entry while its requests run, so `WorkAhead` is a lower bound
 then; (e) a hand-off (Phase 15) bypasses the scheduler, so under queueing the strategies matter less (H10); (f) the capacity floor and the prior keep every worker finite and pickable, but a worker the strategy never
-picks is refreshed only by the decay, so a persistently slower worker is re-learned each time it decays back toward the prior; (g) the TTFT signal and the probe-priority rule (D7, D11) are PR C2's, so a half-open
+picks is refreshed only by the decay, so a persistently slower worker is re-learned each time it decays back toward the prior; (h) a worker beyond the tracked-worker cap (4,096) is untracked: its ledger reads empty and it has no capacity, so with `WorkAhead = 0` it would look the lightest worker of all. The strategies therefore score it
+like an invalid candidate, the median of the valid scores: it is neither favoured nor exiled (it takes its turn whenever it ties the best), it is counted as `untracked` (not also as `invalid`), and when every
+candidate is untracked the choice is `least-active`'s, flagged degraded; (i) capacity claims are bounded only relative to peers (K = 10, above): a cold fleet, a majority of liars and a lie within K times the median
+are not caught; (g) the TTFT signal and the probe-priority rule (D7, D11) are PR C2's, so a half-open
 breaker's worker is probed by the existing Phase 15 mechanism only.
 
 ### [later PR] Observability beyond the minimum, simulator, experiments (D24 to D28)

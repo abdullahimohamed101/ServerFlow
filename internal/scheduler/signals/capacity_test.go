@@ -173,6 +173,24 @@ func TestAnUnrefreshedLowEstimateRecoversWithinFourHalflives(t *testing.T) {
 	}
 }
 
+// The other side: a high estimate that is not refreshed is within 10% of the median after four half-lives only up to
+// a peak of about 2.6 times the median; above that the difference left is (peak - median) / 16.
+func TestAnUnrefreshedHighEstimateKeepsASixteenthOfItsExcess(t *testing.T) {
+	for _, tc := range []struct{ peak, want float64 }{{250, 100 + 150.0/16}, {900, 100 + 800.0/16}} {
+		tr := capTracker()
+		tr.Sync(at(0), []Observation{rep("hi", 1, 4, tc.peak), rep("x", 1, 4, 100), rep("y", 1, 4, 100), rep("z", 1, 4, 100)})
+		idle := func(id string) Observation {
+			return Observation{Key: key(id), Model: "m", LastHeartbeat: t0.Add(time.Second), Fresh: true}
+		}
+		tr.Sync(at(4*60_000), []Observation{idle("hi"), idle("x"), idle("y"), idle("z")})
+		r, _ := capOf(tr, "hi")
+		near(t, fmt.Sprintf("peak %v after four half-lives", tc.peak), r, tc.want)
+		if tc.peak <= 2.6*100 && r > 110 {
+			t.Fatalf("peak %v: %v is not within 10%% of the median 100", tc.peak, r)
+		}
+	}
+}
+
 func TestACapacitySampleStartsFromTheDecayedPeak(t *testing.T) {
 	tr := capTracker()
 	tr.Sync(at(0), []Observation{rep("a", 1, 3, 200), rep("b", 1, 3, 100)})
