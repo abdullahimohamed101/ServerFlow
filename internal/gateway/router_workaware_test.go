@@ -365,6 +365,44 @@ func TestNewRegistryWiresTheWorkAwareSettings(t *testing.T) {
 	}
 }
 
+// The scheduler NewRegistry builds must score with the configured cost weights (scheduler.WithCostWeights), not
+// the defaults: least-work's choice depends on the request's own cost c. Hand-computed, for a request of 1000
+// estimated input tokens and no output budget:
+//
+//	a: 100 tokens ahead at 100 tokens/s     b: nothing ahead at 10 tokens/s
+//	default weights (c = 1000):      a (100+1000)/100 = 11     b 1000/10 = 100      -> a
+//	input_weight 0.001 (c = 1):      a 101/100 = 1.01          b 1/10 = 0.1         -> b
+func TestNewRegistrySchedulerScoresWithTheConfiguredCostWeights(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	pick := func(weights config.CostConfig) string {
+		cfg := config.Default()
+		cfg.Gateway = testConfig("http://127.0.0.1:1")
+		cfg.Gateway.WorkerSource = config.WorkerSourceRegistry
+		cfg.Scheduler.Strategy, cfg.Scheduler.LoadOverlay = scheduler.LeastWork, config.LoadOverlayLedger
+		cfg.Scheduler.Cost = weights
+		gw, err := NewRegistry(cfg, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mk := func(id string, ahead, rate float64) protocol.WorkerSnapshot {
+			w := snapWorker(id, "m", 0)
+			w.Observed = protocol.ObservedLoad{WorkAheadTokens: ahead, CapacityTPS: rate, Flags: protocol.ObservedLedger}
+			return w
+		}
+		chosen, err := gw.router.sched.SelectWorker(context.Background(), req(1000, 0), []protocol.WorkerSnapshot{mk("a", 100, 100), mk("b", 0, 10)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return chosen.WorkerID
+	}
+	if got := pick(config.CostConfig{OutputFraction: 1, InputWeight: 1}); got != "a" {
+		t.Fatalf("default weights: picked %s, want a", got)
+	}
+	if got := pick(config.CostConfig{OutputFraction: 1, InputWeight: 0.001}); got != "b" {
+		t.Fatalf("input_weight 0.001: picked %s, want b (the scheduler ignores the configured weights)", got)
+	}
+}
+
 // A hand-off's waiter charges the weighted cost, the same as reserve.
 func TestAWaiterChargesTheWeightedCost(t *testing.T) {
 	w := cost.Weights{InputWeight: 0.5, OutputFraction: 0.5}
