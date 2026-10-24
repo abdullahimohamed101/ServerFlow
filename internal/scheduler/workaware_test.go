@@ -704,3 +704,59 @@ func TestPredictedWaitIsWorkAheadPlusCostOverCapacity(t *testing.T) {
 		}
 	}
 }
+
+// A worker beyond the tracker's cap is untracked: its ledger reads empty and it has no capacity, so its work
+// ahead of 0 would make it look the lightest of all (ADR-022, limits). It scores like a worker with garbage: the
+// median of the valid scores, so it is neither favoured nor exiled.
+
+func untracked(w protocol.WorkerSnapshot) protocol.WorkerSnapshot {
+	w.Observed.WorkAheadTokens, w.Observed.CapacityTPS = 0, 0
+	w.Observed.Flags |= protocol.ObservedUntracked
+	return w
+}
+
+func TestAnUntrackedWorkerIsNotFavouredForItsEmptyLedger(t *testing.T) {
+	for _, st := range []string{LeastTokens, LeastWork} {
+		s := mustNew(t, st)
+		ws := []protocol.WorkerSnapshot{untracked(ow("u", 0, 0, 0)), ow("a", 1, 100, 50), ow("b", 1, 300, 50)}
+		for i := 0; i < 12; i++ {
+			if got := pick(t, s, ws); got == "u" {
+				t.Fatalf("%s: picked the untracked worker over tracked ones that have load 100 and 300 (draw %d)", st, i)
+			}
+		}
+	}
+}
+
+func TestAnUntrackedWorkerIsNotExiled(t *testing.T) {
+	for _, st := range []string{LeastTokens, LeastWork} {
+		s := mustNew(t, st)
+		// a tracked worker and an untracked one: the untracked one scores the tracked one's score, a tie that takes turns
+		ws := []protocol.WorkerSnapshot{untracked(ow("u", 0, 0, 0)), ow("a", 1, 100, 50)}
+		seen := map[string]int{}
+		for i := 0; i < 20; i++ {
+			seen[pick(t, s, ws)]++
+		}
+		if seen["u"] == 0 || seen["a"] == 0 {
+			t.Fatalf("%s: picks %v; the untracked worker must still take its turn", st, seen)
+		}
+		// and when it is chosen it says so, as untracked and not as invalid
+		for i := 0; i < 4; i++ {
+			g := selectFrom(t, s, wreq(10, 10), ws)
+			if g.WorkerID == "u" && (g.Observed.Flags&protocol.ObservedUntracked == 0 || g.Observed.Flags&protocol.ObservedInvalid != 0) {
+				t.Fatalf("%s: flags %b", st, g.Observed.Flags)
+			}
+		}
+	}
+}
+
+// With nothing but untracked workers there is no observation at all: the least-active rule decides, flagged degraded.
+func TestOnlyUntrackedWorkersFallBackToLeastActive(t *testing.T) {
+	for _, st := range []string{LeastTokens, LeastWork} {
+		s := mustNew(t, st)
+		ws := []protocol.WorkerSnapshot{untracked(ow("a", 3, 0, 0)), untracked(ow("b", 1, 0, 0)), untracked(ow("c", 2, 0, 0))}
+		g := selectFrom(t, s, wreq(10, 10), ws)
+		if g.WorkerID != "b" || g.Observed.Flags&protocol.ObservedDegraded == 0 {
+			t.Fatalf("%s: picked %s flags %b, want b (fewest active) flagged degraded", st, g.WorkerID, g.Observed.Flags)
+		}
+	}
+}

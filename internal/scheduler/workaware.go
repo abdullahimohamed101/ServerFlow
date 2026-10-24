@@ -26,7 +26,8 @@ import (
 //     (the router has normally supplied the fleet prior already); if no candidate has a rate the choice is
 //     least-tokens' and the copy is flagged ObservedDegraded;
 //   - a candidate's work ahead (or its score) is NaN, infinite or negative, or it has no ledger observation
-//     while others do: it scores the median of the valid scores, so garbage neither wins nor is exiled, and the
+//     while others do, or the tracker does not track it (ObservedUntracked: beyond the worker cap, so its ledger
+//     reads empty and it would look the lightest of all): it scores the median of the valid scores, so garbage neither wins nor is exiled, and the
 //     copy is flagged ObservedInvalid when it is chosen.
 //
 // Selection starts from eligible(), so the section 15 invariants are the shared ones.
@@ -50,7 +51,7 @@ func (s *workAware) SelectWorker(ctx context.Context, req *protocol.InferenceReq
 	}
 	observed := false
 	for _, j := range idx {
-		if workers[j].Observed.Flags&protocol.ObservedLedger != 0 {
+		if trusted(&workers[j]) {
 			observed = true
 			break
 		}
@@ -106,7 +107,7 @@ func (s *workAware) SelectWorker(ctx context.Context, req *protocol.InferenceReq
 	if sc.degraded {
 		chosen.Observed.Flags |= protocol.ObservedDegraded
 	}
-	if _, ok := sc.score(&chosen); !ok {
+	if _, ok := sc.score(&chosen); !ok && chosen.Observed.Flags&protocol.ObservedUntracked == 0 { // untracked has its own flag
 		chosen.Observed.Flags |= protocol.ObservedInvalid
 	}
 	return &chosen, nil
@@ -147,7 +148,7 @@ func validRate(r float64) bool { return r > 0 && !math.IsInf(r, 0) } // false fo
 
 // score is the candidate's score and whether it is valid. Lower is better.
 func (sc *scorer) score(w *protocol.WorkerSnapshot) (float64, bool) {
-	if w.Observed.Flags&protocol.ObservedLedger == 0 {
+	if !trusted(w) {
 		return 0, false
 	}
 	ahead := w.Observed.WorkAheadTokens
@@ -166,6 +167,12 @@ func (sc *scorer) score(w *protocol.WorkerSnapshot) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// trusted says the snapshot carries a ledger observation of a tracked worker. An untracked worker (the tracker's
+// cap was reached) has an empty ledger and no capacity, so its work ahead of 0 is ignorance, not idleness.
+func trusted(w *protocol.WorkerSnapshot) bool {
+	return w.Observed.Flags&protocol.ObservedLedger != 0 && w.Observed.Flags&protocol.ObservedUntracked == 0
 }
 
 // medianOf is the median of a non-empty slice; it reorders the slice.
