@@ -132,6 +132,9 @@ observability_integration() {
 
 # tracing runs the tracing tests with the race detector and fails if a named acceptance test did not run and pass.
 # They need no Docker and no service: spans go to in-memory exporters and a fake OTLP receiver.
+# TestGatewayOverhead (the p95 latency budget of the gateway, which skips itself only under -short) is named here so that a
+# skip of it cannot pass as green: the gateway package runs verbosely in this stanza anyway. The nightly workflow leaves it
+# out of its CPU-load job on purpose and keeps it in a job of its own (internal/ciguard).
 tracing_tests() {
   local log t
   log="$(mktemp "${TMPDIR:-/tmp}/serverflow-tracing.XXXXXX")"
@@ -143,7 +146,8 @@ tracing_tests() {
     exit 1
   fi
   for t in TestOneTraceAcrossGatewayAndWorker TestARetriedRequestShowsTwoWorkerAttemptsInOneTrace TestNoSecretsInSpansAndOnlyAllowListedKeys \
-    TestADeadCollectorNeverTouchesRequests TestGatewayDoesNotDependOnOpenTelemetry TestExportReachesTheReceiver TestStreamingRequestSpanTree; do
+    TestADeadCollectorNeverTouchesRequests TestGatewayDoesNotDependOnOpenTelemetry TestExportReachesTheReceiver TestStreamingRequestSpanTree \
+    TestGatewayOverhead; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   rm -f "$log"

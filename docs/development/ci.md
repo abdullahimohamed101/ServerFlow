@@ -110,6 +110,18 @@ load (where flaky tests show up first), the gateway overhead budget test, `govul
 gateway scaling and the shared quota, runs; plus `make dev-audit`) and an advisory Trivy report (HIGH and CRITICAL findings with a fix, six
 ServerFlow images, scanner pinned by digest on `public.ecr.aws`; its vulnerability database download can be rate limited, which is why it never gates).
 
+What the nightly's CPU-load job is for, and what it deliberately does not run. It exists to find races and logic that only breaks when the machine is
+slow, so it runs everything (`-race -count=3`, four `yes` processes) except tests whose assertion is a performance budget: those measure the
+product and are invalid on a loaded machine. Today that is one test, `TestGatewayOverhead` (the p95 latency the gateway adds); the list is
+`LOAD_SKIP` in `nightly.yml`, each name with a one-line reason, and a name is added only for a test that asserts a latency or throughput budget. A test
+that merely has a timeout or a "does not block" bound stays in: a timing bug that shows under load is a finding. The budget test still runs in the
+unit, race and tracing steps of every pull request (`quality.sh tracing` fails if it skipped) and alone on a quiet runner in the nightly `overhead`
+job. `tests/integration` is its own step with `-timeout 60m`, the other packages run with `-timeout 30m`: Go's default of 10 minutes applies to each
+test binary and `-count=3` of that package needs about 15 minutes even on an idle runner. `internal/ciguard` (`nightly_test.go`) fails if the skip, an
+explicit timeout, or the job's time arithmetic goes missing. Expected duration: about 35 minutes (setup 4, other packages 10 to 15, `tests/integration` 15 to 25); the job limit of
+125 minutes is the ceiling for a hang. A scheduled run uses the latest commit of the default branch, so the head SHA a nightly run reports is
+the master head at that moment: the runs of 12 to 21 October all show `928f277` because nothing was merged between 11 and 22 October.
+
 ### Lessons of the first Phase 16 run
 
 The runner's Compose is v2.38.2 (local development uses a newer one). Three things differed: `docker compose config -q` checks that `env_file` entries exist
