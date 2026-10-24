@@ -352,3 +352,42 @@ func TestProcessGatewayRetriesAroundABackendKilledMidRun(t *testing.T) {
 		t.Fatal("the connection failures that were retried must be on record")
 	}
 }
+
+// The work-aware strategies of Phase 14 (ADR-022) run in the real binaries: the gateway starts with the ledger
+// overlay they need, routes over two workers and keeps serving. Sequential requests leave no ledger work on either
+// worker, so the scores differ only by the reported load (up to a heartbeat old, 200 ms here, against requests of
+// about 20 ms, which is the regime where the 100 ms bucket of the overlay is coarsest, ADR-022 PR B): the split is
+// therefore not exact, and the test asks only that both workers carry real traffic and every request succeeds.
+func TestProcessGatewayWorkAwareStrategiesRouteOverTwoWorkers(t *testing.T) {
+	for _, strategy := range []string{"least-tokens", "least-work"} {
+		t.Run(strategy, func(t *testing.T) {
+			cpAddr := freePort(t)
+			startControlPlaneProc(t, cpAddr, clusterToken)
+			m1, m2 := freePort(t), freePort(t)
+			startMockProc(t, m1)
+			startMockProc(t, m2)
+			startAgentProc(t, cpAddr, clusterToken, "w1", m1)
+			startAgentProc(t, cpAddr, clusterToken, "w2", m2)
+			gwAddr := freePort(t)
+			env := append(gatewayEnv(cpAddr, clusterToken, gwAddr, strategy), "SERVERFLOW_SCHEDULER_LOAD_OVERLAY=ledger")
+			startProc(t, "gateway", "gateway starting", env)
+			waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "both eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
+				return ws["w1"].Eligible && ws["w2"].Eligible
+			})
+			waitFor(t, 10*time.Second, "the gateway serves", func() bool {
+				code, _ := gatewayChat(gwAddr)
+				return code == 200
+			})
+			a0, b0 := completed(t, m1), completed(t, m2)
+			for i := 0; i < 30; i++ {
+				if code, body := gatewayChat(gwAddr); code != 200 {
+					t.Fatalf("request %d: %d %s", i, code, body)
+				}
+			}
+			da, db := completed(t, m1)-a0, completed(t, m2)-b0
+			if da+db != 30 || da < 6 || db < 6 {
+				t.Fatalf("%s: both workers should carry traffic, got %d/%d of 30", strategy, da, db)
+			}
+		})
+	}
+}
