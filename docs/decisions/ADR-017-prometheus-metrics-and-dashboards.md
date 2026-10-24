@@ -144,3 +144,11 @@ The control plane is scraped every 5 s and the fleet rule group is evaluated eve
 - Known limitation (closed in Phase 15, ADR-020): a failed second routing attempt during a retry was not a rejection event, so it was not counted in
   `scheduler_decisions_total` or `scheduler_no_capacity_total`; the first attempt's response is what the client gets. It is now counted from
   `AttemptEnd.NextRouteResult`, with the same result and reason a first routing's refusal would have. `scheduler_decision_duration_seconds` is not observed for it.
+
+## Amendment (Phase 14, PR C1; ADR-022)
+
+Two families exist only when `scheduler.strategy` is `least-tokens` or `least-work`; every other configuration scrapes the series it did before. `scheduler_predicted_wait_seconds{model}` is a histogram (the
+`DurationBuckets`) of the wait the strategy predicted for the worker it chose, at decision time, observed once per scheduler-chosen attempt that has a capacity estimate (a slot handed over by the admission queue is
+not a scheduling decision and is not observed). `scheduler_signal_fallbacks_total{model,reason}` counts decisions in which a signal was missing for the chosen worker, with the reasons `cold_start`, `untracked` and `invalid`.
+No new label name; `model` goes through the existing cap, so the families add at most `metrics.max_models` x (1 histogram of 14 buckets plus 3 counters) series. The remaining Phase 14 instruments (prediction error, the
+estimated in-flight gauge, span attributes) are not part of this change. The pinned catalogue is `internal/gateway/testdata/metrics_series_workaware.golden`.

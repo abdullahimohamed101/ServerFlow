@@ -1,7 +1,8 @@
 # ADR-022: Workload-Aware Scheduling (Signals, Ledger Overlay, Simulator Validation)
 
 Status: Proposed, delivered in parts. Phase 14 is a sequence of pull requests (plan: `docs/plans/active/phase-14-workload-aware-scheduler.md`, decisions D1 to D29).
-This record grows with each of them. Sections are marked **[PR A]** (delivered: the seam and the estimator extraction, no behaviour change), **[PR B]** (the signals library, the ledger and the opt-in overlay v2) or
+This record grows with each of them. Sections are marked **[PR A]** (delivered: the seam and the estimator extraction, no behaviour change), **[PR B]** (the signals library, the ledger and the opt-in overlay v2),
+**[PR C1]** (the `least-tokens` and `least-work` strategies and their configuration) or
 **[later PR]** (placeholder: the decision is in the plan, the text lands with the pull request that implements it).
 Date: 2026-10-22
 
@@ -80,9 +81,87 @@ runs none of this code and the differential fixtures of PR A pass unchanged.
   in-flight count can be below the slot count (`r.inflight`, which is keyed by worker ID and survives). That is the safe direction (the overlay falls back to `max`, admission uses slot counts), but a strategy that reads
   `Observed.WorkAheadTokens` must treat it as a lower bound. The signals package is 32-bit safe (counts are clamped to `MaxInt32`); the repository as a whole does not build for 386 on master (`internal/ratelimit`).
 
-### [later PR] Strategies, observability, simulator, experiments (D5 to D28)
+### [PR C1] `least-tokens`, `least-work` and the capacity estimate (D5, D6, D19)
 
-`least-tokens` and `least-work` (PR C1), the simulator (PR E), the experiment framework (G-lite), the pre-registered predictions (PR I)
+Two strategies join `scheduler.Strategies()`: `least-tokens` (fewest estimated tokens of work ahead of the request) and `least-work` (the smallest predicted wait). Both are pure arithmetic over the snapshot
+copy, start from the shared `eligible()` filter (spec section 15 holds unchanged), read no clock and start no goroutine (a source test pins that), and share the Phase 5 rotor for ties. `scheduler.strategy` stays
+`round-robin` by default and nothing below is active unless one of the two is chosen.
+
+**What each strategy minimises.** With `c` the request's own work cost and `R_w` the capacity estimate of worker `w` in tokens per second:
+
+| Strategy | Score |
+| --- | --- |
+| `least-tokens` | `WorkAhead_w` |
+| `least-work` | `(WorkAhead_w + c) / R_w`, a predicted wait in seconds |
+
+`WorkAhead_w = L_w + F_w + Q_w`: `L_w` is this gateway's ledger (the weighted cost of its in-flight requests on the worker); `F_w` is the load other gateways and clients appear to add, `max(0, effective_active - local slots)`
+priced at the model's mean request cost (an EWMA, alpha 0.1, of the cost of the requests this gateway routed; the request's own cost until there is one); `Q_w` is the worker's reported `queued_input_tokens` (clamped
+to `[0, 2^31)`) times `input_weight`. `Q_w` can double count requests this gateway also holds in its ledger, only on a worker that is queueing, which is the direction wanted; it is not de-duplicated.
+`c = ceil(input_weight x EstInputTokens) + ceil(output_fraction x EstOutputTokens)`, at least 1 (`cost.Work`). The weights apply to the scheduler's accounting only: the rate limiter is still charged the
+unweighted `EstInputTokens + EstOutputTokens`, so billing does not move. A score within a relative 1e-9 of the minimum is a tie; tied workers take turns in worker-ID order through the rotor.
+
+**Selecting them requires `scheduler.load_overlay: ledger` (decision, not in the plan text).** The strategies read the gateway's own view of the work on each worker, which exists only with the ledger. The plan
+leaves open whether choosing them should imply the overlay. It does not: the `ledger` overlay changes `ActiveRequests` for every strategy and for the queue's free-slot count, it is an opt-in behaviour change
+that the plan reserves for experiment E0 and the optional default decision (PR L), and silently turning it on because of a strategy name would be hidden magic and would confound the comparisons the experiments make
+(two strategies compared under different overlays). So the combination is explicit, and the incomplete one is refused at startup with the setting to use ("scheduler.strategy "least-work" reads the gateway's
+in-flight ledger and needs scheduler.load_overlay: ledger"), both by `Config.Validate` (registry mode; static mode has no scheduler and ignores every scheduling setting) and by `gateway.NewRegistry` for callers
+that build a `Config` by hand. The benchmark harness (`internal/bench/embedded`) sets the overlay for these two strategies before its `GatewayMutate` hook runs, so `benchmark run --scheduler least-work` works;
+a result must record the overlay (PR G-lite).
+
+**When a signal is missing** (all of it deterministic, and each is flagged on the chosen copy so the router can count it):
+- no candidate carries a ledger observation (a snapshot that did not come through the ledger path): the choice is least-active's on the effective active count, flagged `ObservedDegraded`;
+- `least-work` and a candidate has no usable rate (0, NaN, infinite, negative): the median rate of the candidates that have one stands in; the router has normally supplied the fleet prior already (below). If no
+  candidate has a rate the score is `WorkAhead` alone, i.e. `least-tokens`, flagged `ObservedDegraded` ("when no worker has a rate, the strategy degenerates to `least-tokens`");
+- a candidate's work ahead or score is NaN, infinite, negative or overflows, or it has no ledger observation while others do: it scores the median of the valid scores (garbage neither wins nor is exiled) and
+  is flagged `ObservedInvalid` if chosen; if every candidate is garbage, all tie and take turns.
+
+**The capacity estimate `R_w` (D6), computed at snapshot-refresh time.** The tracker's `Sync` takes, per refresh, each worker's model, reported active count, reported `recent_tokens_per_second` and whether
+the registry offers it (`Fresh`). A report is sampled once (per heartbeat), only while the worker had work (`active >= 1`), only when fresh, and only if the rate is a finite number of at least 1e-3 tokens/s
+(a larger one is clamped to 1e7: a worker can lie about its own metrics, and the registry already rejects absurd figures; the clamp bounds how much one can claim). The estimate is a decayed **peak**, not the latest
+value: an idle or lightly loaded worker reports little and must not look slow. The peak decays toward the median of the model's stored peaks with the half-life `scheduler.signals.capacity_halflife` (default
+60 s), continuously (no snap), and never below `capacity_floor` (default 0.25) times that median, so no worker is estimated zero or infinitely slow and an estimate that is not refreshed is within 10% of the median after
+four half-lives (a test pins it). A worker with no sample, or a re-registered one, takes the **fleet prior**, the median of the model's sampled estimates, flagged `ObservedPriorCapacity`; with one sampled worker its
+estimate is its own peak. The per-request work (the ledger terms, `F`, `Q`, the overlay) is evaluated inside `r.mu` by `Tracker.Load`, one tracker lock per candidate; the slow terms were computed at refresh time.
+
+**Configuration (D19), checked only when one of the two strategies is selected in registry mode:**
+
+| Key | Env (`SERVERFLOW_` +) | Default | Bounds |
+| --- | --- | --- | --- |
+| `scheduler.cost.output_fraction` | `SCHEDULER_COST_OUTPUT_FRACTION` | 1.0 | (0, 1] |
+| `scheduler.cost.input_weight` | `SCHEDULER_COST_INPUT_WEIGHT` | 1.0 | [0, 100] |
+| `scheduler.signals.capacity_halflife` | `SCHEDULER_SIGNALS_CAPACITY_HALFLIFE` | 60s | 1s to 10m |
+| `scheduler.signals.capacity_floor` | `SCHEDULER_SIGNALS_CAPACITY_FLOOR` | 0.25 | (0, 1] |
+
+An env value that does not parse is ignored (the repository convention); one that parses is validated like the file's. With any other strategy the keys are inert and a bad value in them is not an error.
+`scheduler_signal_fallbacks_total{model,reason}` (`cold_start`, `untracked`, `invalid`) and `scheduler_predicted_wait_seconds{model}` (the chosen worker's predicted wait at decision time, `(WorkAhead + c) / R`,
+for decisions that have a capacity estimate) are registered only for these two strategies (the plan's minimum observability); label names are the existing `model` and `reason`. The rest of D24 (prediction error, the
+in-flight gauge, span attributes) is not built here. The `least-work` startup refusal and its four pinning tests are gone: they now pin that an unknown or still-unimplemented strategy (`latency-aware`) is refused with the
+supported list, that the two strategies are refused without the ledger overlay and with out-of-range weights, and that they are accepted with it (`internal/config/gateway_test.go`, `internal/gateway/router_test.go`,
+`tests/integration/gateway_process_test.go`, `internal/scheduler/scheduler_test.go`).
+
+**Deviations from the plan text, recorded.** (1) The ledger overlay is required, not implied (above). (2) The plan's "peak window of 60 s" and "half-life" are one parameter here: the half-life; there is no separate
+window after which a worker snaps to the prior, because a hard window contradicts "the decay is continuous". (3) The decay target is the median of the stored (undecayed) peaks and the prior is the median of the decayed
+estimates, so the definition is not circular. (4) `scheduler.signals.ewma_alpha`, `ttft_halflife`, `min_samples` and `latency_aware.*` belong to PR C2 and are not added. (5) The model mean cost uses a fixed alpha of 0.1
+(not a key). (6) The strategy flags the copy it returns (`ObservedDegraded`, `ObservedInvalid`) as the only pure channel back to the router for the fallback counter. (7) The `Observed.Flags` byte is now full (eight flags); a
+later flag needs a wider type. (8) `signals` may import `math` (the purity test's allow-list gained it; the clock, goroutine and I/O bans are unchanged). (9) Plan criterion 9 asks for a startup log line when an env value is ignored; the config
+package has no logger and no other numeric override logs, so none is added.
+
+**Cost of a decision (D18), benchmarked on this machine (Apple silicon, battery), `BenchmarkRouteWorkAware`, 3,000 iterations per cell, one thread / 15 threads:** `least-tokens` 0.8 / 1.0 us at 3 workers,
+5.5 / 6.7 us at 50, 118 / 96 us at 1,000; `least-work` 0.8 / 1.0, 5.6 / 6.8, 113 / 101 us. The ledger path with `least-active` costs the same (5.8 / 7.1 us at 50). The budget is 25 us at 50 workers and 400 us at 1,000.
+The strategy alone (`BenchmarkSelect`) is 0.3 to 0.5 us at 3 to 50 workers and 3.4 us at 1,000 with three allocations whatever the fleet size; most of the router's time is the private copy of the view.
+
+**Honest limits.** Everything here is simulator-validated, not hardware-validated, and no scheduler comparison has been run: hypotheses H3 and H4 (the confirmatory primaries) are evaluated only in PR J, after the
+predictions freeze (PR I). In particular: (a) the mock worker counts words as tokens, its `recent_tokens_per_second` is the sum of its active generations (it grows with load, so the peak measures the highest
+demand seen, not a hardware limit), and it has no batching: on it `least-work`'s capacity term is a demand signal, which is exactly why PR E builds the richer simulator; (b) the cost of a request is an estimate
+(`max_tokens` is an upper bound on output, the input estimate is low for dense text, ADR-015) and a request counts its full cost until it ends; (c) other gateways' load is visible only through the reported active count and priced at
+the mean; with several gateways each gateway's ledger sees its own share (Phase 8); (d) a worker that flaps out of the snapshot loses its ledger entry while its requests run, so `WorkAhead` is a lower bound
+then; (e) a hand-off (Phase 15) bypasses the scheduler, so under queueing the strategies matter less (H10); (f) the capacity floor and the prior keep every worker finite and pickable, but a worker the strategy never
+picks is refreshed only by the decay, so a persistently slower worker is re-learned each time it decays back toward the prior; (g) the TTFT signal and the probe-priority rule (D7, D11) are PR C2's, so a half-open
+breaker's worker is probed by the existing Phase 15 mechanism only.
+
+### [later PR] Observability beyond the minimum, simulator, experiments (D24 to D28)
+
+`latency-aware` and the TTFT signal (PR C2), the rest of D24, the simulator (PR E), the experiment framework (G-lite), the pre-registered predictions (PR I)
 and the results (PR J) are recorded here as they land. Until then the plan is the source of truth. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
 
 ## Consequences

@@ -81,7 +81,8 @@ round-robin, least-active, and least-queue strategies; the gateway's router
 See ADR-011 and `docs/architecture/scheduling.md`. Weighted and latency-aware
 strategies are Phase 14. Phase 14 adds `internal/scheduler/signals` (pure: the gateway's
 in-flight token ledger and start/finish history) and the opt-in `scheduler.load_overlay: ledger`
-(ADR-022); the default overlay is unchanged.
+(ADR-022); the default overlay is unchanged. Phase 14 also adds the opt-in work-aware strategies `least-tokens` and
+`least-work` (`internal/scheduler/workaware.go`), which read the gateway's in-flight ledger and a capacity estimate and need the `ledger` overlay.
 
 
 
