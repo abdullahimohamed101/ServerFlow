@@ -347,6 +347,9 @@ func TestNewRegistryWiresTheWorkAwareSettings(t *testing.T) {
 		if r.sig == nil || !r.workAware || r.weights != (cost.Weights{InputWeight: 0.7, OutputFraction: 0.4}) {
 			t.Fatalf("%s: sig=%v workAware=%v weights=%+v", st, r.sig != nil, r.workAware, r.weights)
 		}
+		if c := r.sig.Config(); c.CapacityHalflife != 5*time.Second || c.CapacityFloor != 0.5 {
+			t.Fatalf("%s: the tracker runs with half-life %v and floor %v, want 5s and 0.5", st, c.CapacityHalflife, c.CapacityFloor)
+		}
 		if _, err := mk(st, config.LoadOverlayMax, nil); err == nil {
 			t.Fatalf("%s with the max overlay must be refused", st)
 		}

@@ -239,6 +239,12 @@ func TestLoadAddsTheLedgerTheForeignLoadAndTheQueuedTokens(t *testing.T) {
 	if o.Flags&protocol.ObservedLedger == 0 || o.Flags&protocol.ObservedPriorCapacity != 0 || o.Flags&protocol.ObservedUntracked != 0 {
 		t.Fatalf("flags %b", o.Flags)
 	}
+	// a tracked worker without a sample gets the fleet prior and says so
+	tr.Sync(at(300), []Observation{rep("a", 1, 3, 100), {Key: key("cold"), Model: "m", LastHeartbeat: t0}})
+	o = tr.Load(at(400), LoadInput{Input: Input{Key: key("cold"), At: at(0)}, Model: "m", Cost: 1, InputWeight: 1})
+	if o.CapacityTPS != 100 || o.Flags&protocol.ObservedPriorCapacity == 0 || o.Flags&protocol.ObservedUntracked != 0 {
+		t.Fatalf("cold tracked worker: %+v", o)
+	}
 	// before a mean exists the request's own cost stands in
 	o = tr.Load(at(200), LoadInput{Input: in.Input, Model: "unseen", QueuedTokens: 0, Cost: 123, InputWeight: 1})
 	if o.WorkAheadTokens != 700+4*123 {

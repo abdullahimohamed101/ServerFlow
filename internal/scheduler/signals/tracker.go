@@ -41,6 +41,9 @@ type Config struct {
 	CapacityFloor float64
 }
 
+// Config returns the configuration the tracker runs with, defaults filled in.
+func (t *Tracker) Config() Config { return t.cfg }
+
 // Key identifies one incarnation of a worker.
 type Key struct {
 	WorkerID   string
