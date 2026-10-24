@@ -87,7 +87,6 @@ func TestWorkAwareSeriesCatalogue(t *testing.T) {
 	}
 }
 
-
 var sampleLine = regexp.MustCompile(`(?m)^([a-z_]+(?:\{[^}]*\})?) ([0-9.e+-]+)$`)
 
 func seriesSample(text, series string) (float64, bool) {
