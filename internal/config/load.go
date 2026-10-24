@@ -137,6 +137,28 @@ func applyEnv(cfg *Config) {
 	if v, ok := env("SCHEDULER_LOAD_OVERLAY"); ok {
 		cfg.Scheduler.LoadOverlay = v // validated with the rest (fail fast), like the strategy name
 	}
+	// The work-aware settings (ADR-022). A value that does not parse is ignored, like every numeric override; one
+	// that parses is validated only when a work-aware strategy is selected.
+	if v, ok := env("SCHEDULER_COST_OUTPUT_FRACTION"); ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Scheduler.Cost.OutputFraction = f
+		}
+	}
+	if v, ok := env("SCHEDULER_COST_INPUT_WEIGHT"); ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Scheduler.Cost.InputWeight = f
+		}
+	}
+	if v, ok := env("SCHEDULER_SIGNALS_CAPACITY_HALFLIFE"); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Scheduler.Signals.CapacityHalflife = d
+		}
+	}
+	if v, ok := env("SCHEDULER_SIGNALS_CAPACITY_FLOOR"); ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.Scheduler.Signals.CapacityFloor = f
+		}
+	}
 	if v, ok := env("WORKER_HEARTBEAT_INTERVAL"); ok {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Worker.HeartbeatInterval = d

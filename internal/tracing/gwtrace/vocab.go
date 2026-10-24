@@ -18,7 +18,7 @@ var (
 		api.CodeRateLimitUnavail)
 	rateLimits      = set("requests", "tokens", "concurrency", "model", "unavailable")
 	selectOutcomes  = set("no_capacity", "model_not_found", "model_forbidden", "worker_unavailable", "internal")
-	strategies      = set("random", "round-robin", "least-active", "least-queue", "least-work")
+	strategies      = set("random", "round-robin", "least-active", "least-queue", "least-work", "least-tokens")
 	attemptOutcomes = set(gateway.AttemptOK, gateway.AttemptFailed, gateway.AttemptRetried, gateway.AttemptClientClosed)
 	retryDenials    = set(gateway.RetryDeniedBudget, gateway.RetryDeniedDeadline)
 	queueResults    = set(gateway.QueueServed, gateway.QueueTimeout, gateway.QueueClientGone, gateway.QueueDrained)

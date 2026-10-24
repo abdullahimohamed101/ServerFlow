@@ -18,7 +18,7 @@ import (
 // so renaming a package does not hide a call.
 var (
 	allowedImports = map[string]bool{
-		"sort": true, "sync": true, "time": true, "serverflow/pkg/protocol": true,
+		"math": true, "sort": true, "sync": true, "time": true, "serverflow/pkg/protocol": true,
 	}
 	// bannedTime are the time package functions that read or wait on the wall clock. Everything else
 	// in time (Duration, constants, arithmetic) is allowed.

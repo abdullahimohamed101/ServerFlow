@@ -415,6 +415,18 @@ const (
 	ObservedStale                                // the underlying report is older than its freshness bound
 	ObservedMissingGPU                           // the worker reports no GPU figure
 	ObservedInvalid                              // an input was NaN, infinite or out of range and was sanitised
+	// ObservedLedger says the gateway's ledger filled this value (the "ledger" load overlay is on). A snapshot
+	// without it carries no gateway observation, and the work-aware strategies then fall back to the active count.
+	ObservedLedger
+	// ObservedUntracked says the ledger does not follow this worker (the tracked-worker cap), so its work and
+	// capacity terms are missing.
+	ObservedUntracked
+	// ObservedPriorCapacity says CapacityTPS is the fleet prior (the worker has no capacity sample yet) or 0
+	// (no worker has one).
+	ObservedPriorCapacity
+	// ObservedDegraded is set by a strategy on the copy it returns when the decision used a simpler rule than
+	// the strategy's own, because a signal it needs was missing or invalid. The router counts it.
+	ObservedDegraded
 )
 
 // ModelInfo summarizes the workers serving one model.

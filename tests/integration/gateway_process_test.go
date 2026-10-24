@@ -122,7 +122,11 @@ func TestProcessGatewayConfigurationErrorsFailFast(t *testing.T) {
 		env  []string
 		want string
 	}{
-		{"least-work is not implemented", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_SCHEDULER_STRATEGY=least-work"}, "not implemented yet"},
+		// least-work is implemented since Phase 14; it reads the ledger, so the default overlay is refused.
+		{"least-work needs the ledger overlay", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_SCHEDULER_STRATEGY=least-work"}, "scheduler.load_overlay"},
+		{"least-tokens needs the ledger overlay", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_SCHEDULER_STRATEGY=least-tokens"}, "scheduler.load_overlay"},
+		{"an unknown strategy is refused", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_SCHEDULER_STRATEGY=magic"}, "not supported"},
+		{"a work-aware strategy with a bad weight", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_SCHEDULER_STRATEGY=least-work", "SERVERFLOW_SCHEDULER_LOAD_OVERLAY=ledger", "SERVERFLOW_SCHEDULER_COST_OUTPUT_FRACTION=2"}, "output_fraction"},
 		{"unknown source", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=magic"}, "worker_source"},
 		{"cleartext token to another host", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_GATEWAY_CONTROL_PLANE_URL=http://10.0.0.5:9090", "SERVERFLOW_CONTROL_PLANE_TOKEN=" + clusterToken}, "cleartext"},
 		{"bad worker network", []string{"SERVERFLOW_GATEWAY_WORKER_SOURCE=registry", "SERVERFLOW_GATEWAY_WORKER_NETWORKS=nonsense"}, "not a CIDR"},

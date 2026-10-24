@@ -44,10 +44,11 @@ func pick(t *testing.T, s Scheduler, ws []protocol.WorkerSnapshot) string {
 	return w.WorkerID
 }
 
-var all = []string{Random, RoundRobin, LeastActive, LeastQueue}
+var all = []string{Random, RoundRobin, LeastActive, LeastQueue, LeastTokens, LeastWork}
 
 func TestNewRejectsUnknownAndUnimplementedStrategies(t *testing.T) {
-	for _, s := range []string{"", "magic", "least-work", "Random", "round_robin"} {
+	// least-work was refused here until Phase 14 implemented it; latency-aware is the one still to come (ADR-022).
+	for _, s := range []string{"", "magic", "latency-aware", "least_work", "Least-Work", "Random", "round_robin"} {
 		if _, err := New(s); err == nil {
 			t.Errorf("%q must be rejected", s)
 		}

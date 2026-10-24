@@ -7,6 +7,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -251,7 +252,17 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 			"component", "gateway")
 	}
 	cp := client.New(cfg.Gateway.ControlPlaneURL, cfg.ControlPlane.Token, nil)
-	s, err := newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log)
+	var schedOpts []scheduler.Option
+	workAware := scheduler.WorkAware(cfg.Scheduler.Strategy)
+	if workAware {
+		// The strategy reads the gateway's own ledger, which only the ledger overlay provides. Config validation
+		// refuses the combination too; this guards callers that build a Config by hand.
+		if cfg.Scheduler.LoadOverlay != config.LoadOverlayLedger {
+			return nil, fmt.Errorf("scheduler.strategy %q needs scheduler.load_overlay: %s", cfg.Scheduler.Strategy, config.LoadOverlayLedger)
+		}
+		schedOpts = append(schedOpts, scheduler.WithCostWeights(cfg.Scheduler.CostWeights()))
+	}
+	s, err := newRegistryServer(cfg.Gateway, cfg.Scheduler.Strategy, cfg.Worker.SuspectTimeout, cp, log, schedOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +271,14 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	WithMetricsConfig(cfg.Metrics)(s)
 	if cfg.Scheduler.LoadOverlay == config.LoadOverlayLedger {
 		// A report older than the staleness bound is never used, and one heartbeat more covers the report's own age.
-		s.router.enableLedger(signals.Config{Window: cfg.Gateway.RegistryMaxStaleness + cfg.Worker.HeartbeatInterval})
+		sig := signals.Config{Window: cfg.Gateway.RegistryMaxStaleness + cfg.Worker.HeartbeatInterval}
+		if workAware {
+			sig.CapacityHalflife, sig.CapacityFloor = cfg.Scheduler.Signals.CapacityHalflife, cfg.Scheduler.Signals.CapacityFloor
+		}
+		s.router.enableLedger(sig)
+		if workAware {
+			s.router.enableWorkAware(cfg.Scheduler.CostWeights())
+		}
 	}
 	if cfg.Resilience.Effective(config.WorkerSourceRegistry) {
 		s.enableResilience(cfg, resilienceDeps{})
@@ -271,8 +289,8 @@ func NewRegistry(cfg config.Config, log *slog.Logger, opts ...Option) (*Server, 
 	return s, nil
 }
 
-func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter time.Duration, src workerLister, log *slog.Logger) (*Server, error) {
-	sched, err := scheduler.New(strategy)
+func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter time.Duration, src workerLister, log *slog.Logger, schedOpts ...scheduler.Option) (*Server, error) {
+	sched, err := scheduler.New(strategy, schedOpts...)
 	if err != nil {
 		return nil, err
 	}

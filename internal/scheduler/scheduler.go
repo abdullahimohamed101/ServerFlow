@@ -13,6 +13,7 @@ import (
 	"sort"
 	"sync"
 
+	"serverflow/internal/cost"
 	"serverflow/pkg/protocol"
 )
 
@@ -22,6 +23,11 @@ const (
 	RoundRobin  = "round-robin"
 	LeastActive = "least-active"
 	LeastQueue  = "least-queue"
+	// LeastTokens and LeastWork are the work-aware strategies of Phase 14 (ADR-022). They read the gateway's own
+	// view of the work on each worker (protocol.ObservedLoad), which the router fills only with
+	// scheduler.load_overlay: ledger.
+	LeastTokens = "least-tokens"
+	LeastWork   = "least-work"
 )
 
 // Scheduler picks a worker for a request (spec section 13).
@@ -98,12 +104,25 @@ func eligible(req *protocol.InferenceRequest, workers []protocol.WorkerSnapshot)
 }
 
 // Strategies lists the implemented strategy names.
-func Strategies() []string { return []string{Random, RoundRobin, LeastActive, LeastQueue} }
+func Strategies() []string {
+	return []string{Random, RoundRobin, LeastActive, LeastQueue, LeastTokens, LeastWork}
+}
+
+// WorkAware reports whether a strategy reads protocol.ObservedLoad, and so needs the gateway's ledger.
+func WorkAware(strategy string) bool { return strategy == LeastTokens || strategy == LeastWork }
 
 // Option configures New.
 type Option func(*options)
 
-type options struct{ seed *[2]uint64 }
+type options struct {
+	seed    *[2]uint64
+	weights cost.Weights
+}
+
+// WithCostWeights sets the weights least-work uses to turn the request's estimate into its own work cost. They
+// must be the weights the gateway's ledger uses (scheduler.cost.*), or the request's cost and the work ahead of
+// it would be in different units. The default is cost.DefaultWeights.
+func WithCostWeights(w cost.Weights) Option { return func(o *options) { o.weights = w } }
 
 // WithSeed makes the random strategy reproducible.
 func WithSeed(seed uint64) Option {
@@ -112,7 +131,7 @@ func WithSeed(seed uint64) Option {
 
 // New returns the scheduler for a strategy name.
 func New(strategy string, opts ...Option) (Scheduler, error) {
-	var o options
+	o := options{weights: cost.DefaultWeights()}
 	for _, f := range opts {
 		f(&o)
 	}
@@ -128,9 +147,14 @@ func New(strategy string, opts ...Option) (Scheduler, error) {
 	case RoundRobin:
 		return &roundRobin{rot: newRotor()}, nil
 	case LeastActive:
-		return &leastLoaded{rot: newRotor(), load: func(w protocol.WorkerSnapshot) int { return w.Metrics.ActiveRequests }}, nil
+		return &leastLoaded{rot: newRotor(), load: activeLoad}, nil
 	case LeastQueue:
 		return &leastLoaded{rot: newRotor(), load: func(w protocol.WorkerSnapshot) int { return w.Metrics.QueueDepth }}, nil
+	case LeastTokens, LeastWork:
+		return &workAware{
+			rot: newRotor(), work: strategy == LeastWork, weights: o.weights,
+			fallback: &leastLoaded{rot: nil, load: activeLoad},
+		}, nil
 	default:
 		return nil, fmt.Errorf("scheduler strategy %q is not implemented", strategy)
 	}
@@ -209,6 +233,15 @@ func (s *leastLoaded) SelectWorker(ctx context.Context, req *protocol.InferenceR
 	if why != nil {
 		return nil, why
 	}
+	return s.choose(req.Model, workers, idx), nil
+}
+
+// choose is the selection among the already-eligible workers idx.
+func (s *leastLoaded) choose(model string, workers []protocol.WorkerSnapshot, idx []int) *protocol.WorkerSnapshot {
+	return s.chooseWith(s.rot, model, workers, idx)
+}
+
+func (s *leastLoaded) chooseWith(rot *rotor, model string, workers []protocol.WorkerSnapshot, idx []int) *protocol.WorkerSnapshot {
 	min := s.load(workers[idx[0]])
 	for _, j := range idx[1:] {
 		if l := s.load(workers[j]); l < min {
@@ -221,6 +254,8 @@ func (s *leastLoaded) SelectWorker(ctx context.Context, req *protocol.InferenceR
 			tied = append(tied, j)
 		}
 	}
-	chosen := workers[tied[s.rot.next(req.Model, len(tied), func(i int) string { return workers[tied[i]].WorkerID })]]
-	return &chosen, nil
+	chosen := workers[tied[rot.next(model, len(tied), func(i int) string { return workers[tied[i]].WorkerID })]]
+	return &chosen
 }
+
+func activeLoad(w protocol.WorkerSnapshot) int { return w.Metrics.ActiveRequests }
