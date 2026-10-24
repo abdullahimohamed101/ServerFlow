@@ -21,13 +21,17 @@ const (
 	// minTPS is the smallest sample that counts: below it the report says nothing (a rate of 1e-300 would make
 	// a worker's predicted wait overflow).
 	minTPS = 1e-3
+	// peerClamp (K) bounds each worker's peak at K times the median of the OTHER workers' peaks for the model, so
+	// one worker that reports an absurd rate cannot make itself the "fastest" one by more than that factor
+	// (ADR-022, limits). With no other peak there is nothing to compare with and only maxTPS applies.
+	peerClamp = 10.0
 	// costAlpha is the weight of a new request in the per-model mean cost.
 	costAlpha = 0.1
 )
 
 // sample takes the worker's reported rate as a capacity sample when it is fresh, the worker had work, and the
 // report is a new one (the same heartbeat is sampled once). The new peak is the larger of the decayed old peak
-// and the sample.
+// and the sample, at most maxTPS; recomputeCapacity then cuts it to peerClamp times the peers' median.
 func (t *Tracker) sample(e *entry, m Observation, now time.Time) {
 	if !m.Fresh || m.ReportedActive < 1 || m.LastHeartbeat.IsZero() || m.LastHeartbeat.Equal(e.capHB) {
 		return
@@ -68,6 +72,13 @@ func (t *Tracker) recomputeCapacity(now time.Time) {
 		if len(peaks) == 0 {
 			continue // nobody has a sample: capacity is unknown for the whole fleet
 		}
+		clampToPeers(es, peaks)
+		peaks = peaks[:0]
+		for _, e := range es {
+			if e.hasPeak {
+				peaks = append(peaks, e.peak)
+			}
+		}
 		target := median(peaks)
 		rs := peaks[:0]
 		for _, e := range es {
@@ -84,6 +95,44 @@ func (t *Tracker) recomputeCapacity(now time.Time) {
 			}
 		}
 	}
+}
+
+// clampToPeers lowers every stored peak of one model to peerClamp times the median of the other workers' peaks.
+// All bounds are taken from the peaks as they stood before any is lowered, so the result does not depend on the
+// order of the workers; a lie stored while the worker was alone (no peer to compare with) is cut as soon as a peer
+// has a sample. peaks holds the stored peaks of the workers in es that have one (in es order) and is reordered.
+func clampToPeers(es []*entry, peaks []float64) {
+	n := len(peaks)
+	if n < 2 {
+		return
+	}
+	sorted := append([]float64(nil), peaks...)
+	sort.Float64s(sorted)
+	for _, e := range es {
+		if !e.hasPeak {
+			continue
+		}
+		// the position of e's peak in sorted (any equal value is interchangeable for the median of the rest)
+		i := sort.SearchFloat64s(sorted, e.peak)
+		if bound := peerClamp * medianWithout(sorted, i); e.peak > bound {
+			e.peak = bound
+		}
+	}
+}
+
+// medianWithout is the median of the sorted slice with element i left out (len >= 2).
+func medianWithout(sorted []float64, i int) float64 {
+	at := func(k int) float64 { // the k-th element of the slice without i
+		if k >= i {
+			k++
+		}
+		return sorted[k]
+	}
+	m := len(sorted) - 1
+	if m%2 == 1 {
+		return at(m / 2)
+	}
+	return (at(m/2-1) + at(m/2)) / 2
 }
 
 // decay moves peak toward target by the elapsed time: target + (peak - target) * 2^(-elapsed/halflife), floored

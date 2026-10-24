@@ -117,7 +117,12 @@ a result must record the overlay (PR G-lite).
 
 **The capacity estimate `R_w` (D6), computed at snapshot-refresh time.** The tracker's `Sync` takes, per refresh, each worker's model, reported active count, reported `recent_tokens_per_second` and whether
 the registry offers it (`Fresh`). A report is sampled once (per heartbeat), only while the worker had work (`active >= 1`), only when fresh, and only if the rate is a finite number of at least 1e-3 tokens/s
-(a larger one is clamped to 1e7: a worker can lie about its own metrics, and the registry already rejects absurd figures; the clamp bounds how much one can claim). The estimate is a decayed **peak**, not the latest
+(a larger one is clamped to 1e7). A worker can lie about its own metrics, and 1e7 alone does not help: against honest workers at 100 tokens/s a claim of 1e9 would become 1e7 and win every `least-work`
+decision. So every stored peak is also cut to **K = 10** (`peerClamp`) times the median of the model's *other* workers' peaks, all bounds taken from the peaks before any is cut (the result does not depend on the
+order of the snapshot), and re-applied at every refresh, so a lie stored while the worker was alone is cut as soon as a peer has a sample, and a re-registered liar is cut again. The residual bound is stated honestly: a lie
+inflates a worker's capacity by at most K times the honest median (a worker that claims 10x still wins `least-work` against an honest peer of equal load), a liar also lifts the model's decay target and so the floor
+of the honest workers, a majority of liars moves the median itself, a fleet that is really more than K times heterogeneous has its fastest workers under-estimated, and a **cold fleet is unprotected**: with no
+other peak (a lone worker, or no peer has been sampled yet) only the 1e7 bound applies. The estimate is a decayed **peak**, not the latest
 value: an idle or lightly loaded worker reports little and must not look slow. The peak decays toward the median of the model's stored peaks with the half-life `scheduler.signals.capacity_halflife` (default
 60 s), continuously (no snap), and never below `capacity_floor` (default 0.25) times that median, so no worker is estimated zero or infinitely slow and an estimate that is not refreshed is within 10% of the median after
 four half-lives (a test pins it). A worker with no sample, or a re-registered one, takes the **fleet prior**, the median of the model's sampled estimates, flagged `ObservedPriorCapacity`; with one sampled worker its

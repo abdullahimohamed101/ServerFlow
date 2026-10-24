@@ -420,6 +420,16 @@ func TestCapacityMatchesANaiveReferenceOnRandomSequences(t *testing.T) {
 					}
 				}
 			}
+			// the peer clamp (ADR-022): each peak is cut to peerClamp times the median of the others' peaks
+			stored := map[string]float64{}
+			for id, w := range ref {
+				if w.has {
+					stored[id] = w.peak
+				}
+			}
+			for id, v := range naiveClamp(stored) {
+				ref[id].peak = v
+			}
 			var peaks []float64
 			for _, w := range ref {
 				if w.has {
