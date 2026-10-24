@@ -52,6 +52,25 @@ func TestWorkRepairsInvalidWeights(t *testing.T) {
 	}
 }
 
+// A negative weight is a mistake, not "weigh nothing" and not a negative cost: it reads as the default 1, like
+// NaN and infinity, so the other weight still applies and the result is the plain sum.
+func TestWorkReadsNegativeWeightsAsTheDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w    Weights
+		want int64
+	}{
+		{"negative input weight", Weights{InputWeight: -1, OutputFraction: 0.5}, 100 + 100},
+		{"negative output fraction", Weights{InputWeight: 0.5, OutputFraction: -2}, 50 + 200},
+		{"both negative", Weights{InputWeight: -0.001, OutputFraction: -1e300}, 100 + 200},
+		{"negative infinity", Weights{InputWeight: math.Inf(-1), OutputFraction: 1}, 100 + 200},
+	} {
+		if got := Work(100, 200, tc.w); got != tc.want {
+			t.Errorf("%s: Work(100, 200, %+v) = %d, want %d", tc.name, tc.w, got, tc.want)
+		}
+	}
+}
+
 // With the default weights Work is exactly the sum Estimate returns, which is what the ledger held before the
 // weights existed (PR B): turning the weights on cannot change a default deployment.
 func TestWorkWithDefaultWeightsIsTheEstimateSum(t *testing.T) {

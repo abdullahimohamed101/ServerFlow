@@ -365,6 +365,30 @@ func TestNewRegistryWiresTheWorkAwareSettings(t *testing.T) {
 	}
 }
 
+// route() reports the wait least-work predicted for the decision it made, priced with the configured weights.
+// Hand-computed. Weights: input 0.5, output 1, so the request (100 in, 400 out) costs 450 (not the 500 estimated).
+//
+//	w1 reports 2 active, 600 queued input tokens, 200 tokens/s, and is the only worker:
+//	work ahead = foreign 2 x mean 450 (the request's own cost until a mean exists) + 600 x 0.5 = 1200
+//	predicted wait = (1200 + 450) / 200 = 8.25 s
+func TestRoutePredictsTheWaitWithTheWeightedCost(t *testing.T) {
+	w := cost.Weights{InputWeight: 0.5, OutputFraction: 1}
+	r, lister, clock := waRouter(t, scheduler.LeastWork, w, nil)
+	lister.set([]protocol.WorkerSnapshot{reporting("w1", 2, 600, 200, t0)}, nil)
+	clock.Advance(time.Second)
+	if err := r.cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rt, rerr := r.Route(context.Background(), req(100, 400))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	defer rt.release()
+	if !rt.hasPrediction || math.Abs(rt.predicted-8.25) > 1e-9 {
+		t.Fatalf("predicted %v (has=%v), want 8.25", rt.predicted, rt.hasPrediction)
+	}
+}
+
 // The scheduler NewRegistry builds must score with the configured cost weights (scheduler.WithCostWeights), not
 // the defaults: least-work's choice depends on the request's own cost c. Hand-computed, for a request of 1000
 // estimated input tokens and no output budget:
