@@ -312,6 +312,9 @@ func newRegistryServer(g config.GatewayConfig, strategy string, suspectAfter tim
 	s.ready = &readiness{upstream: rt}
 	s.background = cache.Run
 	s.metrics.setStrategy(strategy)
+	if scheduler.WorkAware(strategy) {
+		s.metrics.enableSignals()
+	}
 	s.metrics.reg.MustRegister(newSnapshotCollector(cache))
 	return s, nil
 }

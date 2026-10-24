@@ -177,3 +177,17 @@ func medianOf(v []float64) float64 {
 	}
 	return (v[n/2-1] + v[n/2]) / 2
 }
+
+// PredictedWait is the wait, in seconds, that least-work predicts for a request of the given work cost on a worker:
+// (work ahead + cost) / capacity. ok is false when the worker's work ahead or capacity is missing or invalid, so
+// there is no prediction to make. The router reports it for the decision it just made.
+func PredictedWait(o protocol.ObservedLoad, cost float64) (seconds float64, ok bool) {
+	if o.Flags&protocol.ObservedLedger == 0 || !validRate(o.CapacityTPS) || !(o.WorkAheadTokens >= 0) || math.IsInf(o.WorkAheadTokens, 0) || !(cost >= 0) {
+		return 0, false
+	}
+	v := (o.WorkAheadTokens + cost) / o.CapacityTPS
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
+}

@@ -78,6 +78,11 @@ type routed struct {
 	// subtracts exactly what was added.
 	lease signals.Token
 	cost  atomic.Int64
+
+	// predicted is what the work-aware strategy predicted for this attempt when it chose the worker (seconds of
+	// wait, valid when hasPrediction). Zero for hand-offs: the scheduler did not choose those.
+	predicted     float64
+	hasPrediction bool
 }
 
 // probe reports whether the attempt is a circuit breaker's trial request (AttemptStart.Probe).
@@ -158,6 +163,9 @@ func (r *router) route(ctx context.Context, req *protocol.InferenceRequest, wait
 	}
 	rt := r.newRouted(chosen, ticket, lease)
 	rt.cost.Store(lease.cost)
+	if r.workAware {
+		rt.predicted, rt.hasPrediction = scheduler.PredictedWait(chosen.Observed, float64(r.requestCost(req)))
+	}
 	return rt, nil, nil
 }
 
