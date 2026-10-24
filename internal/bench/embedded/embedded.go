@@ -28,6 +28,7 @@ import (
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/registry/server"
+	"serverflow/internal/scheduler"
 	"serverflow/internal/sim/engine"
 	"serverflow/internal/worker"
 )
@@ -322,6 +323,11 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token
 	gcfg.Scheduler.Strategy = cfg.Scheduler
+	if scheduler.WorkAware(cfg.Scheduler) {
+		// least-tokens and least-work read the gateway's ledger, which only the ledger overlay provides (ADR-022);
+		// GatewayMutate may still change it (the gateway then refuses to start).
+		gcfg.Scheduler.LoadOverlay = config.LoadOverlayLedger
+	}
 	if c.resilience, _, err = ApplyResilience(&gcfg, cfg.Resilience); err != nil {
 		return fail(err)
 	}
