@@ -12,6 +12,11 @@ import (
 const (
 	DefaultBucket     = 100 * time.Millisecond
 	DefaultMaxWorkers = 4096
+	// DefaultMaxModels bounds the per-model mean request cost the tracker keeps.
+	DefaultMaxModels = 1024
+	// DefaultCapacityHalflife and DefaultCapacityFloor are scheduler.signals.capacity_halflife and capacity_floor.
+	DefaultCapacityHalflife = 60 * time.Second
+	DefaultCapacityFloor    = 0.25
 	// maxCount bounds the counts taken from a worker's report so that the arithmetic cannot overflow.
 	maxCount = 1<<31 - 1
 	// maxReportAge bounds the heartbeat age taken from a snapshot before it becomes a duration.
@@ -27,7 +32,17 @@ type Config struct {
 	Window time.Duration
 	// MaxWorkers caps the workers tracked; beyond it a worker is untracked and gets the fallback (default 4096).
 	MaxWorkers int
+	// MaxModels caps the models whose mean request cost is tracked (default 1024); beyond it a request's own
+	// cost stands in for the mean.
+	MaxModels int
+	// CapacityHalflife is how fast a worker's capacity peak decays toward the fleet prior (default 60 s).
+	CapacityHalflife time.Duration
+	// CapacityFloor is the fraction of the fleet prior below which a decayed peak never goes (default 0.25).
+	CapacityFloor float64
 }
+
+// Config returns the configuration the tracker runs with, defaults filled in.
+func (t *Tracker) Config() Config { return t.cfg }
 
 // Key identifies one incarnation of a worker.
 type Key struct {
@@ -79,6 +94,10 @@ type Result struct {
 	Inflight int
 	Work     int64
 	Fallback Fallback
+	// Capacity is the worker's estimated token rate (tokens per second, 0 unknown) and CapacityPrior says it is
+	// the fleet prior or unknown rather than the worker's own sample. Zero for an untracked worker.
+	Capacity      float64
+	CapacityPrior bool
 }
 
 // Observed converts the result into the Go-only snapshot field the strategies read.
@@ -94,6 +113,15 @@ func (r Result) Observed() protocol.ObservedLoad {
 type Observation struct {
 	Key           Key
 	LastHeartbeat time.Time
+
+	// The fields below feed the capacity estimate (ADR-022, D6) and may be left zero by a caller that does not
+	// need it: Model groups workers into a fleet, ReportedActive and ReportedTPS are the worker's report, and
+	// Fresh says the report may be sampled (the registry offers the worker and the report is within its
+	// freshness bound).
+	Model          string
+	ReportedActive int
+	ReportedTPS    float64
+	Fresh          bool
 }
 
 // Stats are cumulative counters and sizes, for tests and metrics.
@@ -116,6 +144,8 @@ type Tracker struct {
 	entries map[Key]*entry
 	nextGen uint64
 	stats   Stats
+	// meanCost is the per-model EWMA of the work cost of the requests this gateway routed.
+	meanCost map[string]float64
 }
 
 type entry struct {
@@ -126,6 +156,17 @@ type entry struct {
 	validFrom time.Time
 	lastHB    time.Time
 	hist      history
+
+	// Capacity (D6). model groups the worker with its fleet. peak is the decayed peak of the sampled reported
+	// tokens per second as of peakAt; capHB is the heartbeat the last sample came from (a report is sampled once).
+	// capR is the estimate as of the last Sync, capPrior says it is the fleet prior rather than the worker's own.
+	model    string
+	hasPeak  bool
+	peak     float64
+	peakAt   time.Time
+	capHB    time.Time
+	capR     float64
+	capPrior bool
 }
 
 // New returns an empty tracker. Zero Config fields take their defaults; a Window shorter than two buckets is
@@ -140,7 +181,16 @@ func New(cfg Config) *Tracker {
 	if cfg.Window < 2*cfg.Bucket {
 		cfg.Window = 2 * cfg.Bucket
 	}
-	return &Tracker{cfg: cfg, entries: map[Key]*entry{}}
+	if cfg.MaxModels <= 0 {
+		cfg.MaxModels = DefaultMaxModels
+	}
+	if cfg.CapacityHalflife <= 0 {
+		cfg.CapacityHalflife = DefaultCapacityHalflife
+	}
+	if !(cfg.CapacityFloor > 0 && cfg.CapacityFloor <= 1) { // also catches NaN
+		cfg.CapacityFloor = DefaultCapacityFloor
+	}
+	return &Tracker{cfg: cfg, entries: map[Key]*entry{}, meanCost: map[string]float64{}}
 }
 
 // ReportTime is the gateway-local instant a report was made: now minus the report's (aged) heartbeat age. now
@@ -181,6 +231,8 @@ func (t *Tracker) Sync(now time.Time, members []Observation) {
 			t.stats.Resets++
 		}
 		e.lastHB = m.LastHeartbeat
+		e.model = m.Model
+		t.sample(e, m, now)
 	}
 	for k := range t.entries {
 		if _, ok := seen[k]; !ok {
@@ -188,6 +240,8 @@ func (t *Tracker) Sync(now time.Time, members []Observation) {
 			t.stats.Pruned++
 		}
 	}
+	t.pruneModels()
+	t.recomputeCapacity(now)
 }
 
 // create adds an entry unless the cap is reached (then it counts the miss and returns nil).
@@ -269,6 +323,10 @@ func (t *Tracker) End(now time.Time, tok Token, cost int64) {
 func (t *Tracker) Overlay(now time.Time, in Input) Result {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.overlayLocked(now, in)
+}
+
+func (t *Tracker) overlayLocked(now time.Time, in Input) Result {
 	t.setEpoch(now)
 	local := clampCount(in.Local)
 	reported := clampCount(in.Reported)
@@ -276,10 +334,12 @@ func (t *Tracker) Overlay(now time.Time, in Input) Result {
 	e := t.entries[in.Key]
 	if e == nil {
 		res.Fallback = FallbackUntracked
+		res.CapacityPrior = true
 		t.stats.FallbackUntracked++
 		return res
 	}
 	res.Inflight, res.Work = e.inflight, e.work
+	res.Capacity, res.CapacityPrior = e.capR, e.capPrior || e.capR <= 0
 	at := in.At
 	if at.After(now) {
 		at = now

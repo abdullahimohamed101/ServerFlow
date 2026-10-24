@@ -6,6 +6,7 @@
 package cost
 
 import (
+	"math"
 	"unicode/utf8"
 
 	"serverflow/pkg/protocol"
@@ -110,4 +111,42 @@ func textTokens(s string) uint64 {
 		i += size
 	}
 	return (ascii+charsPerToken-1)/charsPerToken + wide
+}
+
+// Weights turn an estimate into the work a request is expected to put on a worker (ADR-022, D3). They apply to
+// the scheduler's accounting only: the rate limiter is always charged the unweighted estimate.
+type Weights struct {
+	// InputWeight scales the input tokens (prefill tokens are usually cheaper than decode tokens, so a value
+	// below 1 is plausible). Default 1.
+	InputWeight float64
+	// OutputFraction scales the output budget (max_tokens, or the gateway limit when absent): the share of it
+	// the replies are expected to use. In (0, 1]. Default 1, the pessimistic "charge the whole budget" estimate.
+	OutputFraction float64
+}
+
+// DefaultWeights are the plan's defaults: input counted fully, the whole output budget counted.
+func DefaultWeights() Weights { return Weights{InputWeight: 1, OutputFraction: 1} }
+
+// maxWeight bounds a weight taken from a caller that did not validate it, so the arithmetic cannot overflow.
+const maxWeight = 1e4
+
+// Work is the estimated work of a request in tokens: InputWeight times the input estimate plus OutputFraction
+// times the output budget, rounded up per part. It is at least 1 for a request with any estimate (so the ledger
+// never holds a free request) and bounded by 2*MaxCost*maxWeight. Negative or non-finite weights count as the
+// defaults; weights above maxWeight are clamped.
+func Work(estInput, estOutput int, w Weights) int64 {
+	in, out := float64(max(estInput, 0)), float64(max(estOutput, 0))
+	iw, of := sane(w.InputWeight, 1), sane(w.OutputFraction, 1)
+	total := int64(math.Ceil(iw*in)) + int64(math.Ceil(of*out))
+	if total < 1 && (estInput > 0 || estOutput > 0) {
+		total = 1
+	}
+	return total
+}
+
+func sane(v, def float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return def
+	}
+	return math.Min(v, maxWeight)
 }

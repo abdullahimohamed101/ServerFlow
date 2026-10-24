@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/internal/cost"
 	"serverflow/internal/resilience"
 	"serverflow/internal/scheduler"
 	"serverflow/internal/scheduler/signals"
@@ -45,12 +46,19 @@ type router struct {
 	sig       *signals.Tracker
 	capWarned atomic.Bool // the tracked-worker cap was reported once
 
+	// weights are the cost weights of the ledger (scheduler.cost.*). workAware is set when the strategy reads the
+	// gateway's observed load (least-tokens, least-work): the router then fills Observed with the work-ahead and
+	// capacity terms and feeds the tracker the capacity samples and the per-model mean cost. Both are set once,
+	// before the router serves (enableWorkAware).
+	weights   cost.Weights
+	workAware bool
+
 	mu       sync.Mutex
 	inflight map[string]int // worker ID -> requests sent and not yet finished
 }
 
 func newRouter(cache *snapshotCache, policy *AddressPolicy, sched scheduler.Scheduler, strategy string, client *http.Client, log *slog.Logger) *router {
-	return &router{cache: cache, policy: policy, sched: sched, strategy: strategy, client: client, log: log, inflight: map[string]int{}}
+	return &router{cache: cache, policy: policy, sched: sched, strategy: strategy, client: client, log: log, inflight: map[string]int{}, weights: cost.DefaultWeights()}
 }
 
 // routed is the outcome of a successful Route. The caller must call release
@@ -70,6 +78,11 @@ type routed struct {
 	// subtracts exactly what was added.
 	lease signals.Token
 	cost  atomic.Int64
+
+	// predicted is what the work-aware strategy predicted for this attempt when it chose the worker (seconds of
+	// wait, valid when hasPrediction). Zero for hand-offs: the scheduler did not choose those.
+	predicted     float64
+	hasPrediction bool
 }
 
 // probe reports whether the attempt is a circuit breaker's trial request (AttemptStart.Probe).
@@ -150,6 +163,9 @@ func (r *router) route(ctx context.Context, req *protocol.InferenceRequest, wait
 	}
 	rt := r.newRouted(chosen, ticket, lease)
 	rt.cost.Store(lease.cost)
+	if r.workAware {
+		rt.predicted, rt.hasPrediction = scheduler.PredictedWait(chosen.Observed, float64(r.requestCost(req)))
+	}
 	return rt, nil, nil
 }
 
@@ -175,10 +191,10 @@ type ledgerLease struct {
 	cost int64
 }
 
-// requestCost is the estimated token work of a request for the ledger: input plus output estimate, as the
-// handler computed them once (D3). Clamped to non-negative.
-func requestCost(req *protocol.InferenceRequest) int64 {
-	return max(int64(req.EstInputTokens), 0) + max(int64(req.EstOutputTokens), 0)
+// requestCost is the estimated token work of a request for the ledger: the input and output estimates the handler
+// computed once (D3), weighted by scheduler.cost.* (1 and 1 by default, which is their plain sum).
+func (r *router) requestCost(req *protocol.InferenceRequest) int64 {
+	return cost.Work(req.EstInputTokens, req.EstOutputTokens, r.weights)
 }
 
 // charge adds the cost of req to the ledger entry of a routed that was handed a slot by a release (cost 0 until
@@ -188,7 +204,7 @@ func (r *router) charge(rt *routed, req *protocol.InferenceRequest) {
 	if r.sig == nil || rt == nil || rt.cost.Load() != 0 {
 		return
 	}
-	if c := requestCost(req); r.sig.AddCost(rt.lease, c) {
+	if c := r.requestCost(req); r.sig.AddCost(rt.lease, c) {
 		rt.cost.Store(c)
 	}
 }
@@ -200,6 +216,11 @@ func (r *router) enableLedger(cfg signals.Config) {
 		obs := make([]signals.Observation, len(ws))
 		for i := range ws {
 			obs[i] = signals.Observation{Key: signals.KeyOf(&ws[i]), LastHeartbeat: ws[i].LastHeartbeat}
+			if r.workAware {
+				w := &ws[i]
+				obs[i].Model, obs[i].ReportedActive, obs[i].ReportedTPS = w.Model, w.Metrics.ActiveRequests, w.Metrics.RecentTokensPerSecond
+				obs[i].Fresh = schedulable(w)
+			}
 		}
 		r.sig.Sync(now, obs)
 		if st := r.sig.Stats(); st.Untracked > 0 && !r.capWarned.Swap(true) {
@@ -207,6 +228,14 @@ func (r *router) enableLedger(cfg signals.Config) {
 				"component", "gateway", "tracked", st.Tracked)
 		}
 	}
+}
+
+// enableWorkAware makes the router serve a strategy that reads the gateway's observed load: it takes the cost
+// weights of the ledger and turns on the work-ahead and capacity terms of Observed. It requires the ledger
+// (enableLedger first) and must be called before the router serves.
+func (r *router) enableWorkAware(w cost.Weights) {
+	r.weights = w
+	r.workAware = true
 }
 
 // overlay is the effective load of a worker: the one place that combines what the worker reported with what this
@@ -339,11 +368,26 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 		w, rerr := r.enqueueLocked(req, wait, routeError{})
 		return nil, resilience.Ticket{}, ledgerLease{}, w, rerr
 	}
-	for i := range workers {
-		active, res, ledger := r.overlay(&workers[i], viewAt)
-		workers[i].Metrics.ActiveRequests = active
-		if ledger {
-			workers[i].Observed = res.Observed()
+	if r.workAware && r.sig != nil {
+		c := r.requestCost(req)
+		for i := range workers {
+			w := &workers[i]
+			o := r.sig.Load(viewAt, signals.LoadInput{
+				Input: signals.Input{
+					Key: signals.KeyOf(w), Local: r.inflight[w.WorkerID], Reported: w.Metrics.ActiveRequests,
+					At: signals.ReportTime(viewAt, w.HeartbeatAgeSeconds),
+				},
+				Model: w.Model, QueuedTokens: int64(w.Metrics.QueuedInputTokens), Cost: c, InputWeight: r.weights.InputWeight,
+			})
+			w.Metrics.ActiveRequests, w.Observed = o.EffectiveActive, o
+		}
+	} else {
+		for i := range workers {
+			active, res, ledger := r.overlay(&workers[i], viewAt)
+			workers[i].Metrics.ActiveRequests = active
+			if ledger {
+				workers[i].Observed = res.Observed()
+			}
 		}
 	}
 	var chosen *protocol.WorkerSnapshot
@@ -398,8 +442,11 @@ func (r *router) reserve(ctx context.Context, req *protocol.InferenceRequest, wo
 	if r.sig != nil {
 		now := r.cache.now()
 		lease.tok = r.sig.Begin(now, signals.KeyOf(chosen))
-		if lease.cost = requestCost(req); !r.sig.AddCost(lease.tok, lease.cost) {
+		if lease.cost = r.requestCost(req); !r.sig.AddCost(lease.tok, lease.cost) {
 			lease.cost = 0
+		}
+		if r.workAware {
+			r.sig.ObserveCost(chosen.Model, r.requestCost(req))
 		}
 	}
 	return chosen, ticket, lease, nil, nil
