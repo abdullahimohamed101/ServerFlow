@@ -164,6 +164,30 @@ func TestForeignLoadIsPricedAtTheMeanRequestCost(t *testing.T) {
 	}
 }
 
+// Only workers the registry offers are sampled for the capacity estimate: a draining or unhealthy worker's report
+// must not move the fleet prior that cold workers use.
+func TestOnlyWorkersTheRegistryOffersAreSampledForCapacity(t *testing.T) {
+	r, lister, clock := waRouter(t, scheduler.LeastWork, cost.DefaultWeights(), nil)
+	draining := reporting("drain", 2, 0, 5000, t0)
+	draining.State, draining.Eligible = protocol.StateDraining, false
+	sick := reporting("sick", 2, 0, 7000, t0)
+	sick.Health = protocol.HealthUnhealthy
+	cold := reporting("cold", 0, 0, 0, t0)
+	lister.set([]protocol.WorkerSnapshot{reporting("ok", 1, 0, 100, t0), draining, sick, cold}, nil)
+	clock.Advance(time.Second)
+	if err := r.cache.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []*protocol.WorkerSnapshot{&draining, &sick} {
+		if tps, prior := r.sig.Capacity(signals.KeyOf(w)); !prior || tps != 100 {
+			t.Errorf("%s was sampled: capacity %v prior=%v", w.WorkerID, tps, prior)
+		}
+	}
+	if tps, prior := r.sig.Capacity(signals.KeyOf(&cold)); !prior || tps != 100 {
+		t.Errorf("the prior was moved by workers the registry does not offer: %v %v", tps, prior)
+	}
+}
+
 func TestLeastWorkChoosesTheFasterWorkerAndLeastTokensTakesTurns(t *testing.T) {
 	ws := []protocol.WorkerSnapshot{reporting("fast", 1, 0, 400, t0), reporting("slow", 1, 0, 100, t0)}
 	r, lister, clock := waRouter(t, scheduler.LeastWork, cost.DefaultWeights(), nil)

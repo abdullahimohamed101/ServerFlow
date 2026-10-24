@@ -182,3 +182,19 @@ func TestSignalsObservationDoesNotAllocate(t *testing.T) {
 		t.Fatalf("%v allocations per AttemptStarted with signals", n)
 	}
 }
+
+// An event without a prediction observes nothing in the histogram (a zero wait is a real value, not "none").
+func TestNoPredictionIsNotObservedAsAZeroWait(t *testing.T) {
+	s := benchServer(false)
+	s.metrics.setStrategy(scheduler.LeastWork)
+	s.metrics.enableSignals()
+	s.metrics.AttemptStarted(context.Background(), AttemptStart{Model: "qwen-7b", WorkerID: "w", Number: 1, WorkerState: "READY", WorkerEligible: true,
+		Signals: SchedulerSignals{ColdStart: true}})
+	text := scrape(t, s)
+	if strings.Contains(text, "scheduler_predicted_wait_seconds_count") {
+		t.Fatalf("a decision without a prediction was observed:\n%s", text)
+	}
+	if v, ok := seriesSample(text, `scheduler_signal_fallbacks_total{model="qwen-7b",reason="cold_start"}`); !ok || v != 1 {
+		t.Fatalf("cold_start %v %v", v, ok)
+	}
+}

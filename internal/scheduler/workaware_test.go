@@ -672,3 +672,35 @@ func BenchmarkSelect(b *testing.B) {
 }
 
 func itoa(n int) string { return big.NewInt(int64(n)).String() }
+
+func TestPredictedWaitIsWorkAheadPlusCostOverCapacity(t *testing.T) {
+	obs := func(ahead, rate float64, flags protocol.ObservedFlags) protocol.ObservedLoad {
+		return protocol.ObservedLoad{WorkAheadTokens: ahead, CapacityTPS: rate, Flags: flags}
+	}
+	led := protocol.ObservedLedger
+	for _, tc := range []struct {
+		name string
+		o    protocol.ObservedLoad
+		cost float64
+		want float64
+		ok   bool
+	}{
+		{"hand-computed: (500 + 100) / 200", obs(500, 200, led), 100, 3, true},
+		{"an idle worker still waits for the request itself", obs(0, 50, led), 100, 2, true},
+		{"free request", obs(300, 100, led), 0, 3, true},
+		{"no ledger observation: no prediction", obs(500, 200, 0), 100, 0, false},
+		{"unknown capacity", obs(500, 0, led), 100, 0, false},
+		{"NaN capacity", obs(500, math.NaN(), led), 100, 0, false},
+		{"infinite capacity", obs(500, math.Inf(1), led), 100, 0, false},
+		{"negative work ahead", obs(-1, 100, led), 10, 0, false},
+		{"NaN work ahead", obs(math.NaN(), 100, led), 10, 0, false},
+		{"infinite work ahead", obs(math.Inf(1), 100, led), 10, 0, false},
+		{"negative cost", obs(1, 100, led), -10, 0, false},
+		{"overflow", obs(1e308, 1e-300, led), 1, 0, false},
+	} {
+		got, ok := PredictedWait(tc.o, tc.cost)
+		if ok != tc.ok || (ok && math.Abs(got-tc.want) > 1e-12) {
+			t.Errorf("%s: got %v %v, want %v %v", tc.name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
