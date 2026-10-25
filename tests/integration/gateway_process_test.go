@@ -49,6 +49,12 @@ func gatewayChat(gwAddr string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+// isNoEligibleWorker reports whether an answer is exactly 503 NO_CAPACITY saying no worker was eligible: the only answer
+// a machine stall is allowed to excuse.
+func isNoEligibleWorker(code int, body string) bool {
+	return code == 503 && strings.Contains(body, `"NO_CAPACITY"`) && strings.Contains(body, `"eligible_workers":0`)
+}
+
 // maxStallBlips is how many stalls of the machine one test run forgives.
 const maxStallBlips = 5
 
@@ -63,7 +69,7 @@ const maxStallBlips = 5
 func gatewayChatThroughStalls(t *testing.T, cpAddr, gwAddr string, blips *int, want ...string) (int, string) {
 	t.Helper()
 	code, body := gatewayChat(gwAddr)
-	for code == 503 && strings.Contains(body, `"eligible_workers":0`) && *blips < maxStallBlips {
+	for isNoEligibleWorker(code, body) && *blips < maxStallBlips {
 		*blips++
 		t.Logf("no worker was eligible (a stall on a loaded machine); waiting for %v to report again", want)
 		waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "the workers eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
@@ -77,7 +83,7 @@ func gatewayChatThroughStalls(t *testing.T, cpAddr, gwAddr string, blips *int, w
 		// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
 		waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
 			code, body = gatewayChat(gwAddr)
-			return code != 503 || !strings.Contains(body, `"eligible_workers":0`)
+			return !isNoEligibleWorker(code, body)
 		})
 	}
 	return code, body
