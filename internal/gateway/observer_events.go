@@ -110,7 +110,26 @@ type AttemptStart struct {
 	// until the admission queue arrives (Phase 15 PR E).
 	Probe     bool
 	QueueWait time.Duration
+	// Signals says what a work-aware strategy (least-tokens, least-work) knew when it chose the worker. It is the
+	// zero value for every other strategy, for static mode, and for a slot handed over by the admission queue.
+	Signals SchedulerSignals
 }
+
+// SchedulerSignals is the part of the gateway's observed load an observer may count (ADR-022, D24): plain numbers
+// and flags, never a worker's raw report, a prompt or an identifier.
+type SchedulerSignals struct {
+	// Predicted is true when PredictedWait is set: the chosen worker's predicted wait, (work ahead + the request's
+	// cost) / capacity, in seconds, at decision time.
+	Predicted     bool
+	PredictedWait float64
+	// ColdStart: the decision used a fleet prior or a simpler rule because the worker (or the fleet) had no
+	// history. Untracked: the ledger did not follow the chosen worker. Invalid: a signal of the chosen worker was
+	// not usable and scored neutrally.
+	ColdStart, Untracked, Invalid bool
+}
+
+// IsZero reports that nothing was recorded.
+func (s SchedulerSignals) IsZero() bool { return s == SchedulerSignals{} }
 
 // FirstToken marks the first streamed chunk reaching the client.
 type FirstToken struct {

@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
-	"serverflow/internal/scheduler"
 	"serverflow/pkg/protocol"
 )
 
@@ -126,8 +124,8 @@ func (c *Config) validateWorkerSource() error {
 	default:
 		return fmt.Errorf("gateway.worker_source must be %q or %q, got %q", WorkerSourceStatic, WorkerSourceRegistry, g.WorkerSource)
 	}
-	if !slices.Contains(scheduler.Strategies(), c.Scheduler.Strategy) {
-		return fmt.Errorf("scheduler.strategy %q is not implemented yet; use one of %s", c.Scheduler.Strategy, strings.Join(scheduler.Strategies(), ", "))
+	if err := c.Scheduler.validateWorkAware(); err != nil {
+		return err
 	}
 	if err := protocol.ValidateAddress(g.ControlPlaneURL); err != nil {
 		return fmt.Errorf("gateway.control_plane_url: %v", err)

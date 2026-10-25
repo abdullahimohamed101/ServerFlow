@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"time"
+
+	"serverflow/internal/scheduler"
 )
 
 // Config is the root configuration for every ServerFlow component.
@@ -73,10 +76,7 @@ func Default() Config {
 			MaxAttempts:           2,
 			RetryStatuses:         []int{502, 503},
 		},
-		Scheduler: SchedulerConfig{
-			Strategy:    "round-robin",
-			LoadOverlay: LoadOverlayMax,
-		},
+		Scheduler: defaultScheduler(),
 		Worker: WorkerConfig{
 			HeartbeatInterval: 2 * time.Second,
 			SuspectTimeout:    5 * time.Second,
@@ -138,10 +138,8 @@ func (c *Config) Validate() error {
 	if err := c.Gateway.validate(); err != nil {
 		return err
 	}
-	switch c.Scheduler.Strategy {
-	case "random", "round-robin", "least-active", "least-queue", "least-work":
-	default:
-		return fmt.Errorf("scheduler.strategy %q is not supported", c.Scheduler.Strategy)
+	if !slices.Contains(scheduler.Strategies(), c.Scheduler.Strategy) {
+		return fmt.Errorf("scheduler.strategy %q is not supported; use one of %s", c.Scheduler.Strategy, strings.Join(scheduler.Strategies(), ", "))
 	}
 	if err := c.Scheduler.validate(); err != nil {
 		return err

@@ -61,6 +61,9 @@ type metrics struct {
 	// res holds the Phase 15 series; nil unless resilience is effective (metrics_resilience.go).
 	res *resilienceMetrics
 
+	// sig holds the work-aware scheduling series (ADR-022, D24); nil unless a work-aware strategy is configured.
+	sig *signalMetrics
+
 	// strategy is the scheduler strategy in registry mode, "" otherwise. It is set before the server serves.
 	strategy string
 	// decisionDurChild is the strategy's histogram, resolved once.
@@ -237,6 +240,9 @@ type modelInst struct {
 	decisions [4]counterSlot
 
 	retries counterCache
+	// Phase 14 children (only used with a work-aware strategy), resolved lazily like the others.
+	predictedWait atomic.Pointer[observerRef]
+	fallbacks     counterCache
 	// Phase 15 children, resolved lazily like the others (only used with resilience on).
 	probes       counterCache
 	denied       counterCache
@@ -469,6 +475,9 @@ func (m *metrics) AttemptStarted(ctx context.Context, e AttemptStart) context.Co
 	m.decision(mi, resultSelected)
 	if m.decisionDurChild != nil {
 		m.decisionDurChild.Observe(e.SelectDuration.Seconds())
+	}
+	if m.sig != nil && !e.Signals.IsZero() {
+		m.signalsObserved(mi, e.Signals)
 	}
 	mi.selections.budgeted(m.selections, mi.label, m.workers.Value(e.WorkerID), &m.selectionSeries).Inc()
 	if !e.WorkerEligible || e.WorkerState != "READY" {

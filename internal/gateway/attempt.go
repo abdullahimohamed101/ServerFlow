@@ -297,8 +297,10 @@ func (s *Server) startAttempt(r *http.Request, ireq *protocol.InferenceRequest, 
 	run.rec, run.started = idx, true
 	run.octx = r.Context() // until the observers return theirs; AttemptEnded needs a context even if they did not
 	info.attempted = len(info.attempts)
-	octx := s.obs.AttemptStarted(r.Context(), s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
-		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(run.selecting), target.probe()))
+	started := s.attemptStartEvent(info, idx+1, target.worker.WorkerID, ireq.Model, s.router.strategy,
+		string(target.worker.State), target.worker.Eligible, info.attempts[idx].Started.Sub(run.selecting), target.probe())
+	started.Signals = schedulerSignals(target)
+	octx := s.obs.AttemptStarted(r.Context(), started)
 	info.attemptCtx, run.octx = octx, octx
 	run.ctx, run.cancel = context.WithCancel(withAttemptID(octx, id))
 	run.idle = time.AfterFunc(s.cfg.UpstreamIdleTimeout, run.cancel)

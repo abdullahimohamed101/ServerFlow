@@ -475,7 +475,25 @@ func TestRegistryModeRejectsUnusableSetup(t *testing.T) {
 	cfg := testConfig("http://127.0.0.1:1")
 	for name, run := range map[string]func() error{
 		"unimplemented strategy": func() error {
-			_, err := newRegistryServer(cfg, "least-work", time.Second, &fakeLister{}, slog.Default())
+			_, err := newRegistryServer(cfg, "latency-aware", time.Second, &fakeLister{}, slog.Default())
+			return err
+		},
+		"unknown strategy": func() error {
+			_, err := newRegistryServer(cfg, "magic", time.Second, &fakeLister{}, slog.Default())
+			return err
+		},
+		// least-work is implemented since Phase 14, but it reads the gateway's ledger: NewRegistry refuses it
+		// without the ledger overlay instead of letting it fall back silently.
+		"least-work without the ledger overlay": func() error {
+			c := config.Default()
+			c.Gateway, c.Scheduler.Strategy = cfg, "least-work"
+			_, err := NewRegistry(c, slog.Default())
+			return err
+		},
+		"least-tokens without the ledger overlay": func() error {
+			c := config.Default()
+			c.Gateway, c.Scheduler.Strategy = cfg, "least-tokens"
+			_, err := NewRegistry(c, slog.Default())
 			return err
 		},
 		"bad cidr": func() error {

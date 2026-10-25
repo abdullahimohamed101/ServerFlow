@@ -103,3 +103,10 @@ a burst is kept from piling onto one worker whose last heartbeat said it was idl
 Strategies stay pure and the `Scheduler` interface is unchanged. Gateway-computed signals (the in-flight token ledger and later measurements) will reach strategies on the snapshot copy
 the router already builds: `protocol.WorkerSnapshot` has a new field `Observed` tagged `json:"-"`, so it never appears on the registry wire and a control plane cannot supply it. PR A adds the
 field and type only; nothing fills it yet and no choice changes. The strategies left to Phase 14 above follow in later pull requests of the phase (ADR-022): `least-tokens` and `least-work` (which ends the `least-work` refusal) and the opt-in overlay v2 are in the required slice; `latency-aware` is an optional follow-up; the default overlay stays `max(reported, local)`.
+
+## Amendment (Phase 14, PR C1; ADR-022)
+
+`least-work` is implemented and no longer refused at startup; `least-tokens` is added. Both are pure functions of the snapshot copy (`Observed`, filled by the router when the ledger overlay is on), start from
+`eligible()`, read no clock and use the shared rotor for ties, so the strategies stay pure and the `Scheduler` interface and the section 15 invariants are unchanged. They need `scheduler.load_overlay: ledger`: choosing
+either with the default `max` is a startup error. The default strategy (`round-robin`) and the default overlay (`max(reported, local)`) are unchanged, and no existing strategy's choice changes. `latency-aware` remains
+to come (the optional PR C2). Evidence for or against the new strategies is simulator-validated at best and is produced only by PR J.

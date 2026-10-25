@@ -363,3 +363,13 @@ Each has a recommended default. The coordinator, under delegated authority, has 
 13. **Quality-aware hand-off.** Deferred. Agreed.
 14. **Multi-gateway.** Out of scope. Agreed.
 15. **ADR-022**, one ADR. Agreed.
+
+## Progress notes
+
+- **PR A (seam and estimator), PR B (signals, ledger, overlay v2, E0)** delivered; see ADR-022.
+- **PR C1 (`least-tokens`, `least-work`, configuration), delivered on branch `feature/p14c1-strategies`.** Strategies `least-tokens` and `least-work` in `internal/scheduler/workaware.go`; capacity estimate
+  (`signals/capacity.go`) and the work-ahead terms (`Tracker.Load`); `cost.Work` and the weights; keys `scheduler.cost.{output_fraction,input_weight}` and `scheduler.signals.{capacity_halflife,capacity_floor}`; the
+  `least-work` refusal removed and its four pinning tests rewritten; `scheduler_signal_fallbacks_total` and `scheduler_predicted_wait_seconds` (the minimum observability the plan assigns to C1); embedded harness switches
+  the ledger on for these strategies. Decisions beyond the plan text: choosing either strategy **requires** `scheduler.load_overlay: ledger` (a startup error otherwise; the plan did not say whether it is implied); the
+  "peak window" and the half-life are one parameter; the model mean cost uses a fixed alpha of 0.1. Not in C1: TTFT, `latency-aware`, the probe-priority rule, `ewma_alpha`, `ttft_halflife`, `min_samples`, the rest of D24.
+  No scheduler comparison has been run (D28). Details, deviations and limits: ADR-022 section "[PR C1]".
