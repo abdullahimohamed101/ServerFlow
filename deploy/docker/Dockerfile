@@ -28,7 +28,7 @@ RUN go build -trimpath -buildvcs=false \
       ./cmd/gateway ./cmd/control-plane ./cmd/worker-agent ./cmd/mock-worker ./cmd/usage-consumer ./cmd/admin ./cmd/healthcheck
 
 # Shared runtime base: distroless static (no shell, no package manager), non-root, the health probe binary.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3 AS runtime
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:d62067879de890a1def9da0e7766b7d20810a5e5555cef8506b752437d7a3e88 AS runtime
 ARG VERSION=dev
 ARG COMMIT=unknown
 LABEL org.opencontainers.image.source="https://github.com/abdullahimohamed101/ServerFlow" \

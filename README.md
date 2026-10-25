@@ -132,7 +132,7 @@ lists every file, Git checked the sources out with CRLF line endings (the reposi
 | 11 | OpenTelemetry | Complete |
 | 12 | Kafka | Complete |
 | 13 | Real vLLM worker pool | Not started |
-| 14 | Workload-aware scheduler | Not started |
+| 14 | Workload-aware scheduler | In progress: the in-flight ledger, the opt-in `ledger` overlay and the `least-tokens` / `least-work` strategies are implemented (simulator-validated at best, no comparison run yet); experiments pending |
 | 15 | Fault tolerance | Complete (`docs/operations/resilience.md`, ADR-020, `docs/benchmarks/phase-15-chaos.md`); **on by default in registry mode, see the note below** |
 | 16 | Dockerized multi-service deployment | Complete (`docs/operations/docker-deployment.md`, ADR-021) |
 | 17 | Kubernetes | Not started |

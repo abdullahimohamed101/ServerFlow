@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"serverflow/internal/postgres/postgrestest"
+	"serverflow/internal/testutil"
 )
 
 // Process-level tests of API key authentication: the real admin and gateway binaries, a real
@@ -24,6 +25,7 @@ import (
 type dbProxy struct {
 	target string
 	addr   string
+	open   func() net.Listener // lends the held listener of addr; closing it keeps the port reserved
 	mu     sync.Mutex
 	ln     net.Listener
 	conns  []net.Conn
@@ -32,18 +34,18 @@ type dbProxy struct {
 func newDBProxy(t *testing.T, target string) *dbProxy {
 	t.Helper()
 	p := &dbProxy{target: target}
-	p.listen(t, "127.0.0.1:0")
+	// The address is held for the whole test: the proxy is cut and restored on it, and the gateway under test keeps
+	// dialling it while it is down, so no other listener may be given the port in between.
+	p.addr, p.open = testutil.HeldFreeAddr(t)
+	p.listen()
 	t.Cleanup(p.cut)
 	return p
 }
 
-func (p *dbProxy) listen(t *testing.T, addr string) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
+func (p *dbProxy) listen() {
+	ln := p.open()
 	p.mu.Lock()
-	p.ln, p.addr = ln, ln.Addr().String()
+	p.ln = ln
 	p.mu.Unlock()
 	go func() {
 		for {
@@ -79,7 +81,7 @@ func (p *dbProxy) cut() {
 	p.conns = nil
 }
 
-func (p *dbProxy) restore(t *testing.T) { p.listen(t, p.addr) }
+func (p *dbProxy) restore(t *testing.T) { p.listen() }
 
 // withHostAndPassword returns dsn pointed at hostport with the given password for its user.
 func withHostAndPassword(t *testing.T, dsn, hostport, password string) string {

@@ -179,7 +179,19 @@ func TestValidateRegistrySource(t *testing.T) {
 	}{
 		{"unknown source", func(c *Config) { c.Gateway.WorkerSource = "magic" }, "worker_source"},
 		{"empty source", func(c *Config) { c.Gateway.WorkerSource = "" }, "worker_source"},
-		{"least-work is not implemented", func(c *Config) { c.Scheduler.Strategy = "least-work" }, "not implemented yet"},
+		// Phase 14 implements least-work (and adds least-tokens): the old "not implemented yet" refusal is gone. What
+		// the refusal protected is kept: an unknown or still-unimplemented strategy is refused with the supported
+		// list, and a registry-mode gateway never starts a strategy it cannot feed.
+		{"an unknown strategy is refused and the supported ones are listed", func(c *Config) { c.Scheduler.Strategy = "magic" }, "least-tokens"},
+		{"latency-aware is not implemented yet", func(c *Config) { c.Scheduler.Strategy = "latency-aware" }, "not supported"},
+		{"least-work needs the ledger overlay", func(c *Config) { c.Scheduler.Strategy = "least-work" }, "scheduler.load_overlay"},
+		{"least-tokens needs the ledger overlay", func(c *Config) { c.Scheduler.Strategy = "least-tokens" }, "scheduler.load_overlay"},
+		{"least-work with the ledger overlay", func(c *Config) {
+			c.Scheduler.Strategy, c.Scheduler.LoadOverlay = "least-work", LoadOverlayLedger
+		}, ""},
+		{"least-tokens with the ledger overlay", func(c *Config) {
+			c.Scheduler.Strategy, c.Scheduler.LoadOverlay = "least-tokens", LoadOverlayLedger
+		}, ""},
 		{"every implemented strategy", func(c *Config) { c.Scheduler.Strategy = "least-queue" }, ""},
 		{"bad control plane url", func(c *Config) { c.Gateway.ControlPlaneURL = "nonsense" }, "control_plane_url"},
 		{"credentials in the url", func(c *Config) { c.Gateway.ControlPlaneURL = "http://u:topsecret@127.0.0.1:9090" }, "control_plane_url"},
@@ -252,7 +264,7 @@ func TestValidateRegistrySource(t *testing.T) {
 
 func TestStaticSourceIgnoresRegistrySettingsAndAllowsLeastWork(t *testing.T) {
 	cfg := Default()
-	cfg.Scheduler.Strategy = "least-work" // valid in config; only the registry source needs an implementation
+	cfg.Scheduler.Strategy = "least-work" // static mode has no scheduler: neither the ledger overlay nor the weights are checked
 	cfg.Gateway.RegistryRefresh = 0
 	cfg.Gateway.ControlPlaneURL = "nonsense"
 	if err := cfg.Validate(); err != nil {

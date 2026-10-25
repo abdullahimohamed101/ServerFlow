@@ -40,13 +40,22 @@ func TestPolicyCatchesMutations(t *testing.T) {
 		{postgres, mutation{"latest tag", ":latest", func(p *pod) { first(p).Image = "mirror.gcr.io/library/postgres:latest" }}},
 		{postgres, mutation{"tag without digest", "pinned as host/repo:tag@sha256", func(p *pod) { first(p).Image = "mirror.gcr.io/library/postgres:16-alpine" }}},
 		{postgres, mutation{"digest differs from compose", "differs from docker-compose.yml", func(p *pod) {
-			first(p).Image = strings.Replace(first(p).Image, "deb28ee4", "deb28ee5", 1)
+			// Flip the last hex digit of whatever digest the manifest carries now (a Dependabot bump changes it).
+			img := first(p).Image
+			last := img[len(img)-1]
+			flipped := byte('0')
+			if last == '0' {
+				flipped = '1'
+			}
+			first(p).Image = img[:len(img)-1] + string(flipped)
 		}}},
 		{postgres, mutation{"image compose does not pin", "does not pin this repository", func(p *pod) {
 			first(p).Image = "mirror.gcr.io/library/mariadb:11@sha256:" + strings.Repeat("a", 64)
 		}}},
 		{postgres, mutation{"Docker Hub", "Docker Hub", func(p *pod) {
-			first(p).Image = "docker.io/library/postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815"
+			// The same digest as the manifest's, on Docker Hub.
+			_, digest, _ := strings.Cut(first(p).Image, "@")
+			first(p).Image = "docker.io/library/postgres:16-alpine@" + digest
 		}}},
 		{postgres, mutation{"pull always", "imagePullPolicy", func(p *pod) { first(p).ImagePullPolicy = "Always" }}},
 		{postgres, mutation{"no memory limit", "memory limit", func(p *pod) { delete(first(p).Resources.Limits, "memory") }}},

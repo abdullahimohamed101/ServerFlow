@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"net"
 	"net/http/httptest"
 	"runtime"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"serverflow/internal/testutil"
 	"serverflow/internal/testwait"
 )
 
@@ -169,12 +169,9 @@ func TestFailingReceiverNeverBlocksAndCountsFailures(t *testing.T) {
 }
 
 func TestClosedPortAndRecovery(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close() // nothing listens: connection refused
+	// The address is held for the whole test and resets every connection until the receiver is started on it: a
+	// port that was bound and closed instead could be given to any other listener before the recovery step.
+	addr, open := testutil.HeldFreeAddr(t)
 	buf := &syncBuf{}
 	p, err := Setup(testConfig("http://"+addr), Service{Name: "svc"}, slog.New(slog.NewTextHandler(buf, nil)))
 	if err != nil {
@@ -186,15 +183,11 @@ func TestClosedPortAndRecovery(t *testing.T) {
 	waitFor(t, "a logged reason", func() bool { return strings.Contains(buf.String(), "reason=") })
 
 	// A receiver appears on the same port: later spans arrive and a recovery line is logged.
-	ln2, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Skipf("could not reuse the port: %v", err)
-	}
 	rcv := newFakeReceiver(t)
 	_ = rcv.srv.Listener.Close()
 	srv2 := httptest.NewUnstartedServer(rcv.srv.Config.Handler)
 	_ = srv2.Listener.Close()
-	srv2.Listener = ln2
+	srv2.Listener = open()
 	srv2.Start()
 	t.Cleanup(srv2.Close)
 	emit(p, 5)

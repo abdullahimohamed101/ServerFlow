@@ -15,6 +15,7 @@ import (
 
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/server"
+	"serverflow/internal/testutil"
 	"serverflow/pkg/protocol"
 )
 
@@ -168,10 +169,7 @@ func TestRedirectsAreNeverFollowedSoTheTokenCannotBeReplayedElsewhere(t *testing
 }
 
 func TestUnreachableServerAndContextCancellation(t *testing.T) {
-	ts := httptest.NewServer(http.NotFoundHandler())
-	url := ts.URL
-	ts.Close()
-	c := New(url, "", nil)
+	c := New("http://"+testutil.RefusedAddr(t), "", nil) // refused, and never a port the kernel can give to another test
 	if _, err := c.Register(context.Background(), info("w1")); err == nil || IsUnknownWorker(err) || IsConflict(err) {
 		t.Fatalf("a connection failure is a plain error, got %v", err)
 	}

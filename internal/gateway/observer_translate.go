@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"serverflow/internal/api"
+	"serverflow/pkg/protocol"
 )
 
 // This file is the only place reqInfo and friends are turned into observer events, so a change to reqInfo
@@ -94,6 +95,21 @@ func (s *Server) attemptStartEvent(info *reqInfo, number int, worker, model, str
 		e.QueueWait = info.queueWait // the wait came before the first attempt only
 	}
 	return e
+}
+
+// schedulerSignals is what the work-aware strategy knew when it chose the attempt's worker. A worker the ledger did
+// not fill (the other strategies) yields the zero value.
+func schedulerSignals(t *routed) SchedulerSignals {
+	f := t.worker.Observed.Flags
+	if f&protocol.ObservedLedger == 0 && f&protocol.ObservedDegraded == 0 {
+		return SchedulerSignals{}
+	}
+	return SchedulerSignals{
+		Predicted: t.hasPrediction, PredictedWait: t.predicted,
+		ColdStart: f&(protocol.ObservedColdStart|protocol.ObservedPriorCapacity|protocol.ObservedDegraded) != 0,
+		Untracked: f&protocol.ObservedUntracked != 0,
+		Invalid:   f&protocol.ObservedInvalid != 0,
+	}
 }
 
 // attemptContext is the context the observers returned for the current attempt, or ctx before one exists.

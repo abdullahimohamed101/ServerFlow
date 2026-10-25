@@ -20,9 +20,20 @@ jobs:
   stress:
     name: race tests under CPU load
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Budget: about 4 min of setup, the other packages about 10 to 15 min (step 1), tests/integration about 15 to 25 min
+    # (step 2); the two step limits below add up to 115 min, so this is the ceiling for a hang, not an expectation.
+    timeout-minutes: 125
     env:
       SERVERFLOW_TEST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      # Tests whose assertion is a PERFORMANCE budget. They measure the product on a quiet machine and are invalid under four
+      # CPU-hogging processes plus the race detector (the budget is then missed by the machine, not by the gateway): they run
+      # in CI's unit, race and tracing steps and in the `overhead` job below, and are left out here, where the point is to find
+      # races and load-sensitive logic. Everything else stays in, however slow it gets: a timing bug that only shows under load
+      # is exactly what this job exists for. internal/ciguard fails if this list loses a name or a `go test` line here loses
+      # `-skip "$LOAD_SKIP"`.
+      #   TestGatewayOverhead  p95 added latency of the gateway against a direct call (25 ms budget); measured 28 ms direct
+      #                        against 56 ms through the gateway under this load in 12 of 12 nightly runs.
+      LOAD_SKIP: ^(TestGatewayOverhead)$
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,10 +73,25 @@ jobs:
           for _ in 1 2 3 4; do
             (yes > /dev/null &)
           done
-      - name: Race tests, three times, under load
-        run: go test -race -count=3 ./...
+      # `go test`'s default limit is 10 minutes PER PACKAGE BINARY, and -count=3 runs the whole package three times inside it.
+      # tests/integration takes 270 to 295 s per pass with the race detector (CI logs), so three passes (about 15 min even on an
+      # idle runner, more under load) can never fit in the default: the run of 2026-10-23 was killed at 10m0s while its test had
+      # been running for 2 s, i.e. slow, not stuck. The limits below are about 2.5x the expected time; a test that really hangs
+      # still fails, only later, with the goroutine dump. tests/integration is its own step so that its process tests (cold
+      # `go build`s, clusters of child processes) do not compete with the other 50 test binaries for the few cores the load
+      # leaves; alone in its `go test` it needs no `-p 1` (that flag only limits how many packages run at once).
+      - name: Race tests, three times, under load (every package except tests/integration)
+        timeout-minutes: 50
+        run: |
+          pkgs="$(go list ./...)"
+          # shellcheck disable=SC2046 # a deliberate word list of import paths
+          go test -race -count=3 -timeout 30m -skip "$LOAD_SKIP" $(printf '%s\n' "$pkgs" | grep -v '/tests/integration$')
+      - name: Race tests, three times, under load (tests/integration)
+        timeout-minutes: 65
+        run: go test -race -count=3 -timeout 60m -skip "$LOAD_SKIP" ./tests/integration
 
   overhead:
+    # The measurement the stress job leaves out: one test, alone on a runner, no race detector, no extra load.
     name: gateway overhead budget
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -144,6 +170,11 @@ jobs:
           for t in gateway control-plane worker-agent mock-worker usage-consumer admin; do
             docker build -q -f deploy/docker/Dockerfile --target "$t" -t "serverflow/$t:scan" .
           done
+      # The scanner has one source (public.ecr.aws, by digest), so there is no mirror to fall back to, but a pull that fails
+      # once is retried with backoff here instead of failing the first `docker run`. Its vulnerability database is downloaded by
+      # the scanner itself and cannot be retried from here: that is why this whole job stays advisory (continue-on-error).
+      - name: Pull the scanner (retries with backoff)
+        run: scripts/ci-docker-pull.sh "$TRIVY_IMAGE"
       - name: Scan from docker save tarballs (the scanner gets no Docker socket)
         run: |
           mkdir -p "$RUNNER_TEMP/scan"

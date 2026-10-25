@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"serverflow/internal/registry/client"
+	"serverflow/internal/testutil"
 	"serverflow/pkg/protocol"
 )
 
@@ -480,10 +481,7 @@ func TestMockBackendErrors(t *testing.T) {
 			t.Errorf("%s: unusable-report classification is wrong: %v", name, err)
 		}
 	}
-	down := httptest.NewServer(http.NotFoundHandler())
-	url := down.URL
-	down.Close()
-	if _, err := NewMockBackend(url).Status(context.Background()); err == nil {
+	if _, err := NewMockBackend("http://" + testutil.RefusedAddr(t)).Status(context.Background()); err == nil {
 		t.Error("an unreachable backend must be an error")
 	}
 }

@@ -816,21 +816,3 @@ func TestFreePortNeverReturnsAPortTwice(t *testing.T) {
 		}
 	}
 }
-
-// refusedAddr is an address nothing listens on. Binding a port and closing it again does not make one: the kernel
-// hands a just-closed port to the next listener that asks for any port (Linux does), and a test that starts a
-// server after taking its "closed" address finds that server answering (run 39884944207: a collector the test
-// itself started received the exports meant to hit a closed port). Port 1 is below the ephemeral range, so no
-// test server is ever given it, and nothing listens there on a developer machine or a CI runner.
-func refusedAddr() string { return "127.0.0.1:1" }
-
-func TestRefusedAddrRefuses(t *testing.T) {
-	c, err := net.DialTimeout("tcp", refusedAddr(), 2*time.Second)
-	if err == nil {
-		_ = c.Close()
-		t.Fatal("something listens on " + refusedAddr() + ": pick another address that is outside the ephemeral range")
-	}
-	if !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Fatalf("want connection refused, got %v", err)
-	}
-}

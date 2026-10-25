@@ -52,6 +52,10 @@ type snapshotCache struct {
 	// onRefreshed, when set, runs after every successful refresh, once the new view and the breakers' sync are in
 	// place: the admission queue wakes the waiters that the corrected counts may now serve (Phase 15 PR E).
 	onRefreshed func()
+	// onSnapshot, when set (the ledger load overlay is on), receives every worker of a new snapshot and the instant
+	// of the refresh before the snapshot becomes visible to routing, so the signals tracker knows the workers
+	// before a request can be routed to them (ADR-022).
+	onSnapshot func(now time.Time, workers []protocol.WorkerSnapshot)
 }
 
 type snapshot struct {
@@ -111,6 +115,9 @@ func (c *snapshotCache) Refresh(ctx context.Context) error {
 	}
 	snap := &snapshot{byModel: by, fetched: started}
 	snap.nextAge.Store(math.MaxInt64)
+	if c.onSnapshot != nil {
+		c.onSnapshot(c.now(), ws)
+	}
 	c.cur.Store(snap)
 	if c.onSync != nil {
 		c.syncMu.Lock()
@@ -223,12 +230,20 @@ func (c *snapshotCache) Degraded() bool {
 // advanced and eligibility re-judged. ok is false when there is no usable
 // snapshot; a model nobody serves yields ok with no workers.
 func (c *snapshotCache) View(model string) (workers []protocol.WorkerSnapshot, ok bool) {
+	workers, _, ok = c.viewAt(model)
+	return workers, ok
+}
+
+// viewAt is View that also returns the instant the heartbeat ages were advanced to. now minus a worker's (aged)
+// heartbeat age is the gateway-local time of its report, whatever moment the caller looks at the clock: the ledger
+// overlay needs that identity, and it only holds when both come from the same instant.
+func (c *snapshotCache) viewAt(model string) (workers []protocol.WorkerSnapshot, now time.Time, ok bool) {
 	s, age, ok := c.fresh()
 	if !ok {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	c.syncAged(s, age)
-	return c.age(s.byModel[model], age), true
+	return c.age(s.byModel[model], age), s.fetched.Add(age), true
 }
 
 func (c *snapshotCache) age(in []protocol.WorkerSnapshot, age time.Duration) []protocol.WorkerSnapshot {

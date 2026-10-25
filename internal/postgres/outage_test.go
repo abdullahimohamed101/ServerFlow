@@ -12,6 +12,7 @@ import (
 
 	"serverflow/internal/auth"
 	"serverflow/internal/postgres/postgrestest"
+	"serverflow/internal/testutil"
 )
 
 // tcpFront forwards to a target and can be switched to a black hole that accepts connections and
@@ -19,6 +20,7 @@ import (
 type tcpFront struct {
 	target string
 	addr   string
+	open   func() net.Listener // lends the held listener of addr; closing it keeps the port reserved
 	mu     sync.Mutex
 	ln     net.Listener
 	conns  []net.Conn
@@ -27,19 +29,19 @@ type tcpFront struct {
 func newTCPFront(t *testing.T, target string) *tcpFront {
 	t.Helper()
 	f := &tcpFront{target: target}
-	f.listen(t, "127.0.0.1:0", false)
+	// The address is held for the whole test: a front that is stopped and started again on its address (the
+	// black hole) must not find another test's listener on it.
+	f.addr, f.open = testutil.HeldFreeAddr(t)
+	f.listen(t, false)
 	t.Cleanup(f.stop)
 	return f
 }
 
-func (f *tcpFront) listen(t *testing.T, addr string, blackhole bool) {
+func (f *tcpFront) listen(t *testing.T, blackhole bool) {
 	t.Helper()
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ln := f.open()
 	f.mu.Lock()
-	f.ln, f.addr = ln, ln.Addr().String()
+	f.ln = ln
 	f.mu.Unlock()
 	go func() {
 		for {
@@ -81,9 +83,8 @@ func (f *tcpFront) stop() {
 }
 
 func (f *tcpFront) blackhole(t *testing.T) {
-	addr := f.addr
 	f.stop()
-	f.listen(t, addr, true)
+	f.listen(t, true)
 }
 
 func dsnVia(t *testing.T, dsn, hostport string) string {

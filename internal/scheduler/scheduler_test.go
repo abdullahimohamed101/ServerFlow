@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"reflect"
 	"sync"
@@ -44,10 +45,11 @@ func pick(t *testing.T, s Scheduler, ws []protocol.WorkerSnapshot) string {
 	return w.WorkerID
 }
 
-var all = []string{Random, RoundRobin, LeastActive, LeastQueue}
+var all = []string{Random, RoundRobin, LeastActive, LeastQueue, LeastTokens, LeastWork}
 
 func TestNewRejectsUnknownAndUnimplementedStrategies(t *testing.T) {
-	for _, s := range []string{"", "magic", "least-work", "Random", "round_robin"} {
+	// least-work was refused here until Phase 14 implemented it; latency-aware is the one still to come (ADR-022).
+	for _, s := range []string{"", "magic", "latency-aware", "least_work", "Least-Work", "Random", "round_robin"} {
 		if _, err := New(s); err == nil {
 			t.Errorf("%q must be rejected", s)
 		}
@@ -223,11 +225,26 @@ func randomWorkers(rng *rand.Rand) []protocol.WorkerSnapshot {
 			w.Model = "llama"
 		}
 		w.MaxConcurrency = 1 + rng.IntN(9)
+		// The gateway's own view of the worker (what the work-aware strategies read): mostly sane, sometimes
+		// missing or garbage, so the invariants below also cover their fallbacks.
+		if rng.IntN(5) != 0 {
+			w.Observed = protocol.ObservedLoad{
+				EffectiveActive: w.Metrics.ActiveRequests, WorkAheadTokens: float64(rng.IntN(50000)),
+				CapacityTPS: float64(rng.IntN(300)), Flags: protocol.ObservedLedger,
+			}
+			if rng.IntN(12) == 0 {
+				w.Observed.WorkAheadTokens = []float64{math.NaN(), math.Inf(1), -3}[rng.IntN(3)]
+			}
+		}
 		ws = append(ws, w)
 	}
 	rng.Shuffle(len(ws), func(i, j int) { ws[i], ws[j] = ws[j], ws[i] })
 	return ws
 }
+
+// sameViews compares snapshots by their printed form, because reflect.DeepEqual never equates a NaN with itself and
+// the views below carry garbage signals on purpose.
+func sameViews(a, b any) bool { return fmt.Sprintf("%+v", a) == fmt.Sprintf("%+v", b) }
 
 func mayServe(w protocol.WorkerSnapshot) bool {
 	healthy := w.Health == protocol.HealthHealthy || w.Health == protocol.HealthSuspect
@@ -248,7 +265,7 @@ func TestSelectionInvariantsHoldForEveryStrategy(t *testing.T) {
 				}
 			}
 			got, err := s.SelectWorker(context.Background(), req(model), ws)
-			if !reflect.DeepEqual(ws, before) {
+			if !sameViews(ws, before) {
 				t.Fatalf("%s: the input was modified", st)
 			}
 			switch {
