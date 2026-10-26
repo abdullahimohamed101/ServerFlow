@@ -22,6 +22,7 @@ import (
 
 	"serverflow/internal/api"
 	"serverflow/internal/config"
+	"serverflow/internal/testwait"
 )
 
 const validBody = `{"model":"qwen-7b","messages":[{"role":"user","content":"hello"}],"top_p":0.9}`
@@ -177,14 +178,7 @@ func readLine(t *testing.T, br *bufio.Reader, d time.Duration) string {
 
 func eventually(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("condition not met within %v: %s", d, msg)
+	testwait.Eventually(t, d, cond, msg)
 }
 
 func jsonOK(body string) http.Handler {

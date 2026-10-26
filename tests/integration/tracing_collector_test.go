@@ -58,7 +58,13 @@ func newCollector(t *testing.T, mode string) *collector {
 			case <-r.Context().Done():
 			}
 		case "slow":
-			time.Sleep(800 * time.Millisecond)
+			// The collector under test answers after 800 ms, far beyond the exporter's 300 ms timeout: this delay is the
+			// simulated fault, not something the test waits for. It ends early when the test does, so cleanup is not held up.
+			select {
+			case <-time.After(800 * time.Millisecond):
+			case <-c.release:
+			case <-r.Context().Done():
+			}
 		}
 	}))
 	t.Cleanup(func() { close(c.release); c.srv.Close() })

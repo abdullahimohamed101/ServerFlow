@@ -204,7 +204,10 @@ func TestDrainLetsAnInFlightRequestFinishAfterTheGrace(t *testing.T) {
 // grace plus timeout.
 func TestDrainShutdownTimeoutCoversTheGrace(t *testing.T) {
 	g := newGateWorker(t, "w1")
-	e := queueEnv(t, g, drainCfg(1200*time.Millisecond, 500*time.Millisecond))
+	// The two timings are 2.4 s and 1 s: a gap of a full second between the right end (2.4 s) and the wrong one (3.4 s) leaves
+	// room for a machine that is late by hundreds of milliseconds without making the two outcomes indistinguishable.
+	// The upstream header timeout (2 s in these tests) must not be what ends the stuck request, so it is raised above the budget.
+	e := queueEnv(t, g, drainCfg(2400*time.Millisecond, time.Second), func(c *config.Config) { c.Gateway.UpstreamHeaderTimeout = 30 * time.Second })
 	s := e.serve(t)
 	stuck := s.post("stuck")
 	g.awaitArrivals(t, 1)
@@ -218,9 +221,9 @@ func TestDrainShutdownTimeoutCoversTheGrace(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return")
 	}
-	if took := time.Since(began); took < 1000*time.Millisecond || took > 1500*time.Millisecond {
-		// A shutdown that restarted the full timeout after the grace would end at about 1.7 s.
-		t.Fatalf("Serve ended after %v, want about the 1.2 s shutdown timeout (grace included)", took)
+	if took := time.Since(began); took < 2000*time.Millisecond || took > 2900*time.Millisecond {
+		// A shutdown that restarted the full timeout after the grace would end at about 3.4 s.
+		t.Fatalf("Serve ended after %v, want about the 2.4 s shutdown timeout (grace included)", took)
 	}
 	<-stuck // cut by the timeout; its handler at the worker has gone with the connection
 }
@@ -289,8 +292,15 @@ func TestDrainFlushesWaitersBeforeTheBudgetEnds(t *testing.T) {
 	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || !strings.Contains(r.body, "shutting down") {
 		t.Fatalf("the waiter got %d %s after %v, want the draining shed", r.resp.StatusCode, r.body, took)
 	}
-	if took < 1000*time.Millisecond || took > 1550*time.Millisecond {
+	if took < 1000*time.Millisecond {
 		t.Fatalf("the waiter was flushed after %v, want about 1350 ms (1600 ms budget minus the 250 ms margin)", took)
+	}
+	// "Before the budget ends" is an ordering, not a stopwatch reading: the answer must be in hand while Serve, which ends
+	// at the budget, is still running. (The status above is what separates a flush from a cut connection.)
+	select {
+	case err := <-s.done:
+		t.Fatalf("Serve had already ended (%v) when the waiter was answered, %v after the signal: the flush came too late", err, took)
+	default:
 	}
 	select {
 	case err := <-s.done: // the held request outlives the budget: Serve reports the timeout

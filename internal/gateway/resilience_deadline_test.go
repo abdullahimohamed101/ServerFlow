@@ -95,19 +95,22 @@ func TestTheDeadlineIsIgnoredAfterTheFirstByte(t *testing.T) {
 // The derived default (header + idle timeouts, plus the dial timeout) never shortens a single attempt that the
 // gateway would have served without resilience.
 func TestTheDerivedDeadlineNeverCutsASlowButServedAttempt(t *testing.T) {
+	// "Just inside" is the contract: each delay is 87% of its timeout. The absolute margin (130 ms) has to be wider than
+	// the scheduling delay of a loaded machine, so the timeouts are seconds, not the 300 ms with a 40 ms margin they were.
+	const timeout, lag = time.Second, 870 * time.Millisecond
 	slow := newScriptWorker(t, "a-1", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
-		time.Sleep(260 * time.Millisecond) // headers just inside the 300 ms header timeout
+		time.Sleep(lag) // headers just inside the header timeout
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
-		time.Sleep(260 * time.Millisecond) // first byte just inside the 300 ms idle timeout
+		time.Sleep(lag) // first byte just inside the idle timeout
 		_, _ = io.WriteString(w, "data: {\"i\":0}\n\ndata: [DONE]\n\n")
 	})
 	e := newResEnv(t, []protocol.WorkerSnapshot{slow.snapshot("qwen-7b")}, func(c *config.Config) {
-		c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout = 300*time.Millisecond, 300*time.Millisecond
+		c.Gateway.UpstreamHeaderTimeout, c.Gateway.UpstreamIdleTimeout = timeout, timeout
 	})
-	if want := 600*time.Millisecond + workerDialTimeout; e.rs.firstByte != want {
+	if want := 2*timeout + workerDialTimeout; e.rs.firstByte != want {
 		t.Fatalf("derived deadline %v, want header + idle + dial = %v", e.rs.firstByte, want)
 	}
 	resp, body := e.post(t, true)
@@ -169,7 +172,7 @@ func TestTheProbeHeaderTimeoutEndsWithTheHeaders(t *testing.T) {
 	e := newResEnv(t, []protocol.WorkerSnapshot{a.snapshot("qwen-7b"), b.snapshot("qwen-7b")}, func(c *config.Config) {
 		c.Gateway.UpstreamHeaderTimeout = 5 * time.Second
 		c.Resilience.Breaker.ConsecutiveFailures = 1
-		c.Resilience.Breaker.ProbeHeaderTimeout = 150 * time.Millisecond
+		c.Resilience.Breaker.ProbeHeaderTimeout = 450 * time.Millisecond // the headers arrive at once; this only has to outlast a stalled machine
 	})
 	for i := 0; i < 3; i++ {
 		e.do(t)
@@ -178,7 +181,7 @@ func TestTheProbeHeaderTimeoutEndsWithTheHeaders(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
-		time.Sleep(300 * time.Millisecond) // the first byte comes after the probe header timeout: that timer is over
+		time.Sleep(900 * time.Millisecond) // the first byte comes after the probe header timeout: that timer is over
 		for i := 0; i < 5; i++ {
 			_, _ = io.WriteString(w, "data: {\"i\":0}\n\n")
 			w.(http.Flusher).Flush()
@@ -226,8 +229,9 @@ func TestAttemptsTogetherNeverOutlastTheDeadline(t *testing.T) {
 // before the caller gets to the decision point: the guard decides at the arrival, under one lock.
 func TestAResponseThatArrivedBeforeTheDeadlineIsNeverTurnedInto504(t *testing.T) {
 	good := newScriptWorker(t, "a-1", sseEvents("a-1", 3))
-	e := newResEnv(t, []protocol.WorkerSnapshot{good.snapshot("qwen-7b")}, deadline(150*time.Millisecond))
-	afterArrivalHook = func() { time.Sleep(450 * time.Millisecond) } // three deadlines pass in the gap
+	// The deadline is wide enough for the response to arrive before it on a loaded machine; the gap is three deadlines.
+	e := newResEnv(t, []protocol.WorkerSnapshot{good.snapshot("qwen-7b")}, deadline(500*time.Millisecond))
+	afterArrivalHook = func() { time.Sleep(1500 * time.Millisecond) } // three deadlines pass in the gap
 	defer func() { afterArrivalHook = nil }()
 	resp, body := e.post(t, true)
 	if resp.StatusCode != 200 || !strings.Contains(body, "[DONE]") {
@@ -277,9 +281,9 @@ func TestEveryArrivalPathDisarmsTheDeadlineBeforeTheDecisionPoint(t *testing.T) 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := newScriptWorker(t, "a-1", c.h)
-			e := newResEnv(t, []protocol.WorkerSnapshot{w.snapshot("qwen-7b")}, noBreaker, deadline(150*time.Millisecond))
+			e := newResEnv(t, []protocol.WorkerSnapshot{w.snapshot("qwen-7b")}, noBreaker, deadline(500*time.Millisecond))
 			var held atomic.Int32
-			beforeEndPhaseHook = func() { held.Add(1); time.Sleep(450 * time.Millisecond) }
+			beforeEndPhaseHook = func() { held.Add(1); time.Sleep(1500 * time.Millisecond) } // three deadlines
 			defer func() { beforeEndPhaseHook = nil }()
 			resp, body := e.post(t, c.stream)
 			if resp.StatusCode != c.code {

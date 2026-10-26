@@ -3,6 +3,7 @@ package integration
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -118,6 +119,22 @@ func metricLine(t *testing.T, mAddr, prefix string) string {
 	return ""
 }
 
+// activeRequests is how many requests a mock worker is serving now (-1 when it does not answer).
+func activeRequests(mockAddr string) int {
+	resp, err := http.Get("http://" + mockAddr + "/stats")
+	if err != nil {
+		return -1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var s struct {
+		ActiveRequests int `json:"active_requests"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&s) != nil {
+		return -1
+	}
+	return s.ActiveRequests
+}
+
 func sigterm(t *testing.T, p *proc) {
 	t.Helper()
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -131,7 +148,7 @@ func sigterm(t *testing.T, p *proc) {
 // completes in full, and the process exits 0 after the stream and after the grace.
 func TestProcessGatewayDrainSequence(t *testing.T) {
 	const grace = 1500 * time.Millisecond
-	cpAddr, _, _ := startDrainCluster(t, 1, "--tokens-per-second=2") // an 8-token stream takes about 4 s
+	cpAddr, _, _ := startDrainCluster(t, 1, "--tokens-per-second=1") // an 8-token stream takes about 8 s: it must outlast a late listener close
 	gwAddr := freePort(t)
 	gw := startDrainGateway(t, cpAddr, gwAddr, grace, 30*time.Second)
 	waitGatewayServing(t, gwAddr)
@@ -186,11 +203,19 @@ func TestProcessGatewayDrainSequence(t *testing.T) {
 		t.Fatalf("a request during the grace: %d, connection closing %v", resp.StatusCode, resp.Close)
 	}
 
-	// After the grace the listener is gone while the stream is still running.
-	time.Sleep(time.Until(signalled.Add(grace + 300*time.Millisecond)))
-	if c, err := net.DialTimeout("tcp", gwAddr, 300*time.Millisecond); err == nil {
-		_ = c.Close()
-		t.Fatal("the listener is still open after the readiness grace")
+	// After the grace the listener is gone while the stream is still running. Wait for the listener to go (it can only
+	// be late, never early, on a loaded machine) instead of sleeping until a computed instant, and check that it did
+	// not go before the grace was over.
+	waitFor(t, grace+10*time.Second, "the listener to close after the readiness grace", func() bool {
+		c, err := net.DialTimeout("tcp", gwAddr, 300*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			return false
+		}
+		return true
+	})
+	if closedAt := time.Since(signalled); closedAt < grace {
+		t.Fatalf("the listener closed %v after the signal, inside the %v readiness grace", closedAt, grace)
 	}
 	select {
 	case r := <-stream:
@@ -221,14 +246,33 @@ func TestProcessGatewayDrainSequence(t *testing.T) {
 
 // F2 (acceptance 17): a second signal ends the gateway at once, in the grace and in the drain after it.
 func TestProcessGatewayDrainSecondSignalExitsAtOnce(t *testing.T) {
+	listenerOpen := func(gwAddr string) bool {
+		c, err := net.DialTimeout("tcp", gwAddr, 300*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	}
 	for _, tc := range []struct {
 		name  string
-		delay time.Duration // from the first signal to the second
-	}{{"in the readiness grace", 300 * time.Millisecond}, {"in the drain after the grace", 1800 * time.Millisecond}} {
+		grace time.Duration
+		// until blocks until the gateway is in the state the second signal is meant to interrupt.
+		until func(t *testing.T, gwAddr, mAddr string)
+	}{
+		{"in the readiness grace", 10 * time.Second, func(t *testing.T, gwAddr, mAddr string) {
+			waitFor(t, 5*time.Second, "the gateway to be draining", func() bool { return metricLine(t, mAddr, "gateway_draining") == "gateway_draining 1" })
+			if !listenerOpen(gwAddr) {
+				t.Fatal("the listener closed before the readiness grace was over")
+			}
+		}},
+		{"in the drain after the grace", 1200 * time.Millisecond, func(t *testing.T, gwAddr, mAddr string) {
+			waitFor(t, 15*time.Second, "the listener to close after the grace", func() bool { return !listenerOpen(gwAddr) })
+		}},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cpAddr, _, _ := startDrainCluster(t, 1, "--tokens-per-second=0.5") // a stream takes about 16 s
 			gwAddr := freePort(t)
-			gw := startDrainGateway(t, cpAddr, gwAddr, 1200*time.Millisecond, 60*time.Second)
+			gw := startDrainGateway(t, cpAddr, gwAddr, tc.grace, 60*time.Second)
 			waitGatewayServing(t, gwAddr)
 			_ = startStream(gwAddr)
 			mAddr := strings.TrimPrefix(gw.metricsURL(t), "http://")
@@ -236,7 +280,7 @@ func TestProcessGatewayDrainSecondSignalExitsAtOnce(t *testing.T) {
 				return strings.HasSuffix(metricLine(t, mAddr, "inference_requests_active"), " 1")
 			})
 			sigterm(t, gw)
-			time.Sleep(tc.delay)
+			tc.until(t, gwAddr, mAddr)
 			if gw.dead.Load() {
 				t.Fatalf("the gateway exited on the first signal:\n%s", gw.stderr.String())
 			}
@@ -419,8 +463,9 @@ func TestProcessWorkerRollUnderLoad(t *testing.T) {
 
 			// Two clients on the four slots of the one worker left serving: within the safe share (0.6), so a stale
 			// reported load cannot turn the roll into NO_CAPACITY (a known scheduler property, Phase 14).
+			cur := [2]string{"a1", "b1"} // the worker ids now serving
 			res, stop := runDrainLoad(gwAddr, 2)
-			time.Sleep(500 * time.Millisecond)
+			waitFor(t, 15*time.Second, "the load to be flowing", func() bool { return res.ok.Load() >= 5 })
 			for i, next := range []string{"a2", "b2"} {
 				old := mocks[i]
 				began := time.Now()
@@ -431,9 +476,25 @@ func TestProcessWorkerRollUnderLoad(t *testing.T) {
 				drained := time.Since(began)
 				start(i, next)
 				t.Logf("replacing worker %d: the old mock drained in %v, the replacement started in %v", i, drained, time.Since(began)-drained)
-				waitWorkers(t, cpAddr, clusterToken, 10*time.Second, next+" eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return ws[next].Eligible })
-				time.Sleep(300 * time.Millisecond)
+				prev := cur[i]
+				waitWorkers(t, cpAddr, clusterToken, 10*time.Second, next+" eligible and "+prev+" withdrawn", func(ws map[string]protocol.WorkerSnapshot) bool {
+					return ws[next].Eligible && !ws[prev].Eligible
+				})
+				cur[i] = next
+				// The next worker is replaced only when the gateway too has moved on: a few requests in a row have gone
+				// through without a retry, so it no longer offers the dead worker. (Rolling on earlier leaves the gateway
+				// two dead workers to try, which no retry can cover; that is the stale view this step waits out.)
+				retries := countRetries(t, mAddr)
+				okAt := res.ok.Load()
+				waitFor(t, 15*time.Second, "the gateway to serve requests without retries after replacing "+prev, func() bool {
+					if r := countRetries(t, mAddr); r != retries {
+						retries, okAt = r, res.ok.Load()
+						return false
+					}
+					return res.ok.Load() >= okAt+5
+				})
 			}
+			waitFor(t, 30*time.Second, "the load to complete 20 requests", func() bool { return res.ok.Load() >= 20 })
 			stop()
 			retries := countRetries(t, mAddr) - retries0
 			t.Logf("roll with announce %s: %d requests ok, %d failed, %v retries", tc.announce, res.ok.Load(), res.failed.Load(), retries)
@@ -462,7 +523,7 @@ func TestProcessAgentSigtermDeregistersWhileTheBackendFinishes(t *testing.T) {
 	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return ws["w1"].Eligible })
 	// A request straight to the backend, in flight when the agent is told to stop.
 	stream := startStream(mAddr)
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 10*time.Second, "the backend to be serving the stream", func() bool { return activeRequests(mAddr) >= 1 })
 	sigterm(t, agent)
 	if err := agent.wait(t, 8*time.Second); err != nil {
 		t.Fatalf("the agent must exit 0 on SIGTERM: %v\n%s", err, agent.stderr.String())
@@ -512,7 +573,7 @@ func TestProcessGatewayRollBehindALoadBalancer(t *testing.T) {
 			waitFor(t, 10*time.Second, "both gateways ready in the balancer", func() bool { return lb.readyCount() == 2 })
 
 			res, stop := runDrainLoad(lb.addr, 2)
-			time.Sleep(500 * time.Millisecond)
+			waitFor(t, 15*time.Second, "the load to be flowing through the balancer", func() bool { return res.ok.Load() >= 5 })
 			inflight := startStream(addrs[0]) // straight to the gateway about to drain
 			time.Sleep(200 * time.Millisecond)
 			for i := 0; i < 2; i++ {
@@ -523,7 +584,9 @@ func TestProcessGatewayRollBehindALoadBalancer(t *testing.T) {
 				}
 				start(i)
 				waitFor(t, 10*time.Second, "the replacement to be ready in the balancer", func() bool { return lb.readyCount() == 2 })
-				time.Sleep(300 * time.Millisecond)
+				// The roll goes on once the load has been served through the balancer again.
+				ok := res.ok.Load()
+				waitFor(t, 15*time.Second, "the load to flow through the balancer again", func() bool { return res.ok.Load() >= ok+5 })
 			}
 			stop()
 			if r := <-inflight; r.err != nil || !r.done {

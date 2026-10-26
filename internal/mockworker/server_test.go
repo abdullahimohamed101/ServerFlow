@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"serverflow/internal/testwait"
 )
 
 type lockedBuffer struct {
@@ -115,14 +117,7 @@ func (e *env) stats(t *testing.T) Stats {
 
 func eventually(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("timed out after %v waiting for: %s", d, msg)
+	testwait.Eventually(t, d, cond, msg)
 }
 
 type sseEvent struct {
@@ -948,11 +943,17 @@ func TestStrayConnectionDoesNotDelayTheDrainAtTheDefaultGrace(t *testing.T) {
 }
 
 func TestDrainTimeoutBoundsTheWholeShutdown(t *testing.T) {
+	// The timings are four times what they once were (a 480 ms bound had 180 ms to spare over the 300 ms the shutdown
+	// takes, less than a stalled machine loses) and the grace is a longer one, so that the two outcomes stay far apart.
+	old := shutdownGrace
+	shutdownGrace = 2 * time.Second
+	t.Cleanup(func() { shutdownGrace = old })
 	cfg := testConfig()
-	cfg.TTFT = 200 * time.Millisecond
+	cfg.TTFT = 800 * time.Millisecond
 	cfg.OutputTokens = 1
-	cfg.DrainTimeout = 300 * time.Millisecond
+	cfg.DrainTimeout = 1200 * time.Millisecond
 	url, stop, done := serve(t, cfg)
+	srv := lastServer
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(url, "http://")) // a stray connection
 	if err != nil {
@@ -964,17 +965,16 @@ func TestDrainTimeoutBoundsTheWholeShutdown(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	eventually(t, 5*time.Second, func() bool { return srv.inflight.Load() == 1 }, "the request to be in flight")
 
 	start := time.Now()
 	stop()
 	select {
 	case <-done:
-		// The request ends ~100ms in; the grace is then capped by the ~200ms of
-		// budget left, so the whole shutdown is ~300ms. An uncapped 500ms grace
-		// would make it ~600ms.
-		if took := time.Since(start); took > 480*time.Millisecond {
-			t.Fatalf("shutdown took %v with a 300ms drain timeout", took)
+		// The request ends ~800 ms after the stop; the grace is then capped by the ~400 ms of budget left, so the whole
+		// shutdown is ~1.2 s. An uncapped 2 s grace would make it ~2.8 s.
+		if took := time.Since(start); took > 1900*time.Millisecond {
+			t.Fatalf("shutdown took %v with a 1.2 s drain timeout", took)
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("Serve did not return")

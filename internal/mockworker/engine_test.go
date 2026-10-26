@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"serverflow/internal/testwait"
 )
 
 func mustAcquire(t *testing.T, e *Engine, tokens int) func() {
@@ -20,14 +22,7 @@ func mustAcquire(t *testing.T, e *Engine, tokens int) func() {
 
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for: %s", msg)
+	testwait.Eventually(t, 2*time.Second, cond, msg)
 }
 
 func TestEngineRunsUpToMaxActive(t *testing.T) {

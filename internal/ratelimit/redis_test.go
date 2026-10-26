@@ -16,6 +16,7 @@ import (
 
 	"serverflow/internal/redis"
 	"serverflow/internal/redis/redistest"
+	"serverflow/internal/testwait"
 )
 
 type fakeClock struct{ ms atomic.Int64 }
@@ -495,14 +496,7 @@ func TestReleaseAndRenewalRunInTheBackground(t *testing.T) {
 
 func eventually(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if f() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.Eventually(t, d, f, what)
 }
 
 func TestLocalLeaseCapIsEnforced(t *testing.T) {

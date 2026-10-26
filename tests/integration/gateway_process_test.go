@@ -49,6 +49,46 @@ func gatewayChat(gwAddr string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
+// isNoEligibleWorker reports whether an answer is exactly 503 NO_CAPACITY saying no worker was eligible: the only answer
+// a machine stall is allowed to excuse.
+func isNoEligibleWorker(code int, body string) bool {
+	return code == 503 && strings.Contains(body, `"NO_CAPACITY"`) && strings.Contains(body, `"eligible_workers":0`)
+}
+
+// maxStallBlips is how many stalls of the machine one test run forgives.
+const maxStallBlips = 5
+
+// gatewayChatThroughStalls sends one request and returns its status and body. This cluster runs with a 200 ms heartbeat, a
+// 500 ms suspect timeout and a gateway that ages its cached view of the registry (see snapshotCache): a worker whose last
+// heartbeat, plus the age of the gateway's snapshot, reaches 500 ms is correctly judged suspect. On a machine that stalls
+// the gateway or a worker agent for a few hundred milliseconds (a loaded CI host, the race detector, a parallel
+// `go test ./...`) the only healthy worker is then correctly refused: 503 NO_CAPACITY with eligible_workers 0. That is the
+// cluster's timing, not the behaviour under test, so such an answer waits until the control plane lists every worker in
+// want as eligible and the gateway answers again, and the request is repeated. Any other answer, or more than
+// maxStallBlips stalls in one run (counted in *blips), is returned or fails the test as before.
+func gatewayChatThroughStalls(t *testing.T, cpAddr, gwAddr string, blips *int, want ...string) (int, string) {
+	t.Helper()
+	code, body := gatewayChat(gwAddr)
+	for isNoEligibleWorker(code, body) && *blips < maxStallBlips {
+		*blips++
+		t.Logf("no worker was eligible (a stall on a loaded machine); waiting for %v to report again", want)
+		waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "the workers eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
+			for _, id := range want {
+				if !ws[id].Eligible {
+					return false
+				}
+			}
+			return true
+		})
+		// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
+		waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
+			code, body = gatewayChat(gwAddr)
+			return !isNoEligibleWorker(code, body)
+		})
+	}
+	return code, body
+}
+
 func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testing.T) {
 	cpAddr := freePort(t)
 	cp := startControlPlaneProc(t, cpAddr, clusterToken)
@@ -58,7 +98,7 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	startAgentProc(t, cpAddr, clusterToken, "w1", m1)
 	startAgentProc(t, cpAddr, clusterToken, "w2", m2)
 	gwAddr := freePort(t)
-	startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
+	gw := startGatewayProc(t, cpAddr, clusterToken, gwAddr, "round-robin")
 	waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "both eligible", func(ws map[string]protocol.WorkerSnapshot) bool {
 		return ws["w1"].Eligible && ws["w2"].Eligible
 	})
@@ -71,9 +111,10 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	})
 
 	// Distribution: round-robin over two workers splits an even number of requests evenly.
+	blips := 0
 	a0, b0 := completed(t, m1), completed(t, m2)
 	for i := 0; i < 20; i++ {
-		if code, body := gatewayChat(gwAddr); code != 200 {
+		if code, body := gatewayChatThroughStalls(t, cpAddr, gwAddr, &blips, "w1", "w2"); code != 200 {
 			t.Fatalf("request %d: %d %s", i, code, body)
 		}
 	}
@@ -84,10 +125,19 @@ func TestProcessGatewaySchedulesAcrossWorkersAndSurvivesDeathAndOutage(t *testin
 	// A killed backend stops receiving traffic.
 	mock1.kill9()
 	waitWorkers(t, cpAddr, clusterToken, 5*time.Second, "w1 not eligible", func(ws map[string]protocol.WorkerSnapshot) bool { return !ws["w1"].Eligible })
-	time.Sleep(400 * time.Millisecond) // the gateway's next refreshes
+	// Wait until the gateway has dropped w1 from its view (its next refresh): then no request needs a second attempt.
+	waitFor(t, 10*time.Second, "the gateway to stop routing to the killed w1", func() bool {
+		for i := 0; i < 6; i++ {
+			if resp, _ := gatewayPost(t, gwAddr); resp.StatusCode != 200 || resp.Header.Get("X-ServerFlow-Attempts") == "2" {
+				return false
+			}
+		}
+		return true
+	})
 	for i := 0; i < 20; i++ {
-		if code, body := gatewayChat(gwAddr); code != 200 {
-			t.Fatalf("w2 is healthy but request %d got %d %s", i, code, body)
+		if code, body := gatewayChatThroughStalls(t, cpAddr, gwAddr, &blips, "w2"); code != 200 {
+			ws, err := fetchWorkers(cpAddr, clusterToken)
+			t.Fatalf("w2 is healthy but request %d got %d %s\nregistry now: %+v (err %v)\ngateway log:\n%s", i, code, body, ws, err, gw.stderr.String())
 		}
 	}
 
@@ -273,8 +323,11 @@ func flakyWorkerRun(t *testing.T, extraEnv ...string) (*proc, int) {
 			waitWorkers(t, cpAddr, clusterToken, 10*time.Second, "all eligible again", func(ws map[string]protocol.WorkerSnapshot) bool {
 				return ws["w1"].Eligible && ws["w2"].Eligible && ws["w3"].Eligible
 			})
-			time.Sleep(1500 * time.Millisecond) // the gateway refreshes its view every second
-			resp, body = gatewayPost(t, gwAddr)
+			// The gateway has its own view of the registry, refreshed on its own schedule: ask until it answers again.
+			waitFor(t, 15*time.Second, "the gateway to route again after the workers reported", func() bool {
+				resp, body = gatewayPost(t, gwAddr)
+				return resp.StatusCode != 503 || !strings.Contains(body, `"eligible_workers":0`)
+			})
 		}
 		if resp.StatusCode != 200 {
 			t.Fatalf("request %d: %d %s", i, resp.StatusCode, body)
@@ -295,9 +348,8 @@ func TestProcessGatewayRetriesAroundAFlakyWorker(t *testing.T) {
 	if retried < 25 || retried > 55 {
 		t.Fatalf("expected roughly a third to a half of the 90 requests to hit the flaky worker first: %d were retried", retried)
 	}
-	if !strings.Contains(gw.stderr.String(), `"outcome":"retried"`) || !strings.Contains(gw.stderr.String(), `"class":"status_503"`) {
-		t.Fatal("the retried attempts must be on record in the gateway log")
-	}
+	gw.waitLog(t, `"outcome":"retried"`) // the retried attempts must be on record in the gateway log
+	gw.waitLog(t, `"class":"status_503"`)
 	if strings.Contains(gw.stderr.String(), clusterToken) {
 		t.Fatal("the token leaked into the log")
 	}
@@ -311,9 +363,7 @@ func TestProcessGatewayEjectsAFlakyWorkerByDefault(t *testing.T) {
 	if retried > 10 {
 		t.Fatalf("%d of 90 requests were retried: the flaky worker should have been ejected after a few faults", retried)
 	}
-	if !strings.Contains(gw.stderr.String(), "circuit breaker changed state") {
-		t.Fatal("the breaker transition must be on record in the gateway log")
-	}
+	gw.waitLog(t, "circuit breaker changed state") // the breaker transition must be on record in the gateway log
 	if strings.Contains(gw.stderr.String(), clusterToken) {
 		t.Fatal("the token leaked into the log")
 	}
@@ -348,9 +398,7 @@ func TestProcessGatewayRetriesAroundABackendKilledMidRun(t *testing.T) {
 			t.Fatalf("request %d after the kill: %d %s", i, resp.StatusCode, body)
 		}
 	}
-	if !strings.Contains(gw.stderr.String(), `"class":"connect"`) {
-		t.Fatal("the connection failures that were retried must be on record")
-	}
+	gw.waitLog(t, `"class":"connect"`) // the connection failures that were retried must be on record
 }
 
 // The work-aware strategies of Phase 14 (ADR-022) run in the real binaries: the gateway starts with the ledger

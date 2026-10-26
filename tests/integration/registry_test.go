@@ -17,6 +17,7 @@ import (
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/client"
 	"serverflow/internal/registry/server"
+	"serverflow/internal/testwait"
 	"serverflow/internal/worker"
 	"serverflow/pkg/protocol"
 )
@@ -126,15 +127,7 @@ func (c *controlPlane) eligible(id string) bool {
 
 func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) time.Duration {
 	t.Helper()
-	start := time.Now()
-	for time.Since(start) < d {
-		if cond() {
-			return time.Since(start)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out after %v waiting for: %s", d, what)
-	return 0
+	return testwait.Eventually(t, d, cond, what)
 }
 
 func TestAWorkerRegistersAndIsFoundByModel(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"serverflow/internal/events"
 	"serverflow/internal/kafka"
 	"serverflow/internal/kafka/kafkatest"
+	"serverflow/internal/testwait"
 	"serverflow/pkg/protocol"
 )
 
@@ -41,18 +42,12 @@ var diag func() string
 
 func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
+	testwait.Eventually(t, d, cond, msg, func() string {
+		if diag == nil {
+			return "(no diagnostics)"
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	extra := ""
-	if diag != nil {
-		extra = " [" + diag() + "]"
-	}
-	t.Fatalf("timed out after %v: %s%s", d, msg, extra)
+		return diag()
+	})
 }
 
 func producerFor(t *testing.T, cfg kafka.Config, topic string) *kafka.Producer {

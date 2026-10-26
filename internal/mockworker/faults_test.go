@@ -113,11 +113,11 @@ func TestFaultsRejectBadSettings(t *testing.T) {
 func TestFaultsExtraDelayHoldsTheResponseBack(t *testing.T) {
 	e := newEnv(t)
 	f := e.srv.Faults()
-	f.SetExtraDelay(300 * time.Millisecond)
+	f.SetExtraDelay(1200 * time.Millisecond)
 	begin := time.Now()
 	e.mustPost(t, chatBody(false, "hi", ""))
-	if d := time.Since(begin); d < 300*time.Millisecond {
-		t.Fatalf("answered after %v despite a 300ms extra delay", d)
+	if d := time.Since(begin); d < 1200*time.Millisecond {
+		t.Fatalf("answered after %v despite a 1.2s extra delay", d)
 	}
 	if f.Stats().Delayed != 1 {
 		t.Fatalf("delayed counter %d", f.Stats().Delayed)
@@ -125,8 +125,13 @@ func TestFaultsExtraDelayHoldsTheResponseBack(t *testing.T) {
 	f.SetExtraDelay(0)
 	begin = time.Now()
 	e.mustPost(t, chatBody(false, "hi", ""))
-	if d := time.Since(begin); d > 250*time.Millisecond {
+	// Half the delay that was set: a request that still waited for it would take at least all of it. (The counter
+	// below is the exact proof; the time only has to be far from the delay in both directions.)
+	if d := time.Since(begin); d > 600*time.Millisecond {
 		t.Fatalf("still slow after clearing: %v", d)
+	}
+	if f.Stats().Delayed != 1 {
+		t.Fatalf("the request after clearing the delay was delayed too: counter %d", f.Stats().Delayed)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"serverflow/internal/config"
 	"serverflow/internal/gateway"
 	"serverflow/internal/mockworker"
+	"serverflow/internal/testwait"
 )
 
 const model = "qwen-7b"
@@ -98,14 +99,7 @@ func readEvents(r io.Reader) ([]event, error) {
 
 func eventually(t *testing.T, d time.Duration, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out after %v waiting for: %s", d, msg)
+	testwait.Eventually(t, d, cond, msg)
 }
 
 func errorCode(t *testing.T, body []byte) string {

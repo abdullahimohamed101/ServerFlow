@@ -279,7 +279,7 @@ func TestProcessAuthEndToEnd(t *testing.T) {
 		return r.StatusCode == 200
 	})
 
-	logs := gw.stderr.String()
+	logs := gw.waitLog(t, "key store unavailable")
 	if strings.Count(logs, "key store unavailable") != 1 {
 		t.Errorf("the outage must be logged once:\n%s", logs)
 	}

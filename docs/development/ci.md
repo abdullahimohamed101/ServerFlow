@@ -130,6 +130,18 @@ services without a healthcheck (`dev-up.sh` waits itself), and a step output tha
 `TestWorkflowOutputsAndDockerCommands` checks every `steps.X.outputs.Y`). To reproduce locally, put the v2.38.2 `docker-compose` release binary behind a `docker`
 wrapper that handles the `compose` subcommand, clone the branch with `--depth 1` into a fresh directory and run the workflow steps in order.
 
+## Tests that wait
+
+A test never sleeps a fixed time and then asserts: that is a race with the machine, and it is what failed most of the flaky tests found
+in the October 2026 hunt. Wait for the condition with `internal/testwait` (standard library only, test support): `Eventually` polls every
+5 ms against a generous deadline and fails with what was awaited and the last observed state; `WaitForSubstring` does the same for a log
+or stderr buffer that another goroutine is still writing; `Never` and `Stays` are the bounded forms for "must not happen" and "must be
+kept", and each use needs a comment on why there is nothing observable to wait for instead. A wall-clock bound the test asserts (a
+refusal "at once", a shutdown "about 1.2 s") is scaled so that the margin between the right and the wrong outcome is hundreds of
+milliseconds, not tens, and where the contract is an ordering ("answered before the server stopped") it is asserted as an ordering.
+Every wait on a child process is bounded and names what it awaited (`tests/integration` also gives `http.DefaultClient` a 90 s timeout
+in `TestMain`, so a peer that never answers fails the test instead of hanging the package until go test's 10 minute limit).
+
 ## Required checks (owner action)
 
 Branch protection can only be set by the repository owner. In GitHub: Settings, Branches, add a rule for

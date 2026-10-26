@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"serverflow/internal/testwait"
 	"serverflow/pkg/protocol"
 )
 
@@ -92,8 +93,11 @@ type proc struct {
 	cmd    *exec.Cmd
 	addr   string // from the startup log line, if it has one
 	stderr *lockedBuf
-	exited chan error
-	dead   atomic.Bool
+	t      *testing.T    // the test that started it, for the failures kill9 reports
+	done   chan struct{} // closed once the process has been reaped; exitErr is valid from then on
+	// exitErr is the result of cmd.Wait.
+	exitErr error
+	dead    atomic.Bool
 }
 
 // startProc launches a binary and waits for its startup log line (startMsg). A launch that fails for a reason
@@ -135,7 +139,7 @@ func launchProc(t *testing.T, name, startMsg string, env []string, args []string
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Sprintf("starting %s: %v", name, err), errors.Is(err, syscall.ETXTBSY)
 	}
-	p := &proc{name: name, cmd: cmd, stderr: &lockedBuf{}, exited: make(chan error, 1)}
+	p := &proc{name: name, cmd: cmd, stderr: &lockedBuf{}, t: t, done: make(chan struct{})}
 	started := make(chan string, 1)
 	go func() {
 		sc := bufio.NewScanner(pipe)
@@ -150,9 +154,9 @@ func launchProc(t *testing.T, name, startMsg string, env []string, args []string
 				}
 			}
 		}
-		err := cmd.Wait()
+		p.exitErr = cmd.Wait()
 		p.dead.Store(true)
-		p.exited <- err
+		close(p.done)
 	}()
 	t.Cleanup(func() {
 		if !p.dead.Load() {
@@ -162,21 +166,38 @@ func launchProc(t *testing.T, name, startMsg string, env []string, args []string
 	select {
 	case p.addr = <-started:
 		return p, "", false
-	case err := <-p.exited:
+	case <-p.done:
 		out := strings.TrimSpace(p.stderr.String())
-		return nil, fmt.Sprintf("%s exited before starting: %v: %s", name, err, out), strings.Contains(out, "address already in use")
+		return nil, fmt.Sprintf("%s exited before starting: %v: %s", name, p.exitErr, out), strings.Contains(out, "address already in use")
 	case <-time.After(15 * time.Second):
-		return nil, fmt.Sprintf("%s did not start: %s", name, p.stderr.String()), false
+		_ = cmd.Process.Kill()
+		return nil, fmt.Sprintf("%s did not log %q within 15s: %s", name, startMsg, p.stderr.String()), false
 	}
 }
 
-func (p *proc) kill9() { _ = p.cmd.Process.Signal(syscall.SIGKILL); <-p.exited; p.exited <- nil }
+// waitLog waits until the process's stderr contains substr and returns all of it. The process writes its log
+// while the test runs and the pipe is copied by another goroutine, so a line is in the buffer some time after the
+// event it records, not with it; a log line a test depends on is waited for, not read.
+func (p *proc) waitLog(t *testing.T, substr string) string {
+	t.Helper()
+	return testwait.WaitForSubstring(t, p.stderr, substr, 10*time.Second)
+}
+
+// kill9 kills the process and waits for it to be reaped. It can be called any number of times, also after wait.
+func (p *proc) kill9() {
+	_ = p.cmd.Process.Signal(syscall.SIGKILL)
+	select {
+	case <-p.done:
+	case <-time.After(10 * time.Second):
+		p.t.Fatalf("%s (pid %d) was still not reaped 10s after SIGKILL; stderr: %s", p.name, p.cmd.Process.Pid, p.stderr.String())
+	}
+}
 
 func (p *proc) wait(t *testing.T, d time.Duration) error {
 	t.Helper()
 	select {
-	case err := <-p.exited:
-		return err
+	case <-p.done:
+		return p.exitErr
 	case <-time.After(d):
 		t.Fatalf("%s did not exit within %v; stderr: %s", p.name, d, p.stderr.String())
 		return nil

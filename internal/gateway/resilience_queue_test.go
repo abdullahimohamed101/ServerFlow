@@ -671,15 +671,22 @@ func TestDrainingStopsQueueingAndFlushesTheWaiters(t *testing.T) {
 	waiter := e.chatAsync(context.Background(), "w1")
 	e.awaitDepth(t, 1)
 
-	stop := e.rs.beginDrain(drainFlushMargin + 200*time.Millisecond)
+	const flushIn = time.Second // the flush comes this long after beginDrain; a refusal "at once" is far inside it
+	stop := e.rs.beginDrain(drainFlushMargin + flushIn)
 	defer stop()
 	lateBegan := time.Now()
 	r := awaitResult(t, e.chatAsync(context.Background(), "late"))
 	if r.resp.StatusCode != 503 || errorCode(t, r.body) != "NO_CAPACITY" || retryAfter(t, r) != "1" {
 		t.Fatalf("an arrival that would have to wait is shed as draining: %d %s", r.resp.StatusCode, r.body)
 	}
-	if took := time.Since(lateBegan); took > 150*time.Millisecond {
-		t.Fatalf("the arrival waited %v: a closed queue refuses at once, it does not wait for the flush", took)
+	took := time.Since(lateBegan)
+	select {
+	case w := <-waiter: // the refusal must come first: the arrival did not wait for the flush that answers this one
+		t.Fatalf("the waiter was already flushed (%d) when the arrival was refused after %v", w.resp.StatusCode, took)
+	default:
+	}
+	if took > flushIn*3/4 {
+		t.Fatalf("the arrival waited %v: a closed queue refuses at once, it does not wait for the flush after %v", took, flushIn)
 	}
 	began := time.Now()
 	w := awaitResult(t, waiter)

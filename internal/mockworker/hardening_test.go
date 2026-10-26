@@ -324,14 +324,16 @@ func TestRequestBodyLimitIsOneMebibyte(t *testing.T) {
 }
 
 func TestStreamHeadersArriveBeforeTheFirstToken(t *testing.T) {
-	e := newEnv(t, func(c *Config) { c.TTFT = 600 * time.Millisecond })
+	// The first token is 10 s away and the headers have to be here in half of that: the test returns as soon as they are
+	// (closing the body ends the request), so a long TTFT costs nothing and leaves seconds for a loaded machine.
+	e := newEnv(t, func(c *Config) { c.TTFT = 10 * time.Second })
 	start := time.Now()
 	resp, err := e.post(context.Background(), chatBody(true, "x", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if took := time.Since(start); took > 400*time.Millisecond {
+	if took := time.Since(start); took > 5*time.Second {
 		t.Fatalf("headers took %v; a stream must open as soon as it has a slot, not at the first token", took)
 	}
 }
