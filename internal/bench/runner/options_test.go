@@ -173,3 +173,52 @@ func TestErrorRateDefaultsAndFlags(t *testing.T) {
 		t.Fatalf("%+v %v", rf.Options, err)
 	}
 }
+
+func TestExperimentOptionsParseAndAreValidated(t *testing.T) {
+	rf, err := parse(t, "--sim-profile", "fast,slow", "--scheduler", "least-work", "--input-weight", "0.3", "--output-fraction", "0.5", "--workload", "heavy-tail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := rf.Options; strings.Join(o.SimProfiles, ",") != "fast,slow" || o.InputWeight != 0.3 || o.OutputFraction != 0.5 || o.LoadOverlay != "" {
+		t.Fatalf("%+v", o)
+	}
+	rf, err = parse(t)
+	if err != nil || rf.Options.InputWeight != 1 || rf.Options.OutputFraction != 1 || rf.Options.SimProfiles != nil {
+		t.Fatalf("defaults must be the gateway's own: %v %+v", err, rf.Options)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--sim-profile", "nope"}, "built-in simulator profile"},
+		{[]string{"--sim-profile", "fast,"}, "built-in simulator profile"},
+		{[]string{"--load-overlay", "weird"}, "--load-overlay"},
+		{[]string{"--scheduler", "least-work", "--load-overlay", "max"}, "needs the ledger overlay"},
+		{[]string{"--scheduler", "least-tokens", "--load-overlay", "max"}, "needs the ledger overlay"},
+		{[]string{"--input-weight", "-1"}, "--input-weight"},
+		{[]string{"--input-weight", "101"}, "--input-weight"},
+		{[]string{"--input-weight", "NaN"}, "--input-weight"},
+		{[]string{"--output-fraction", "0"}, "--output-fraction"},
+		{[]string{"--output-fraction", "1.5"}, "--output-fraction"},
+		{[]string{"--output-fraction", "NaN"}, "--output-fraction"},
+		{[]string{"--target", "http://127.0.0.1:1", "--sim-profile", "fast"}, "configure the embedded cluster"},
+		{[]string{"--target", "http://127.0.0.1:1", "--input-weight", "2"}, "configure the embedded cluster"},
+	} {
+		if _, err := parse(t, tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v, want error containing %q", tc.args, err, tc.want)
+		}
+	}
+	for _, ok := range [][]string{{"--input-weight", "0"}, {"--input-weight", "100"}, {"--output-fraction", "1"}, {"--scheduler", "least-work", "--load-overlay", "ledger"}, {"--load-overlay", "max"}} {
+		if _, err := parse(t, ok...); err != nil {
+			t.Errorf("%v: %v", ok, err)
+		}
+	}
+}
+
+func TestNewWorkloadsAreSelectable(t *testing.T) {
+	for _, w := range []string{"heavy-tail", "prefill-heavy", "decode-heavy"} {
+		if _, err := parse(t, "--workload", w); err != nil {
+			t.Errorf("%s: %v", w, err)
+		}
+	}
+}

@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis dev-kafka test-kafka dev-tracing dev-tracing-stop bench bench-compare quality quality-fast
+.PHONY: fmt vet lint test test-race build all mock-workers dev-cluster dev-postgres test-postgres dev-redis test-redis dev-kafka test-kafka dev-tracing dev-tracing-stop bench bench-compare bench-verdict quality quality-fast
 
 fmt:
 	gofmt -w .
@@ -118,6 +118,13 @@ bench:
 bench-compare:
 	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "usage: make bench-compare A=run_001 B=run_004"; exit 2; fi
 	go run ./cmd/benchmark compare $(A) $(B)
+
+# Evaluate pre-registered predictions mechanically (Phase 14; docs/benchmarks/phase-14-experiment-framework.md).
+#   make bench-verdict PREDICTIONS=docs/benchmarks/phase-14-predictions.md FREEZE=docs/benchmarks/phase-14-freeze.json RUNS=benchmark/runs
+# Optional: TUNED=path/to/tuned.json. Simulator-validated, not hardware-validated.
+bench-verdict:
+	@if [ -z "$(PREDICTIONS)" ] || [ -z "$(FREEZE)" ] || [ -z "$(RUNS)" ]; then echo "usage: make bench-verdict PREDICTIONS=file FREEZE=file RUNS=dir [TUNED=file]"; exit 2; fi
+	go run ./cmd/benchmark verdict --predictions $(PREDICTIONS) --freeze $(FREEZE) --runs $(RUNS) $(if $(TUNED),--tuned $(TUNED))
 
 # The same checks CI runs (docs/development/ci.md). `quality` also runs the database-backed tests when
 # SERVERFLOW_TEST_POSTGRES_DSN is set; `quality-fast` is lint plus unit tests.

@@ -20,6 +20,7 @@ import (
 	"serverflow/internal/bench/workload"
 	"serverflow/internal/config"
 	"serverflow/internal/registry/client"
+	"serverflow/internal/sim/engine"
 	"serverflow/pkg/protocol"
 )
 
@@ -480,12 +481,21 @@ func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, 
 		m.WorkerCount = &n
 		c := &report.Cluster{Profile: o.Profile, HeartbeatMillis: embedded.HeartbeatInterval.Milliseconds(), RegistryRefreshMs: embedded.RegistryRefresh.Milliseconds()}
 		for _, w := range t.cluster.Workers {
-			c.Workers = append(c.Workers, report.ClusterWorker{ID: w.ID, Model: w.Model, TokensPerSecond: w.TokensPerSecond,
-				TTFTMillis: w.TTFT.Milliseconds(), MaxConcurrency: w.MaxConcurrency, QueueSize: w.QueueSize})
+			cw := report.ClusterWorker{ID: w.ID, Model: w.Model, TokensPerSecond: w.TokensPerSecond,
+				TTFTMillis: w.TTFT.Milliseconds(), MaxConcurrency: w.MaxConcurrency, QueueSize: w.QueueSize}
+			if p, ok := engine.Profile(w.SimProfile); ok && w.SimProfile != "" {
+				cw.SimProfile, cw.SimParamsHash = w.SimProfile, p.Hash()
+			}
+			c.Workers = append(c.Workers, cw)
 		}
 		m.Cluster = c
+		st := t.cluster.SchedulerSettings()
+		m.Experiment = &report.Experiment{Strategy: st.Strategy, World: report.WorldLabel(c), ParameterHash: report.ParameterHash(c),
+			Options: &report.SchedulerOptions{LoadOverlay: st.LoadOverlay, OutputFraction: st.OutputFraction, InputWeight: st.InputWeight,
+				CapacityHalflifeMs: st.CapacityHalflife.Milliseconds(), CapacityFloor: st.CapacityFloor}}
 		return m
 	}
+	m.Experiment = &report.Experiment{Strategy: o.Scheduler, World: report.WorldLabel(nil)}
 	if u, err := url.Parse(o.TargetURL); err == nil {
 		m.TargetHost = u.Host // never the full URL: it could carry a path or query
 	}

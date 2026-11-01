@@ -22,11 +22,15 @@ const (
 	Burst        = "burst"
 	HotModel     = "hot-model"
 	MultiTenant  = "multi-tenant"
+	// The Phase 14 experiment workloads (ADR-022, PR G-lite).
+	HeavyTail    = "heavy-tail"
+	PrefillHeavy = "prefill-heavy"
+	DecodeHeavy  = "decode-heavy"
 )
 
 // Names lists the workloads.
 func Names() []string {
-	return []string{UniformShort, UniformLong, Mixed, Burst, HotModel, MultiTenant}
+	return []string{UniformShort, UniformLong, Mixed, Burst, HotModel, MultiTenant, HeavyTail, PrefillHeavy, DecodeHeavy}
 }
 
 // Class is one slice of a workload's prompt distribution: input and max_tokens are
@@ -44,6 +48,14 @@ var (
 	short  = Class{Name: "short", InMin: 100, InMax: 300, OutMin: 50, OutMax: 150}
 	medium = Class{Name: "medium", InMin: 500, InMax: 1500, OutMin: 200, OutMax: 500}
 	long   = Class{Name: "long", InMin: 2000, InMax: 8000, OutMin: 500, OutMax: 1500}
+
+	// The Phase 14 shapes. prefill is input-dominated (a long prompt, a short answer: about 40 input
+	// tokens per output token on average) and decode is output-dominated (a short prompt, a long
+	// answer: about 0.1). Both stay inside the gateway's max_tokens_limit (4096). Changing any number
+	// changes the pinned digests (workload_test.go), which is the point: a workload is part of the
+	// experiment's pre-registration.
+	prefill = Class{Name: "prefill", InMin: 4000, InMax: 8000, OutMin: 20, OutMax: 100}
+	decode  = Class{Name: "decode", InMin: 50, InMax: 200, OutMin: 1000, OutMax: 2000}
 )
 
 func weighted(c Class, w float64) Class { c.Weight = w; return c }
@@ -99,6 +111,14 @@ func New(spec Spec) (*Workload, error) {
 		w.classes = []Class{weighted(long, 1)}
 	case Mixed:
 		w.classes = []Class{weighted(short, 0.6), weighted(medium, 0.3), weighted(long, 0.1)}
+	case HeavyTail:
+		// 90% short, 10% long: the few long requests carry most of the work, so balancing request
+		// counts and balancing work diverge (H3).
+		w.classes = []Class{weighted(short, 0.9), weighted(long, 0.1)}
+	case PrefillHeavy:
+		w.classes = []Class{weighted(prefill, 1)}
+	case DecodeHeavy:
+		w.classes = []Class{weighted(decode, 1)}
 	default:
 		return nil, fmt.Errorf("unknown workload %q (choose one of: %s)", spec.Name, strings.Join(Names(), ", "))
 	}

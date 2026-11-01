@@ -96,6 +96,14 @@ type Config struct {
 	// (MockOutputTokens) still apply. Results from it are simulator results.
 	SimProfiles []string
 
+	// LoadOverlay, InputWeight and OutputFraction set scheduler.load_overlay, scheduler.cost.input_weight and
+	// scheduler.cost.output_fraction of the embedded gateway; nil or "" keeps the default (and, for a
+	// work-aware strategy, the ledger overlay the harness switches on). They are validated by the gateway,
+	// which refuses to start on a bad value.
+	LoadOverlay    string
+	InputWeight    *float64
+	OutputFraction *float64
+
 	// GatewayMutate, if set, edits the gateway's configuration after the harness has filled it in and
 	// before the gateway starts (the chaos harness lowers the header timeout through it). It must not
 	// change what the harness depends on: the worker source, control plane URL and token.
@@ -242,6 +250,7 @@ type Cluster struct {
 	log     *slog.Logger
 
 	resilience string
+	settings   SchedulerSettings
 
 	mu   sync.Mutex // guards live and the URL of Workers
 	live map[string]*liveWorker
@@ -328,6 +337,15 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 		// GatewayMutate may still change it (the gateway then refuses to start).
 		gcfg.Scheduler.LoadOverlay = config.LoadOverlayLedger
 	}
+	if cfg.LoadOverlay != "" {
+		gcfg.Scheduler.LoadOverlay = cfg.LoadOverlay
+	}
+	if cfg.InputWeight != nil {
+		gcfg.Scheduler.Cost.InputWeight = *cfg.InputWeight
+	}
+	if cfg.OutputFraction != nil {
+		gcfg.Scheduler.Cost.OutputFraction = *cfg.OutputFraction
+	}
 	if c.resilience, _, err = ApplyResilience(&gcfg, cfg.Resilience); err != nil {
 		return fail(err)
 	}
@@ -338,6 +356,9 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	if cfg.GatewayMutate != nil {
 		cfg.GatewayMutate(&gcfg)
 	}
+	c.settings = SchedulerSettings{Strategy: gcfg.Scheduler.Strategy, LoadOverlay: gcfg.Scheduler.LoadOverlay,
+		OutputFraction: gcfg.Scheduler.Cost.OutputFraction, InputWeight: gcfg.Scheduler.Cost.InputWeight,
+		CapacityHalflife: gcfg.Scheduler.Signals.CapacityHalflife, CapacityFloor: gcfg.Scheduler.Signals.CapacityFloor}
 	gw, err := gateway.NewRegistry(gcfg, log)
 	if err != nil {
 		return fail(err)
@@ -462,6 +483,18 @@ func (c *Cluster) ready(ctx context.Context, models []string) bool {
 // Resilience is the resilience setting the gateway runs with: "on", "off", or "absent" on a build
 // without the feature.
 func (c *Cluster) Resilience() string { return c.resilience }
+
+// SchedulerSettings are the scheduler.* values the embedded gateway was started with, after the harness and
+// GatewayMutate had their say.
+type SchedulerSettings struct {
+	Strategy, LoadOverlay       string
+	OutputFraction, InputWeight float64
+	CapacityHalflife            time.Duration
+	CapacityFloor               float64
+}
+
+// SchedulerSettings returns the scheduler settings the gateway runs with.
+func (c *Cluster) SchedulerSettings() SchedulerSettings { return c.settings }
 
 // Specs returns the workers as they are now: a replaced worker has a new URL.
 func (c *Cluster) Specs() []WorkerSpec {

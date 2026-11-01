@@ -93,7 +93,9 @@ Purpose: reproducible load tests and run-to-run comparison, without claiming a s
 arithmetic, an in-process simulated cluster, the result schema (`benchmark/runs/run_NNN`) and the
 comparison. It only talks to a gateway (and optionally a control plane) over HTTP and imports no
 gateway internals except to boot the embedded cluster. Status: implemented (Phase 7). See ADR-013 and
-`docs/benchmarks/phase-7-harness.md`.
+`docs/benchmarks/phase-7-harness.md`. Phase 14 adds the workloads `heavy-tail`, `prefill-heavy` and `decode-heavy`, the strategy, world and
+parameter hash recorded in every result, and `internal/bench/verdict` (bootstrap, Holm, TOST; `benchmark verdict`), which evaluates
+pre-registered predictions mechanically (ADR-022, `docs/benchmarks/phase-14-experiment-framework.md`; simulator-validated, not hardware-validated).
 
 ### Worker Agent
 Purpose: register worker, report heartbeats/metrics. It sits beside the

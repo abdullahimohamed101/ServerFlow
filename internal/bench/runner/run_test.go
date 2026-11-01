@@ -200,3 +200,51 @@ func TestPreflightRefusesAnUnreachableTarget(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestResultRecordsStrategyWorldAndOptionsAdditively(t *testing.T) {
+	// A default run: the constant-speed mock, the master defaults.
+	o := quickOptions(t, "--workload", "uniform-short", "--duration", "500ms")
+	rs, err := Run(context.Background(), o, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := rs[0].Metadata.Experiment
+	if e == nil || e.Strategy != "round-robin" || e.World != "mock:identical" || len(e.ParameterHash) != 64 {
+		t.Fatalf("%+v", e)
+	}
+	if got := *e.Options; got != (report.SchedulerOptions{LoadOverlay: "max", OutputFraction: 1, InputWeight: 1, CapacityHalflifeMs: 60000, CapacityFloor: 0.25}) {
+		t.Fatalf("the defaults must be recorded as the gateway ran with them: %+v", got)
+	}
+	if e.ParameterHash != report.ParameterHash(rs[0].Metadata.Cluster) {
+		t.Fatal("the recorded hash must be recomputable from the stored cluster")
+	}
+	// A simulator run with a work-aware strategy and non-default weights.
+	o = quickOptions(t, "--workload", "heavy-tail", "--duration", "500ms", "--scheduler", "least-work", "--sim-profile", "fast,slow", "--input-weight", "0.25", "--output-fraction", "0.5")
+	rs, err = Run(context.Background(), o, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := rs[0].Metadata
+	e = m.Experiment
+	if e == nil || e.Strategy != "least-work" || e.World != "sim:fast,slow" || e.Options.LoadOverlay != "ledger" || e.Options.InputWeight != 0.25 || e.Options.OutputFraction != 0.5 {
+		t.Fatalf("%+v %+v", e, e.Options)
+	}
+	if e.ParameterHash != report.ParameterHash(m.Cluster) {
+		t.Fatal("hash must be recomputable")
+	}
+	profiles := []string{}
+	for _, w := range m.Cluster.Workers {
+		if w.SimParamsHash == "" || len(w.SimParamsHash) != 64 {
+			t.Fatalf("a simulated worker records its parameter hash: %+v", w)
+		}
+		profiles = append(profiles, w.SimProfile)
+	}
+	if strings.Join(profiles, ",") != "fast,slow,fast" {
+		t.Fatalf("profiles in turn: %v", profiles)
+	}
+	// What is on disk parses back with the record.
+	loaded, err := report.Load(filepath.Join(o.OutDir, "run_001"))
+	if err != nil || loaded.Metadata.Experiment == nil || loaded.Metadata.Experiment.World != "sim:fast,slow" {
+		t.Fatalf("%v", err)
+	}
+}

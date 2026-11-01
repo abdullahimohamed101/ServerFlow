@@ -373,3 +373,8 @@ Each has a recommended default. The coordinator, under delegated authority, has 
   the ledger on for these strategies. Decisions beyond the plan text: choosing either strategy **requires** `scheduler.load_overlay: ledger` (a startup error otherwise; the plan did not say whether it is implied); the
   "peak window" and the half-life are one parameter; the model mean cost uses a fixed alpha of 0.1. Not in C1: TTFT, `latency-aware`, the probe-priority rule, `ewma_alpha`, `ttft_halflife`, `min_samples`, the rest of D24.
   No scheduler comparison has been run (D28). Details, deviations and limits: ADR-022 section "[PR C1]".
+- **PR G-lite (experiment framework), delivered on branch `feature/p14g-lite-experiments`.** Workloads `heavy-tail`, `prefill-heavy`, `decode-heavy` with pinned digests (all nine workloads pinned); strategy, world, parameter hash and scheduler options recorded additively in
+  `result.json` (`metadata.experiment`, `sim_profile`/`sim_params_hash`), `benchmark run` flags `--sim-profile`, `--load-overlay`, `--input-weight`, `--output-fraction`; `compare` warnings on world, hash and option differences;
+  `internal/bench/verdict` (percentile bootstrap, Holm, TOST), `benchmark verdict` and `make bench-verdict`. Criteria 15 and 16. Interpretations beyond the plan text (refutation is interval-based, Holm family counts missing data as p = 1,
+  freeze record and `## Amendments` mechanics, `all_of` roll-ups) are listed in ADR-022 "[PR G-lite]" as decided by the implementer, open for review. No comparison run was made (D28); only sub-second pipeline runs inside unit tests. Usage:
+  `docs/benchmarks/phase-14-experiment-framework.md`.

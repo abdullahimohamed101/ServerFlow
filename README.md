@@ -100,6 +100,7 @@ more than 100% of them (unless `--allow-overload`) and warns above 60%, because 
 worker's slots first, after which the gateway answers 503 and the run is invalid; 12 to 16 clients on 32 slots is a safe
 range. Use `--repeat 3` or more so `compare` can show run-to-run spread. A run in which more than
 5% of requests fail is marked invalid and exits non-zero. See `docs/benchmarks/phase-7-harness.md` for how to read the output.
+Phase 14's experiment tooling (simulated worlds, recorded parameter hashes, `benchmark verdict`) is described in `docs/benchmarks/phase-14-experiment-framework.md`.
 
 On Windows (no `make`), use the existing quality gate:
 

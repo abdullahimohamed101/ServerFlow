@@ -154,6 +154,7 @@ func CompareGroups(a, b Result, ga, gb []Result) Comparison {
 	c.Grouped = len(ga) >= MinRepeats && len(gb) >= MinRepeats
 	c.Warnings = append(sameRunWarnings(a, b), warnings(ga, gb)...)
 	c.Warnings = append(c.Warnings, resilienceWarnings(a, b, ga, gb)...)
+	c.Warnings = append(c.Warnings, experimentWarnings(a, b, ga, gb)...)
 	for _, h := range headlines {
 		d := Delta{Key: h.key, Label: h.label, Unit: h.unit, Points: h.points, Spread: "insufficient repeats"}
 		if c.Grouped {
@@ -281,6 +282,7 @@ func differences(a, b Metadata) []Difference {
 	if a.Resilience != "" && b.Resilience != "" {
 		add("resilience", false, resilienceLabel(a), resilienceLabel(b))
 	}
+	out = append(out, experimentDifferences(a, b)...)
 	add("git commit", false, a.GitCommit, b.GitCommit)
 	add("git tree", false, a.GitTree, b.GitTree)
 	add("machine", false, a.Machine, b.Machine)
