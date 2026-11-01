@@ -643,7 +643,7 @@ victim_gone() { ! eligible_workers | grep -qx "$K12_VICTIM"; }
 replacement_registered() { [ "$(eligible_workers | wc -l | tr -d ' ')" -ge 3 ] && victim_gone; }
 
 k12_worker_failover() {
-  local bad=0 c i
+  local bad=0 c
   K12_VICTIM="$(mock_worker_pods | head -1)"
   [ -n "$K12_VICTIM" ] || return 1
   poll 30 victim_ready || return 1
