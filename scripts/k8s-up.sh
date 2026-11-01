@@ -11,7 +11,7 @@
 #   scripts/k8s-up.sh smoke     the end-to-end checks K1-K7, K10, K12-K14 and D2-D7; the last line is
 #                               "smoke: N of N checks passed, 0 failed, 0 skipped"
 #   scripts/k8s-up.sh audit     per container: user, read-only root, capabilities, privilege escalation, seccomp, requests and
-#                               limits, token mounts; fails on any exception; the last line is "audit: N containers, 0 exceptions"
+#                               limits, token mounts; fails on any exception; the last line is "audit: N pods, M containers, 0 exceptions"
 #   scripts/k8s-up.sh diagnose  status, events, descriptions and the last log lines of every pod (secret-free), for a failed run
 #   scripts/k8s-up.sh render    the rendered manifests of the kind overlay (no Secret content), safe to paste
 #   scripts/k8s-up.sh check     the static checks without a cluster (render, kubeconform, tests/k8s): same as `make k8s-check`
@@ -449,8 +449,9 @@ pods_ready_no_restarts() {
   local rows
   rows="$(kc -n "$NAMESPACE" get pods -o 'jsonpath={range .items[*]}{.metadata.name}{" "}{.status.phase}{" "}{range .status.containerStatuses[*]}{.ready}{"/"}{.restartCount}{" "}{end}{"\n"}{end}')"
   [ -n "$rows" ] || return 1
-  # Completed Job pods are phase Succeeded; every other container must be ready (true/0).
-  printf '%s\n' "$rows" | awk '$2=="Succeeded"{next} {for(i=3;i<=NF;i++) if($i!="true/0") bad=1} END{exit bad}'
+  # Completed Job pods are phase Succeeded and skipped; every other pod must be Running (a Pending pod has no container
+  # statuses yet) with every container ready and never restarted (true/0).
+  printf '%s\n' "$rows" | awk '$2=="Succeeded"{next} $2!="Running"{bad=1} NF<3{bad=1} {for(i=3;i<=NF;i++) if($i!="true/0") bad=1} END{exit bad}'
 }
 
 job_succeeded() { [ "$(kc -n "$NAMESPACE" get job "$1" -o 'jsonpath={.status.succeeded}' 2>/dev/null || true)" = 1 ]; }
@@ -551,10 +552,16 @@ eligible_workers() { cp_curl '/v1/workers?eligible=true' | grep -o '"worker_id":
 
 k1_pods_ready() { poll 60 pods_ready_no_restarts; }
 
+gateway_readyz_200() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$GATEWAY_URL/readyz")" = 200 ]; }
+# The body goes into a variable first: `curl | grep -q` under pipefail fails when grep closes the pipe early.
+gateway_lists_model() {
+  local body
+  body="$(gw_curl "$K8S_DIR/api_key" -s "$GATEWAY_URL/v1/models")" || return 1
+  case "$body" in *mock-model*) return 0 ;; *) return 1 ;; esac
+}
+
 k2_gateway_ready() {
-  ready() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$GATEWAY_URL/readyz")" = 200 ]; }
-  models() { gw_curl "$K8S_DIR/api_key" -s "$GATEWAY_URL/v1/models" | grep -q mock-model; }
-  poll 60 ready && poll 30 models
+  poll 60 gateway_readyz_200 && poll 30 gateway_lists_model
 }
 
 k3_auth_required() {
@@ -662,7 +669,7 @@ k14_shared_quota() {
   local name="smoke-scale-$$" admitted=0 c i p rejecting=0 n
   [ "$(gateway_pods | wc -l | tr -d ' ')" -ge 2 ] || return 1
   make_tenant "$name" 3 || return 1
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     c="$(gw_curl "$SCRATCH/$name.key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
     if [ "$c" = 200 ]; then admitted=$((admitted + 1)); fi
   done
@@ -678,7 +685,7 @@ k14_shared_quota() {
 # object, event, pod log, or in the node's container logs. The values are searched, never printed; the check also fails if it
 # searched next to nothing (too few needles, or empty haystacks), so it cannot pass vacuously.
 k13_no_secrets_leaked() {
-  local needles="$SCRATCH/needles" hay="$SCRATCH/haystack" f p hits=0 nneedles bytes node="$CLUSTER-control-plane"
+  local needles="$SCRATCH/needles" hay="$SCRATCH/haystack" f p hits=0 nneedles bytes node_hits leftover node="$CLUSTER-control-plane"
   : >"$needles"
   for f in "$DEV_DIR"/*.env; do
     [ -f "$f" ] || continue
@@ -706,11 +713,22 @@ k13_no_secrets_leaked() {
   bytes="$(wc -c <"$hay" | tr -d ' ')"
   [ "$bytes" -gt 1000 ] || return 1
   hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
-  # 3. the node's container logs (kubelet writes them under /var/log/pods, deleted pods' included until they are collected)
-  docker exec "$node" sh -c 'cat /var/log/pods/*/*/*.log 2>/dev/null' >"$hay" 2>/dev/null || return 1
-  bytes="$(wc -c <"$hay" | tr -d ' ')"
-  [ "$bytes" -gt 1000 ] || return 1
-  hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  # 3. the node's container logs (kubelet writes them under /var/log/pods; the log directory of a deleted pod, the admin pods'
+  # included, lingers until the kubelet collects it). Nothing is excluded: the search is repeated for up to 90 s and fails only
+  # if a secret is still found, and the admin pods' directories must be gone by then.
+  node_hits=1
+  local deadline=$(($(date +%s) + 90))
+  while :; do
+    docker exec "$node" sh -c 'cat /var/log/pods/*/*/*.log 2>/dev/null' >"$hay" 2>/dev/null || return 1
+    bytes="$(wc -c <"$hay" | tr -d ' ')"
+    [ "$bytes" -gt 1000 ] || return 1
+    node_hits="$(grep -F -c -f "$needles" "$hay" || true)"
+    leftover="$(docker exec "$node" sh -c 'ls -d /var/log/pods/serverflow_admin-* 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ')"
+    if [ "$node_hits" = 0 ] && [ "${leftover:-1}" = 0 ]; then break; fi
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 2
+  done
+  hits=$((hits + node_hits))
   : >"$hay"
   [ "$hits" = 0 ]
 }

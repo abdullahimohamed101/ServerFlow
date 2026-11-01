@@ -18,7 +18,7 @@ metadata:
     serverflow.dev/phase: core
 spec:
   replicas: 3
-  progressDeadlineSeconds: 120
+  progressDeadlineSeconds: 300
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxUnavailable: 0, maxSurge: 1}

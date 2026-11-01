@@ -3,7 +3,7 @@
 Status: **draft, extended by PR 3 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
 the core system (control plane, gateway, workers, usage consumer) exist. Prometheus, Grafana and Jaeger (PR 4), NetworkPolicy (PR 5)
 and the rolling-update measurement (PR 6) are not built. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
-holds the PR 3 section meanwhile; ADR-022 is Phase 14's scheduler record, so the number in the plan moved).
+holds the PR 3 section meanwhile; ADR-022 is Phase 14's scheduler record, so this record is ADR-023).
 
 ## The core system (PR 3)
 
@@ -42,10 +42,10 @@ container logs (searched, never printed; fails if it searched next to nothing). 
 `make k8s-audit` reads the pods back from the API and prints, per container, user, non-root, read-only root, privilege escalation, dropped capabilities,
 seccomp, requests and limits; any exception fails it; the last line is `audit: N pods, M containers, 0 exceptions`.
 
-## What exists in this pull request
+## The foundation and data tier (PR 2)
 
 ```text
-host 127.0.0.1 only (kind extraPortMappings, declared now, nothing listens until PR 3/4 add the Services):
+host 127.0.0.1 only (kind extraPortMappings; the gateway and control plane NodePorts exist since PR 3, Prometheus, Grafana and Jaeger arrive in PR 4):
     gateway :28080   control plane :29090   Prometheus :29091   Grafana :23000   Jaeger :26686
 kind cluster "serverflow", one node, pod CIDR 10.244.0.0/16, kubeconfig .dev/k8s/kubeconfig, context kind-serverflow
 namespace serverflow   (Pod Security Admission: enforce, audit and warn = restricted, pinned to v1.36)

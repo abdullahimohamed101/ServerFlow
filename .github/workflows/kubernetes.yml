@@ -15,6 +15,8 @@ on:
       - "deploy/docker/**"
       - "cmd/**"
       - "internal/config/**"
+      - "internal/gateway/resilience*.go"
+      - "internal/worker/**"
       - "observability/**"
       - "scripts/k8s-up.sh"
       - "scripts/k8s-tool.sh"
@@ -86,10 +88,12 @@ jobs:
           scripts/k8s-up.sh diagnose > "$RUNNER_TEMP/k8s-diagnose.txt" 2>&1 || true
           # Belt and braces for the artifact: withhold the log if any generated secret value appears in it (nothing is printed).
           { for f in .dev/*.env; do sed -n 's/^[A-Z_]*=//p' "$f"; done; for f in .dev/k8s/api_key*; do [ -f "$f" ] && tr -d '\n' < "$f" && echo; done; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
-          if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/k8s-diagnose.txt"; then
-            echo "a generated secret appeared in the diagnostics; the artifact is withheld"
-            rm -f "$RUNNER_TEMP/k8s-diagnose.txt"
-          fi
+          for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log; do
+            if [ -f "$RUNNER_TEMP/$f" ] && grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/$f"; then
+              echo "a generated secret appeared in $f; that file is withheld"
+              rm -f "$RUNNER_TEMP/$f"
+            fi
+          done
           rm -f "$RUNNER_TEMP/needles"
       - name: Keep the diagnostics on failure
         if: failure()

@@ -323,7 +323,7 @@ k8s() {
     TestGatewayDrainSettingsInTheManifest TestGatewayDrainMutationsOnTheManifest TestGatewayRolloutAndDisruptionBudget \
     TestControlPlaneIsOneRecreatedReplica TestWorkerPodShape TestWorkerPodMutations TestNodePortsMatchKind TestWorkerNetworksIsThePodSubnet \
     TestEnvironmentNamesAreHonoured TestAdminPodTemplateIsHardened TestAdminRunBuildsAHardenedPodAndRefusesOddArguments \
-    TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget; do
+    TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget TestK1JudgesPhaseReadinessAndRestarts TestK13AndK2Hygiene; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   if grep -q -- "--- SKIP" "$log"; then

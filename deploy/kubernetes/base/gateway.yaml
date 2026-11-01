@@ -52,7 +52,8 @@ spec:
   # Two in the base (one replica cannot roll without an outage); the kind overlay sets three.
   replicas: 2
   minReadySeconds: 5
-  progressDeadlineSeconds: 120
+  # A new gateway is not Ready until a worker is registered, so the deadline must outlast a cold start of the whole system.
+  progressDeadlineSeconds: 300
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxUnavailable: 0, maxSurge: 1}

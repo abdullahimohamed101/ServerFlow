@@ -129,11 +129,12 @@ type workload struct {
 	Kind       string  `yaml:"kind"`
 	Metadata   objMeta `yaml:"metadata"`
 	Spec       struct {
-		Replicas              *int   `yaml:"replicas"`
-		ServiceName           string `yaml:"serviceName"`
-		BackoffLimit          *int   `yaml:"backoffLimit"`
-		ActiveDeadlineSeconds *int   `yaml:"activeDeadlineSeconds"`
-		Selector              struct {
+		Replicas                *int   `yaml:"replicas"`
+		ServiceName             string `yaml:"serviceName"`
+		BackoffLimit            *int   `yaml:"backoffLimit"`
+		ActiveDeadlineSeconds   *int   `yaml:"activeDeadlineSeconds"`
+		ProgressDeadlineSeconds int    `yaml:"progressDeadlineSeconds"`
+		Selector                struct {
 			MatchLabels map[string]string `yaml:"matchLabels"`
 		} `yaml:"selector"`
 		Template struct {

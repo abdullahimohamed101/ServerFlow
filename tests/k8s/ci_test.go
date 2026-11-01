@@ -146,7 +146,7 @@ func TestStaticJobAndKindJob(t *testing.T) {
 	if strings.Contains(text, "services:") || strings.Contains(text, "continue-on-error") {
 		t.Error("kubernetes.yml: no services: container and no continue-on-error (advisory means not required, not hidden)")
 	}
-	if !strings.Contains(text, "secret appeared in the diagnostics") {
+	if !strings.Contains(text, "secret appeared in") {
 		t.Error("the diagnostics artifact must be withheld if a generated secret appears in it")
 	}
 }
@@ -182,10 +182,19 @@ func TestWorkflowTokenHygiene(t *testing.T) {
 		}
 	}
 	k := read(t, ".github/workflows/kubernetes.yml")
-	filter := `if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/k8s-diagnose.txt"; then`
-	i, j, u := strings.Index(k, filter), strings.Index(k, `rm -f "$RUNNER_TEMP/k8s-diagnose.txt"`), strings.Index(k, "actions/upload-artifact@")
+	filter := `grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/$f"`
+	i, j, u := strings.Index(k, filter), strings.Index(k, `rm -f "$RUNNER_TEMP/$f"`), strings.Index(k, "actions/upload-artifact@")
 	if i < 0 || j < i || u < j {
 		t.Error("the diagnostics must be filtered (grep for the generated values, remove the file on a hit) before the artifact upload")
+	}
+	// Every file the artifact uploads goes through that loop.
+	if !strings.Contains(k, "for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log; do") {
+		t.Error("the secret filter must cover the diagnose, smoke and audit logs: all three are uploaded")
+	}
+	for _, uploaded := range regexp.MustCompile(`runner\.temp \}\}/(\S+)`).FindAllStringSubmatch(k, -1) {
+		if !strings.Contains(k, "for f in ") || !strings.Contains(k[strings.Index(k, "for f in k8s-diagnose"):strings.Index(k, "actions/upload-artifact@")], uploaded[1]) {
+			t.Errorf("%s is uploaded without passing the secret filter", uploaded[1])
+		}
 	}
 	if !strings.Contains(k, `sed -n 's/^[A-Z_]*=//p' "$f"`) || !strings.Contains(k, "grep -E '.{12,}'") {
 		t.Error("the needles of the secret filter are no longer built from .dev/*.env")

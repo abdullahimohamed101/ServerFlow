@@ -152,8 +152,8 @@ func gatewayRolloutViolations(docs []map[string]any) []string {
 	if n, ok := asInt(at(dep, "spec", "minReadySeconds")); !ok || n < 5 {
 		v = append(v, "minReadySeconds must be at least 5 (a pod that flaps right after Ready does not count)")
 	}
-	if n, ok := asInt(at(dep, "spec", "progressDeadlineSeconds")); !ok || n <= 0 || n > 300 {
-		v = append(v, "progressDeadlineSeconds must be set (a stuck rollout must be reported) and at most 300")
+	if n, ok := asInt(at(dep, "spec", "progressDeadlineSeconds")); !ok || n < 300 || n > 600 {
+		v = append(v, "progressDeadlineSeconds must be 300-600: long enough for a cold start (a gateway is not Ready until a worker registers), short enough to report a stuck rollout")
 	}
 	if at(dep, "spec", "template", "spec", "affinity", "podAntiAffinity", "requiredDuringSchedulingIgnoredDuringExecution") != nil {
 		v = append(v, "pod anti-affinity must be preferred only: on one node a required rule leaves replicas Pending")
@@ -272,6 +272,7 @@ func TestGatewayRolloutAndDisruptionBudget(t *testing.T) {
 		}, "maxSurge"},
 		{"no minReadySeconds", func(d []map[string]any) { delete(dep(d)["spec"].(map[string]any), "minReadySeconds") }, "minReadySeconds"},
 		{"no progress deadline", func(d []map[string]any) { delete(dep(d)["spec"].(map[string]any), "progressDeadlineSeconds") }, "progressDeadlineSeconds"},
+		{"progress deadline 120", func(d []map[string]any) { dep(d)["spec"].(map[string]any)["progressDeadlineSeconds"] = 120 }, "progressDeadlineSeconds must be 300-600"},
 		{"required anti-affinity", func(d []map[string]any) {
 			at(dep(d), "spec", "template", "spec", "affinity", "podAntiAffinity").(map[string]any)["requiredDuringSchedulingIgnoredDuringExecution"] = []any{map[string]any{"topologyKey": "kubernetes.io/hostname"}}
 		}, "preferred only"},
@@ -458,6 +459,9 @@ func workerViolations(p pod) []string {
 	if tgps < int64(timeout)+10 {
 		add("terminationGracePeriodSeconds (%d) must be at least --drain-timeout + 10s", tgps)
 	}
+	if p.W.Spec.ProgressDeadlineSeconds < 300 {
+		add("progressDeadlineSeconds (%d) must be at least 300 (a worker is Ready only after it registers)", p.W.Spec.ProgressDeadlineSeconds)
+	}
 	if p.Replicas < 2 {
 		add("a worker Deployment with %d replica cannot be rolled without losing capacity", p.Replicas)
 	}
@@ -544,6 +548,7 @@ func TestWorkerPodMutations(t *testing.T) {
 			}
 		}},
 		{"termination grace 35", "terminationGracePeriodSeconds", func(p *pod) { g := int64(35); p.Spec.TerminationGracePeriodSeconds = &g }},
+		{"worker deadline 120", "progressDeadlineSeconds (120)", func(p *pod) { p.W.Spec.ProgressDeadlineSeconds = 120 }},
 		{"one worker", "cannot be rolled", func(p *pod) { p.Replicas = 1 }},
 		{"third container", "exactly the containers", func(p *pod) { p.Spec.Containers = append(p.Spec.Containers, container{Name: "extra"}) }},
 	}
@@ -964,7 +969,7 @@ func TestAuditJudgesWhatTheAPIReports(t *testing.T) {
 		`mock-worker-abc|false|65532|true|RuntimeDefault||mock-worker,,,true,false,,["ALL"],,,50m,32Mi,64Mi,;worker-agent,65532,,true,false,,["ALL"],,RuntimeDefault,25m,16Mi,32Mi,;` + "\n"
 	for _, bash := range bashes(t) {
 		out, err := runAudit(t, bash, good)
-		if err != nil || !strings.Contains(out, "audit: 2 pods, 3 containers, 0 exceptions") || !strings.Contains(out, "160+") && !strings.Contains(out, "sum of the memory limits of the running containers: 224 MiB") {
+		if err != nil || !strings.Contains(out, "audit: 2 pods, 3 containers, 0 exceptions") || !strings.Contains(out, "sum of the memory limits of the running containers: 224 MiB") {
 			t.Fatalf("%s: the good rows were not accepted: %v\n%s", bash, err, out)
 		}
 		mutate := map[string]struct{ from, to, want string }{
@@ -1072,3 +1077,61 @@ func TestSmokeChecksAndScriptHygiene(t *testing.T) {
 }
 
 func execCommand(name string, args ...string) *exec.Cmd { return exec.Command(name, args...) }
+
+// TestK1JudgesPhaseReadinessAndRestarts runs pods_ready_no_restarts against stubbed pod rows: a Pending pod (no container
+// statuses yet) must fail, as must an unready container or a restart; Succeeded Job pods are skipped.
+func TestK1JudgesPhaseReadinessAndRestarts(t *testing.T) {
+	for _, bash := range bashes(t) {
+		run := func(rows string) bool {
+			dir := t.TempDir()
+			harness := "set -u\nNAMESPACE=serverflow\nkc() { printf '%s' \"$ROWS\"; }\n" + extractFunc(t, "pods_ready_no_restarts") + "\npods_ready_no_restarts\n"
+			file := filepath.Join(dir, "h.sh")
+			if err := os.WriteFile(file, []byte(harness), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := execCommand(bash, file)
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "ROWS=" + rows}
+			return cmd.Run() == nil
+		}
+		good := "gateway-a Running true/0 \nmock-worker-a Running true/0 true/0 \nmigrate-x Succeeded false/0 \n"
+		if !run(good) {
+			t.Errorf("%s: a healthy namespace failed", bash)
+		}
+		for name, rows := range map[string]string{
+			"pending pod":      good + "gateway-b Pending \n",
+			"pending, no data": good + "gateway-b Pending\n",
+			"unready":          good + "gateway-b Running false/0 \n",
+			"restarted":        good + "gateway-b Running true/1 \n",
+			"failed pod":       good + "gateway-b Failed true/0 \n",
+			"empty":            "",
+		} {
+			if run(rows) {
+				t.Errorf("%s: %s passed K1", bash, name)
+			}
+		}
+	}
+}
+
+// TestK13AndK2Hygiene pins the shape of the node-log leg and of the gateway readiness check.
+func TestK13AndK2Hygiene(t *testing.T) {
+	k13 := extractFunc(t, "k13_no_secrets_leaked")
+	for _, want := range []string{"deadline", "serverflow_admin-", `cat /var/log/pods/*/*/*.log`, "node_hits"} {
+		if !strings.Contains(k13, want) {
+			t.Errorf("k13 lost %q: the node-log leg polls until the admin pods' logs are collected and fails if their directories remain", want)
+		}
+	}
+	if regexp.MustCompile(`(?m)^[^#]*(grep -v|--exclude|-not -path|! -path)[^#]*pods`).MatchString(k13) {
+		t.Error("k13 must not exclude any log directory from the search")
+	}
+	for _, fn := range []string{"gateway_lists_model", "k2_gateway_ready"} {
+		if regexp.MustCompile(`curl[^\n]*\|\s*grep -q`).MatchString(extractFunc(t, fn)) {
+			t.Errorf("%s pipes into grep -q under pipefail", fn)
+		}
+	}
+	if regexp.MustCompile(`(?m)^\s*(ready|models)\(\) \{`).MatchString(read(t, "scripts/k8s-up.sh")) {
+		t.Error("nested helper functions passed by name trip shellcheck SC2329; define them at top level")
+	}
+	if regexp.MustCompile(`for i in \$\(seq`).MatchString(extractFunc(t, "k14_shared_quota")) {
+		t.Error("k14 loop variable is unused (SC2034): use `for _ in`")
+	}
+}

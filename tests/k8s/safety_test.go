@@ -174,7 +174,7 @@ func TestUpRefusesAForeignCluster(t *testing.T) {
 // TestDestructiveCommandsAreWhitelisted reads the script: the only docker subcommands are the ones listed, kind deletes one named
 // cluster, and the only recursive removal is the validated state directory.
 func TestDestructiveCommandsAreWhitelisted(t *testing.T) {
-	allowedDocker := regexp.MustCompile(`docker (info|run --rm --pull never --network none --entrypoint df|context show|build -q -f deploy/docker/Dockerfile|save |exec "\$node" sh -c 'cat /var/log/pods/\*/\*/\*\.log 2>/dev/null'|ps -aq --filter "label=io\.x-k8s\.kind\.cluster=\$CLUSTER")`)
+	allowedDocker := regexp.MustCompile(`docker (info|run --rm --pull never --network none --entrypoint df|context show|build -q -f deploy/docker/Dockerfile|save |exec "\$node" sh -c 'cat /var/log/pods/\*/\*/\*\.log 2>/dev/null'|exec "\$node" sh -c 'ls -d /var/log/pods/serverflow_admin-\* 2>/dev/null |ps -aq --filter "label=io\.x-k8s\.kind\.cluster=\$CLUSTER")`)
 	for i, line := range strings.Split(read(t, "scripts/k8s-up.sh"), "\n") {
 		code := strings.TrimSpace(line)
 		if hasAnyPrefix(code, "#", "say ", "die ") || strings.Contains(code, `die "`) {
