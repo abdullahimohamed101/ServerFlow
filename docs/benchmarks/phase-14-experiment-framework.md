@@ -104,7 +104,7 @@ defined in `internal/bench/verdict/doc.go`, which is the place to read the formu
 | 7 | 0.0156 | Yes, also with two confirmatory claims in the family (0.031) |
 | 20 | about 2e-6 | Yes |
 
-**Plan check (D25/D26).** The plan's offline simulator cells use 20 seeds (confirmable), but the **real-time embedded cells use 5 repeats per side, which cannot confirm a superiority claim at all** (and H3/H4 together as a Holm family of 2 need 7 or more pairs). Equivalence (H2, H11) and refutation do not use the p-value and work at 5. Real-time cells aimed at H3/H4 need at least 7 pairs, or the claims must be carried by the 20-seed cells. This is flagged for PR I; the plan was not changed.
+**Plan check (D25/D26).** The plan's offline simulator cells use 20 seeds (confirmable), but the **real-time embedded cells use 5 repeats per side, which cannot confirm a superiority claim at all** (and H3/H4 together as a Holm family of 2 need 7 or more pairs). Equivalence (H2, H11) and refutation do not use the p-value and work at 5. Real-time cells aimed at H3/H4 need at least 7 pairs, or the claims must be carried by the 20-seed cells. PR I resolved it: H3/H4 cells use at least 8 pairs (8 seeds, one repeat each); see `docs/benchmarks/phase-14-predictions.md`. The plan text (D26) was not changed.
 
 **Degenerate data.** If every pair has exactly the same value (identical repeats, a constant improvement) the cell is INCONCLUSIVE with "degenerate: zero spread", for superiority and equivalence. Repeats of one deterministic simulated seed are not independent samples (same request stream; only timing differs), and a cell backed by fewer than 3 distinct seeds prints a warning (the verdict does not change).
 
