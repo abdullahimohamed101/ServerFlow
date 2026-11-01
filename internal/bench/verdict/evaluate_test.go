@@ -679,3 +679,51 @@ func TestSignedNeverShowsNegativeZero(t *testing.T) {
 		}
 	}
 }
+
+func TestRunsOfUnregisteredSeedsAreIgnored(t *testing.T) {
+	runs := pairs("mixed", "least-active", "least-tokens", tightGood)
+	// A stray, unpaired baseline run of a seed nobody registered must neither invalidate nor change the verdict.
+	runs = append(runs, mkRun(runSpec{id: "stray", strategy: "least-active", workload: "mixed", seed: 99, p95: 1}))
+	pred := sup("H1", "mixed", "least-tokens", 10, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
+	if v := status(t, eval(t, pred, runs), "H1"); v.Status != Confirmed || v.Stats.Pairs != 10 {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}
+
+func TestResultsWithoutARepeatIndexPairWithRepeatOne(t *testing.T) {
+	var runs []report.Result
+	for seed := int64(1); seed <= 5; seed++ {
+		a := mkRun(runSpec{id: fmt.Sprintf("a%d", seed), strategy: "least-active", workload: "mixed", seed: seed, p95: 100})
+		a.Metadata.Repeat.Index = 0 // a result that never recorded one
+		b := mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-tokens", workload: "mixed", seed: seed, rep: 1, p95: 80})
+		runs = append(runs, a, b)
+	}
+	pred := sup("H1", "mixed", "least-tokens", 5, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
+	if v := status(t, eval(t, pred, runs), "H1"); v.Status != Confirmed {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}
+
+func TestInvalidMarginIsSeparateFromTheRefuteMargin(t *testing.T) {
+	pred := block(fmt.Sprintf(`{"id":"H11","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"least-active","workload":"uniform-short"},"b":{"scheduler":"least-tokens","workload":"uniform-short"},"seeds":%s,"margin":0.03,"refute_margin":0.05,"invalid_margin":0.07}`, seedList(8)))
+	// 6% apart: outside the 5% refute margin (refuted) but not outside the 7% invalid margin.
+	six := []float64{0.06, 0.061, 0.06, 0.059, 0.06, 0.06, 0.061, 0.059}
+	if v := status(t, eval(t, pred, pairs("uniform-short", "least-active", "least-tokens", six)), "H11"); v.Status != Refuted {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	// 4% apart: outside the confirmation margin, inside the refute margin: inconclusive, not invalid.
+	four := []float64{0.04, 0.041, 0.04, 0.039, 0.04, 0.04, 0.041, 0.039}
+	if v := status(t, eval(t, pred, pairs("uniform-short", "least-active", "least-tokens", four)), "H11"); v.Status != Inconclusive {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	// 8% apart: outside the invalid margin: the harness is suspect.
+	eight := []float64{0.08, 0.081, 0.08, 0.079, 0.08, 0.08, 0.081, 0.079}
+	if v := status(t, eval(t, pred, pairs("uniform-short", "least-active", "least-tokens", eight)), "H11"); v.Status != Invalid {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	// 4% with only the invalid margin at 3%: the same data is now invalid, so the margin used is the invalid one.
+	tight := strings.Replace(pred, `"invalid_margin":0.07`, `"invalid_margin":0.03`, 1)
+	if v := status(t, eval(t, tight, pairs("uniform-short", "least-active", "least-tokens", four)), "H11"); v.Status != Invalid {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}

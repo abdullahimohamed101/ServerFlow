@@ -329,9 +329,16 @@ func TestEveryWorkloadDigestIsPinned(t *testing.T) {
 			t.Errorf("%s seed %d: digest %s, pinned %s: the planned load changed", p.name, p.seed, got, p.digest)
 		}
 	}
+	listed := map[string]bool{}
 	for _, n := range Names() {
+		listed[n] = true
 		if !seen[n] {
 			t.Errorf("workload %s has no pinned digest", n)
+		}
+	}
+	for n := range seen {
+		if !listed[n] {
+			t.Errorf("workload %s is pinned but Names() does not list it", n)
 		}
 	}
 }

@@ -554,6 +554,10 @@ func TestTOSTEdgeCases(t *testing.T) {
 	if onEdge.Equivalent || onEdge.PUpper != 1 {
 		t.Errorf("a mean on the margin is not inside it: %+v", onEdge)
 	}
+	lowEdge, _ := TOST([]float64{-0.05, -0.05}, 0.05, 0.025)
+	if lowEdge.Equivalent || lowEdge.PLower != 1 || lowEdge.PUpper != 0 {
+		t.Errorf("a mean on the lower margin is not inside it: %+v", lowEdge)
+	}
 	low, _ := TOST([]float64{-0.07, -0.07}, 0.05, 0.025)
 	if low.PLower != 1 || low.PUpper != 0 || low.Equivalent {
 		t.Errorf("%+v", low)
