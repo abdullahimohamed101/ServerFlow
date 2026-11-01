@@ -648,12 +648,12 @@ k12_worker_failover() {
   [ -n "$K12_VICTIM" ] || return 1
   poll 30 victim_ready || return 1
   kc -n "$NAMESPACE" delete pod "$K12_VICTIM" --wait=false >/dev/null || return 1
-  for i in 1 2 3 4 5 6; do
+  for _ in 1 2 3 4 5 6; do
     c="$(gw_curl "$K8S_DIR/api_key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
     [ "$c" = 200 ] || bad=$((bad + 1))
   done
   poll 60 victim_gone || return 1
-  for i in 1 2 3 4 5 6; do
+  for _ in 1 2 3 4 5 6; do
     c="$(gw_curl "$K8S_DIR/api_key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
     [ "$c" = 200 ] || bad=$((bad + 1))
   done
