@@ -10,7 +10,7 @@ but ADR-022 is the workload-aware scheduler, so this one is ADR-023.) Decisions 
 - Control plane: one replica, `Recreate`, because the registry is in memory.
 - Entry points: NodePorts 30080 and 30090 mapped by kind to 127.0.0.1 only; nothing else is published.
 - Tenants and keys come from one-off admin pods in the restricted namespace; the key reaches only a 0600 file.
-- Known limits: the control-plane token crosses the cluster in plain HTTP (W1); Secrets are base64 in etcd; no NetworkPolicy until PR 5; nothing here has run on a cluster as of this PR's writing.
+- Known limits: the control-plane token crosses the cluster in plain HTTP (W1); Secrets are base64 in etcd; no NetworkPolicy until PR 5 (added there); nothing here has run on a cluster as of this PR's writing.
 
 ## PR 4: observability
 
@@ -21,3 +21,12 @@ but ADR-022 is the workload-aware scheduler, so this one is ADR-023.) Decisions 
 - Published only on 127.0.0.1 through kind NodePorts: Prometheus 29091, Grafana 23000, Jaeger UI 26686. Jaeger's OTLP port is a ClusterIP Service only.
 - Smoke K8 (targets up, requests counted), K9 (Grafana health, five dashboards, datasource health) and K11 (a trace with gateway and mock-worker spans) complete K1-K14. The engine memory minimum rises from 4096 to 6144 MB because the sum of limits plus the node is 3872 MiB.
 - Known limits: Prometheus and Grafana keep no state across a pod restart; the metrics token and the Grafana password are Kubernetes Secrets (base64 in etcd); control-plane and OTLP traffic is plaintext until NetworkPolicy (PR 5) narrows who can send; nothing in this PR has run on a cluster.
+
+## PR 5: NetworkPolicy
+
+- Default deny for ingress and egress on every pod of the namespace (`default-deny-all`), DNS to CoreDNS for all, and one policy per component. The allow rules are derived from the manifests (who reads which Secret, which URLs and addresses appear in env, args and ConfigMaps, the worker's advertised port, the Prometheus scrape jobs), written down as a matrix in `docs/operations/kubernetes-deployment.md`, and a test makes the policies equal that derivation in both directions, with mutations for every kind of loosening. A workload without a policy cannot communicate, so adding one forces a policy.
+- Ports are numeric container ports, TCP only. Pod peers are selected by the component label inside the namespace; the only ipBlocks are the node sources and Prometheus' API server rule, never `0.0.0.0/0`.
+- Node-sourced traffic (NodePort from the host, kubelet probes, the API server's pod proxy) is allowed from `10.244.0.1/32`, `172.16.0.0/12` and `192.168.0.0/16` on exactly the pods and ports that need it. Alternative rejected: allowing any source on the NodePort pods, which would also let every pod reach the control plane's port. The ranges are a reasoned guess about kind's addressing, not an observation.
+- Prometheus reaches the API server on 6443 in the Docker ranges and on 10.96.0.1:443 (an implementation may match before or after DNAT).
+- Enforcement is proved, not assumed: smoke K15 runs an outsider pod (must fail to reach Redis, PostgreSQL, Redpanda and the control plane by ClusterIP), a control pod labelled `admin` (must reach PostgreSQL only) and a gateway request (must be 200). Whether the pinned kind v0.33.0 kindnet enforces policy was not verified when this was written; K15 fails loudly if it does not. Alternative rejected: installing another CNI (Calico, Cilium), which would add a large dependency to a local cluster.
+- Known limits: the control-plane token and OTLP are still plaintext HTTP, now confined to the permitted senders; a CNI that does not enforce policy gives no isolation; policy is layer 3/4 and does not authenticate a pod; nothing in this PR has run on a cluster.

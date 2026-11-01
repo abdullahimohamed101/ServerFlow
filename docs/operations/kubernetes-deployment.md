@@ -1,9 +1,64 @@
 # Kubernetes deployment (Phase 17)
 
-Status: **draft, extended by PR 4 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
-the core system (control plane, gateway, workers, usage consumer) exist, and PR 4 adds Prometheus, Grafana and Jaeger. NetworkPolicy (PR 5)
-and the rolling-update measurement (PR 6) are not built. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
+Status: **draft, extended by PR 5 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
+the core system (control plane, gateway, workers, usage consumer) exist, PR 4 added Prometheus, Grafana and Jaeger, and PR 5 adds NetworkPolicy
+(default deny in both directions plus the allow rules below, proved by smoke check K15). The rolling-update measurement (PR 6) is not built. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
 holds the PR 3 and PR 4 sections meanwhile; ADR-022 is Phase 14's scheduler record, so this record is ADR-023).
+
+## Network policy (PR 5)
+
+`deploy/kubernetes/base/networkpolicy.yaml` (phase `foundation`, applied before any pod exists): `default-deny-all` selects every pod and denies
+ingress and egress; `allow-dns-egress` lets every pod reach CoreDNS (kube-system, `k8s-app=kube-dns`, port 53); then one policy per component, named after
+it, selects `app.kubernetes.io/name=serverflow` plus `app.kubernetes.io/component=<name>` and lists exactly the traffic below. Ports are numeric container ports
+(policy is evaluated after the Service's DNAT, so the Service port is not what matches). A new workload without a policy can neither send nor receive, and a
+test fails until it has one.
+
+| From | To (container port) | Why it exists (source in the manifests) |
+| --- | --- | --- |
+| gateway | control-plane 9090 | `SERVERFLOW_GATEWAY_CONTROL_PLANE_URL` (worker registry) |
+| gateway | mock-worker 9000 | inference and health, to the pod IPs the registry returns (the worker advertises `$(POD_IP):9000`) |
+| gateway | redis 6379, postgres 5432, redpanda 9092 | Secrets `redis`, `dsn`, `kafka` (rate limit, API keys, lifecycle events) |
+| gateway | jaeger 4318 | OTLP/HTTP traces |
+| mock-worker (agent) | control-plane 9090 | registration and heartbeat |
+| mock-worker | jaeger 4318 | `--otlp-endpoint` |
+| usage-consumer | redpanda 9092, postgres 5432 | Secrets `kafka`, `dsn` |
+| migrate Job, admin pods | postgres 5432 | Secret `dsn` |
+| redpanda-init Job | redpanda 9092 | `RPK_BROKERS` |
+| redpanda | redpanda 9092 | the broker advertises the Service name `redpanda:9092` and so dials itself (a precaution; not observed) |
+| prometheus | gateway 9100, control-plane 9101, mock-worker 9000 | the scrape jobs of `prometheus.yml` (pod discovery) |
+| grafana | prometheus 9090 | the datasource |
+| prometheus | the Kubernetes API (below) | pod discovery |
+| node (below) | gateway 8080, control-plane 9090, mock-worker 9000, prometheus 9090, grafana 3000, jaeger 16686 | NodePorts 30080, 30090, 30091, 30300, 30686; kubelet HTTP probes; the API server's pod proxy (smoke K6) |
+
+Every row is an egress rule on the left component and an ingress rule on the right one. Not allowed, and therefore denied: the control plane dials
+nothing (it makes no outbound call), Redis and PostgreSQL dial nothing, Jaeger and Grafana's only outbound is Prometheus (Grafana), no pod reaches the
+Internet (any update or telemetry check of Redpanda or Grafana is expected to fail quietly; unverified), nothing but the gateway and the usage consumer/jobs reaches PostgreSQL, nothing but the gateway
+reaches Redis. `tests/k8s/netpol_test.go` derives this table from the rendered manifests (env, args, ConfigMaps, Secrets read, the worker's advertised
+address, the Prometheus configuration, probes and NodePort Services) and requires the policies to equal it in both directions; 32 mutations (a missing or loosened
+rule, `0.0.0.0/0`, an undeclared or named port, a rule without `from`/`ports`, a new workload, a new dial) are each named.
+
+**Node-sourced traffic.** NodePort traffic from the host (kind publishes it on 127.0.0.1 and the node receives it from Docker's bridge), the kubelet's probes and the
+API server's pod proxy do not come from a pod. Their source address is the node's: the pod network's gateway on the node (`10.244.0.1`, the host side of the pod's
+veth) or the node's address on kind's Docker network. The latter is not known statically (`172.18.0.x` on a default engine, others elsewhere), so the allowed
+sources are `10.244.0.1/32`, `172.16.0.0/12` and `192.168.0.0/16`, on those pods and ports only. The pod CIDR `10.244.0.0/16` is deliberately not allowed, so a
+pod cannot use these rules, and nothing is open to `0.0.0.0/0`. Which of the node addresses a given path really presents, and whether the CNI applies policy to
+node-originated traffic at all, is **not verified**: if the advisory job shows probes or NodePorts failing, widen or correct these ranges in one place.
+
+**The Kubernetes API (Prometheus only).** Egress to `172.16.0.0/12` and `192.168.0.0/16` on 6443 (the API server on the control-plane node, after DNAT) and to
+`10.96.0.1/32` on 443 (the `kubernetes` Service, for an implementation that matches before DNAT). No other pod has an ipBlock rule. Everything else Prometheus
+reaches is a pod rule.
+
+**Enforcement (K15).** NetworkPolicy objects are accepted by any API server; they only do something when the CNI enforces them. kind's default CNI is kindnet,
+and since kind v0.24.0 kindnet embeds `sigs.k8s.io/kube-network-policies`: the kind v0.33.0 kindnetd source enforces ingress, egress and `ipBlock` rules (nftables with NFQUEUE, so the runner's kernel needs the nft queue modules; kindnetd runs fail-open, so a stopped queue listener lets traffic through, and if it cannot start the controller it logs that it is skipping network policies and enforces nothing). That was read from the sources, not observed on a cluster (kind and kubectl cannot run where this was written), so the smoke does not assume it. NodePort traffic is evaluated before SNAT, so its source is the Docker bridge gateway (172.x), while `10.244.0.1/32` is the source of kubelet probes. K15 runs two short-lived pods built from `tools/netpol-probe.yaml`
+(restricted-compliant, Redis' image already on the node, deleted afterwards): an *outsider* (component `netpol-probe`, selected by no allow rule) tries Redis,
+PostgreSQL, Redpanda and the control plane by ClusterIP, and all four must fail (addressed by IP, so a blocked DNS lookup cannot fake it); a *control* labelled `admin`
+must reach PostgreSQL (so the probe tool works and an allow rule is honoured) and must not reach Redis; and a completion through the gateway NodePort must still be 200.
+If the outsider connects anywhere K15 prints `NetworkPolicy is NOT enforced by this cluster's CNI` and fails. On a cluster whose CNI ignores policy the
+manifests are still correct and still applied, but the isolation described here does not exist, and the smoke says so.
+
+The plaintext links of the earlier sections are unchanged (the control-plane token and OTLP are still HTTP): policy confines who can send to the control plane
+(the gateway, the worker agents and the node) and to Jaeger (the gateway and the workers), it does not encrypt. The NodePort exposure of the control plane to the
+host (127.0.0.1) is unchanged.
 
 ## Observability (PR 4)
 
@@ -36,7 +91,7 @@ control plane (`metrics`, 9101, bearer token) and the mock workers (`http`, 9000
 agents register with, so the worker-side series join the control plane's per-worker gauges.
 
 **Tracing is on.** The gateway ConfigMap sets `SERVERFLOW_TRACING_ENABLED=true`, endpoint `http://jaeger:4318`, sample ratio 1.0 and plaintext allowed (inside the
-cluster; NetworkPolicy in PR 5 narrows who can send); the mock workers get `--otlp-endpoint=http://jaeger:4318 --trace-insecure-ok` and record spans only for
+cluster; since PR 5 only the gateway and the mock workers may reach Jaeger's OTLP port); the mock workers get `--otlp-endpoint=http://jaeger:4318 --trace-insecure-ok` and record spans only for
 requests the gateway sampled. Traces live in Jaeger's memory and are gone with its pod.
 
 Grafana: anonymous access and sign-up off, the password from the Secret, the dashboards provisioned read-only (they cannot be saved from the UI). Open
@@ -74,7 +129,7 @@ K1 pods ready, zero restarts; D2-D4 jobs and Redis auth; K2 gateway ready and `m
 K4 completion; K5 stream ends `[DONE]`; K6 24 requests reach all three worker pods (read from `worker_requests_total` through the API server's pod
 proxy, the smoke does not depend on Prometheus for it); K7 limited tenant `200 200 200 429` with `Retry-After`; K10 usage rows for a fresh tenant; K12 deleting a
 worker pod (leaves the pool, requests stay 200, replacement registers); K14 shared quota (30 requests, at most 3 admitted, 429s logged by at least two
-gateway pods); D5-D7 restarts of PostgreSQL, Redpanda, Redis; K13 none of the generated secrets is in any non-Secret object, event, pod log or the node's
+gateway pods); K15 NetworkPolicy is enforced (see "Network policy"), after K14 and before the restarts of D5-D7; D5-D7 restarts of PostgreSQL, Redpanda, Redis; K13 none of the generated secrets is in any non-Secret object, event, pod log or the node's
 container logs (searched, never printed; fails if it searched next to nothing). K8 Prometheus (the smoke runs it right after K7, once requests exist): every gateway pod, the control plane and every worker pod is a target with `up == 1`
 (counts equal the pod counts, so a replica Prometheus never found fails), no `serverflow-*` target is down, and `sum(inference_requests_total)` is
 positive; K9 Grafana: `/api/health` reports the database ok, the search lists exactly five dashboards with the uids `sf-cluster-overview`, `sf-scheduler`,
@@ -127,7 +182,7 @@ host) or leave them to CI. The static checks (`make k8s-check`) need neither the
 | `make k8s-check` | the static checks with no cluster: `kubectl kustomize` of base and overlay, `kubeconform -strict`, the `tests/k8s` policy tests, shellcheck |
 | `make k8s-render` | prints the rendered overlay (no Secret content: safe to paste into an issue) |
 | `make k8s-up` | preflight, secrets, cluster, images, namespace, Secrets, data tier, jobs; idempotent |
-| `make k8s-smoke` | K1-K14 and D2-D7 (see above); the last line is `smoke: N of N checks passed, 0 failed, 0 skipped` |
+| `make k8s-smoke` | K1-K15 and D2-D7 (see above); the last line is `smoke: N of N checks passed, 0 failed, 0 skipped` |
 | `make k8s-down` | deletes the kind cluster and its kubeconfig and nothing else |
 | `make k8s-reset` | `down`, then removes `.dev/k8s/` (the secrets in `.dev/` and the `serverflow/*:dev` images stay; `make dev-reset` removes them) |
 | `make k8s-audit` | per-container security and resource audit of the running pods |
@@ -203,8 +258,8 @@ into the kubeconform container (which has network for its schemas and receives t
 Residual notes: `kc` and the preflight accept a PATH `kubectl` within one minor version of the node's Kubernetes (the static checks use exactly the pinned one);
 `DOCKER_HOST` and `DOCKER_CONTEXT` are not pinned, so the script uses whatever engine `docker` currently points at and prints its context.
 
-The control-plane token will cross the cluster network in plain HTTP (ADR-021 W1) once PR 3 adds the control plane; NetworkPolicy (PR 5)
-narrows who can reach it, it does not encrypt.
+The control-plane token crosses the cluster network in plain HTTP (ADR-021 W1). Since PR 5, NetworkPolicy confines who can reach the control plane to the
+gateway, the worker agents and the node (NodePort, probes); it does not encrypt, and a CNI that does not enforce policy (K15 reports it) confines nothing.
 
 ## Resources
 
@@ -238,6 +293,12 @@ printed). This is evidence about the manifests and the script logic. It is **not
 it a k3s container there cannot reach any ClusterIP (pod-to-Service traffic times out; the Jobs failed with `cannot reach the database` and the script's
 failure output was checked to be secret-free). kind's kindnet does not use a bridge, so it may not be affected; that is unverified.
 
+**PR 5, not run anywhere.** Verified without a cluster: the render and `kubeconform -strict` (59 resources valid) with the pinned tools through Docker, the `tests/k8s` suite
+including the policy-equals-traffic check, its 32 mutations, the probe-pod hardening and K15's decision logic against canned probe output, shellcheck v0.10.0, `bash -n`.
+NOT run: any policy on a cluster, so whether kind v0.33.0's kindnet enforces NetworkPolicy, which source address NodePort, kubelet and API-server-proxy traffic presents
+(the node ranges above are a reasoned guess), whether pods start and become Ready under default-deny (probes, the Redpanda broker's self-connection, Jaeger and Grafana
+start-up), Prometheus reaching the API server on 6443, busybox `nc` behaving as the probe assumes, and K15 itself. The advisory CI job is the first real run.
+
 **PR 4, not run anywhere yet.** Verified without a cluster: the render (pinned `kubectl` through Docker), `kubeconform -strict` (44 resources valid), the `tests/k8s` and
 `tests/deploy` suites including the new observability tests, promtool on the Kubernetes Prometheus configuration (syntax only), shellcheck v0.10.0 on `scripts/k8s-up.sh`
 and `scripts/quality.sh`, `bash -n`. NOT run: anything on a cluster, so Pod Security admission of the three new pods (the projected token volume in particular),
@@ -268,6 +329,8 @@ the amd64 proof). Also unverified: other Kubernetes minors, multi-node behaviour
 | `port N is already in use` | the host ports are fixed in `deploy/kubernetes/kind/cluster.yaml` (they differ from Compose's); stop what uses it |
 | a pod in `ImagePullBackOff` | the node pulls the third-party images itself and retries with backoff; a rate-limited registry resolves itself or needs a different mirror; a `serverflow/*` image in this state was not loaded: run `make k8s-up` again |
 | pod rejected by PodSecurity | the message names the violated rule; the manifests are meant to satisfy `restricted` |
+| `K15 ... NetworkPolicy is NOT enforced` | the cluster's CNI does not enforce NetworkPolicy; with kind that means the default CNI was disabled or is too old to enforce; the policies are applied but protect nothing |
+| a pod is not Ready or a NodePort times out after PR 5 | a policy is missing a source: check which node address reaches the pod (`kubectl get networkpolicy -n serverflow -o yaml`, the node ranges in `networkpolicy.yaml`) and which flow the table lacks |
 | StatefulSet stuck Pending | the PVC has no StorageClass: kind ships `standard`; another cluster is not supported by these scripts |
 
 To clean up completely: `make k8s-down` (the cluster and kubeconfig), `make k8s-reset` (also `.dev/k8s/`), `make dev-reset` (secrets and images).

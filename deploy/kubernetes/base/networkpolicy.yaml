@@ -1,0 +1,470 @@
+# NetworkPolicy (Phase 17, PR 5): default deny in both directions for every pod of the namespace, then one policy per workload
+# with exactly the traffic the manifests show (docs/operations/kubernetes-deployment.md, "Network policy", has the matrix; a test
+# derives the same matrix from the rendered Deployments, Services and ConfigMaps and fails when they differ).
+# Policies are additive: a pod may do what any policy that selects it allows. Ports are the numeric container ports (policy is
+# evaluated after the Service's DNAT, so a Service port is never what is matched).
+#
+# "node" sources (kubelet probes, kube-proxy NodePort traffic from the host, the API server's pod proxy) arrive from the node's
+# addresses, not from a pod. Which address depends on the path: the pod network's gateway on the node (10.244.0.1, the host side
+# of the pod's veth in kind) and the node's address on kind's Docker network (a private range: 172.16.0.0/12 is Docker's default
+# pool, 192.168.0.0/16 the other one engines use). The pod CIDR 10.244.0.0/16 is deliberately NOT allowed, so no pod can use these
+# rules. kube-network-policies evaluates NodePort traffic before SNAT, so there the source is the Docker bridge gateway (172.x),
+# and 10.244.0.1/32 is what kubelet probes arrive from. Only pods that are published on a NodePort, probed over the network or reached by the API server list them.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Name resolution for every pod: CoreDNS (kube-system, label k8s-app=kube-dns) on 53. Nothing else leaves a pod by default.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # NodePort 30080 (host 127.0.0.1:28080) and the kubelet's probes
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 8080}
+    # metrics scrape (bearer token)
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: prometheus}}
+      ports:
+        - {protocol: TCP, port: 9100}
+  egress:
+    # worker registry
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: control-plane}}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # inference requests and health, to the pod IPs the registry returns
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: mock-worker}}
+      ports:
+        - {protocol: TCP, port: 9000}
+    # shared rate limit
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redis}}
+      ports:
+        - {protocol: TCP, port: 6379}
+    # API keys and tenants
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+    # lifecycle events
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda}}
+      ports:
+        - {protocol: TCP, port: 9092}
+    # OTLP/HTTP traces
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: jaeger}}
+      ports:
+        - {protocol: TCP, port: 4318}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: control-plane
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # NodePort 30090 (host 127.0.0.1:29090) and the kubelet's probes
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # registry reads (gateway); registration and heartbeat (worker agents)
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: mock-worker}}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # metrics scrape (bearer token)
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: prometheus}}
+      ports:
+        - {protocol: TCP, port: 9101}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mock-worker
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: mock-worker
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # the kubelet's probes and the API server's pod proxy (smoke K6)
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 9000}
+    # inference requests and health
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+      ports:
+        - {protocol: TCP, port: 9000}
+    # metrics scrape
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: prometheus}}
+      ports:
+        - {protocol: TCP, port: 9000}
+  egress:
+    # the agent registers and sends heartbeats
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: control-plane}}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # OTLP/HTTP spans
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: jaeger}}
+      ports:
+        - {protocol: TCP, port: 4318}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: usage-consumer
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: usage-consumer
+  policyTypes: [Ingress, Egress]
+  egress:
+    # consumes the lifecycle topic
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda}}
+      ports:
+        - {protocol: TCP, port: 9092}
+    # writes usage rows
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: usage-consumer}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: migrate}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: admin}}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: redis
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+      ports:
+        - {protocol: TCP, port: 6379}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redpanda
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: redpanda
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # clients; and the broker itself, because it advertises the Service name redpanda:9092
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: usage-consumer}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda-init}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda}}
+      ports:
+        - {protocol: TCP, port: 9092}
+  egress:
+    # the broker reaching its own advertised address
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda}}
+      ports:
+        - {protocol: TCP, port: 9092}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: migrate
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redpanda-init
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: redpanda-init
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: redpanda}}
+      ports:
+        - {protocol: TCP, port: 9092}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: admin
+  policyTypes: [Ingress, Egress]
+  egress:
+    # the one-off admin pods (tools/admin-pod.yaml)
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: postgres}}
+      ports:
+        - {protocol: TCP, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: jaeger
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # OTLP/HTTP
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+        - podSelector: {matchLabels: {app.kubernetes.io/component: mock-worker}}
+      ports:
+        - {protocol: TCP, port: 4318}
+    # NodePort 30686 (host 127.0.0.1:26686: the UI and the v3 query API) and the kubelet's probes
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 16686}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: prometheus
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # NodePort 30091 (host 127.0.0.1:29091) and the kubelet's probes
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 9090}
+    # the Grafana datasource
+    - from:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: grafana}}
+      ports:
+        - {protocol: TCP, port: 9090}
+  egress:
+    # scrape
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: gateway}}
+      ports:
+        - {protocol: TCP, port: 9100}
+    # scrape
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: control-plane}}
+      ports:
+        - {protocol: TCP, port: 9101}
+    # scrape
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: mock-worker}}
+      ports:
+        - {protocol: TCP, port: 9000}
+    # Pod discovery needs the Kubernetes API. Policy is evaluated after the Service's DNAT, so the destination is the API server's own
+    # address: on kind the control-plane node on Docker's network, port 6443 (an ipBlock cannot name a node, only a range, and the range
+    # is the private pools above). 10.96.0.1:443 (the kubernetes Service) is listed too for an implementation that matches before DNAT.
+    - to:
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 6443}
+    - to:
+        - ipBlock: {cidr: 10.96.0.1/32}
+      ports:
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: foundation
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: grafana
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # NodePort 30300 (host 127.0.0.1:23000) and the kubelet's probes
+    - from:
+        - ipBlock: {cidr: 10.244.0.1/32}
+        - ipBlock: {cidr: 172.16.0.0/12}
+        - ipBlock: {cidr: 192.168.0.0/16}
+      ports:
+        - {protocol: TCP, port: 3000}
+  egress:
+    # the datasource
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/component: prometheus}}
+      ports:
+        - {protocol: TCP, port: 9090}

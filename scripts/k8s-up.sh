@@ -8,7 +8,7 @@
 #   scripts/k8s-up.sh down      delete the kind cluster and its kubeconfig (nothing else is touched)
 #   scripts/k8s-up.sh reset     down, then remove .dev/k8s/ (the images and the shared .dev/ secrets stay)
 #   scripts/k8s-up.sh status    pods, volumes and jobs of the namespace
-#   scripts/k8s-up.sh smoke     the end-to-end checks K1-K14 and D2-D7; the last line is
+#   scripts/k8s-up.sh smoke     the end-to-end checks K1-K15 and D2-D7; the last line is
 #                               "smoke: N of N checks passed, 0 failed, 0 skipped"
 #   scripts/k8s-up.sh audit     per container: user, read-only root, capabilities, privilege escalation, seccomp, requests and
 #                               limits, token mounts; fails on any exception; the last line is "audit: N pods, M containers, 0 exceptions"
@@ -82,6 +82,7 @@ PROMETHEUS_URL=http://127.0.0.1:29091
 GRAFANA_URL=http://127.0.0.1:23000
 JAEGER_URL=http://127.0.0.1:26686
 ADMIN_POD=deploy/kubernetes/tools/admin-pod.yaml
+PROBE_POD=deploy/kubernetes/tools/netpol-probe.yaml
 MIN_MEMORY_MB=6144
 MIN_DISK_MB=8192
 
@@ -779,6 +780,65 @@ k14_shared_quota() {
   [ "$rejecting" -ge 2 ]
 }
 
+# netpol_probe COMPONENT TARGETS: runs the one-off probe pod (deploy/kubernetes/tools/netpol-probe.yaml) with the given component
+# label (netpol-probe: selected by no allow rule; admin: may reach PostgreSQL only), waits for it to finish, prints its log
+# ("IP:PORT open" or "IP:PORT closed" per target) and deletes it. TARGETS is a space-separated list of IPv4:PORT words.
+netpol_probe() {
+  local name="netpol-probe-$$-$RANDOM" phase="" deadline rc=0
+  case "$1" in netpol-probe | admin) ;; *) die "netpol_probe: refusing the component '$1'" ;; esac
+  case "$2" in '' | *[!0-9.:\ ]*) die "netpol_probe: refusing the targets '$2'" ;; esac
+  sed -e "s|__PROBE_NAME__|$name|" -e "s|__PROBE_COMPONENT__|$1|" -e "s|__PROBE_TARGETS__|$2|" "$PROBE_POD" | kc create -f - >/dev/null || return 1
+  deadline=$(($(date +%s) + 90))
+  while :; do
+    phase="$(kc -n "$NAMESPACE" get pod "$name" -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+    case "$phase" in Succeeded | Failed) break ;; esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then phase=Timeout; break; fi
+    sleep 1
+  done
+  if [ "$phase" = Succeeded ]; then
+    kc -n "$NAMESPACE" logs "$name" 2>/dev/null || rc=1
+  else
+    rc=1
+    printf 'K15 diagnostic: the probe pod %s ended as %s\n' "$name" "${phase:-unknown}" >&2
+  fi
+  kc -n "$NAMESPACE" delete pod "$name" --now --ignore-not-found >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+service_ip() { kc -n "$NAMESPACE" get service "$1" -o 'jsonpath={.spec.clusterIP}'; }
+
+# k15_network_policy_enforced: the proof that NetworkPolicy is enforced by this cluster's CNI, not merely accepted by the API. A pod
+# that no allow rule selects must fail to connect to Redis, PostgreSQL, Redpanda and the control plane (it is addressed by ClusterIP, so
+# a blocked DNS lookup cannot fake the result); a pod labelled like the admin tool must reach PostgreSQL (the control: the probe itself
+# works and an allow rule is honoured) but not Redis; and the gateway path through the node port still answers 200 (the allow rules
+# for the traffic that exists did not break it). If the outside pod connects anywhere, the CNI does not enforce policy: fail loudly.
+k15_network_policy_enforced() {
+  local redis pg rp cp out ctl code
+  kc -n "$NAMESPACE" get networkpolicy default-deny-all >/dev/null 2>&1 || { echo "K15 diagnostic: the default-deny NetworkPolicy does not exist" >&2; return 1; }
+  # a probe pod left by a killed earlier run would fail K1 of the next smoke
+  kc -n "$NAMESPACE" delete pod -l app.kubernetes.io/component=netpol-probe --ignore-not-found >/dev/null 2>&1 || true
+  redis="$(service_ip redis)"
+  pg="$(service_ip postgres)"
+  rp="$(service_ip redpanda)"
+  cp="$(service_ip control-plane)"
+  if [ -z "$redis" ] || [ -z "$pg" ] || [ -z "$rp" ] || [ -z "$cp" ]; then
+    echo "K15 diagnostic: a Service has no ClusterIP" >&2
+    return 1
+  fi
+  out="$(netpol_probe netpol-probe "$redis:6379 $pg:5432 $rp:9092 $cp:9090")" || return 1
+  if [ "$(printf '%s\n' "$out" | grep -c ' closed$')" != 4 ]; then
+    printf 'K15 diagnostic: a pod outside the allow-list connected (NetworkPolicy is NOT enforced by this cluster'"'"'s CNI):\n%s\n' "$out" >&2
+    return 1
+  fi
+  ctl="$(netpol_probe admin "$pg:5432 $redis:6379")" || return 1
+  if ! printf '%s\n' "$ctl" | grep -qx "$pg:5432 open" || ! printf '%s\n' "$ctl" | grep -qx "$redis:6379 closed"; then
+    printf 'K15 diagnostic: the control probe (admin) did not see PostgreSQL open and Redis closed:\n%s\n' "$ctl" >&2
+    return 1
+  fi
+  code="$(gw_curl "$K8S_DIR/api_key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")" || return 1
+  [ "$code" = 200 ]
+}
+
 # k13_no_secrets_leaked: none of the generated secret values (the .dev/*.env values and the API keys) appears in any non-Secret
 # object, event, pod log, or in the node's container logs. The values are searched, never printed; the check also fails if it
 # searched next to nothing (too few needles, or empty haystacks), so it cannot pass vacuously.
@@ -863,6 +923,7 @@ cmd_smoke() {
   check K11 "a request's trace in Jaeger holds spans of the gateway and of a mock worker" k11_trace_in_jaeger
   check K12 "deleting a worker pod: it left the pool, requests stayed 200, its replacement registered" k12_worker_failover
   check K14 "the rate limit is shared by the gateways: 30 requests, at most 3 admitted, 429s from two or more gateway pods" k14_shared_quota
+  check K15 "NetworkPolicy is enforced: a pod outside the allow-list cannot reach Redis, PostgreSQL, Redpanda or the control plane, the admin label reaches PostgreSQL only, the gateway still answers 200" k15_network_policy_enforced
   check D5 "PostgreSQL keeps its data across a pod restart (PVC)" postgres_keeps_data
   check D6 "Redpanda keeps the lifecycle topic across a pod restart (PVC)" redpanda_keeps_topic
   check D7 "Redis loses its keys across a pod restart (emptyDir, by design)" redis_resets

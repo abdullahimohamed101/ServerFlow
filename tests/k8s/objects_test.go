@@ -11,7 +11,7 @@ import (
 
 // allowedKinds is the whole vocabulary of the render. A kind that is not here (a ClusterRole, a hostPath PersistentVolume, a
 // NetworkPolicy before PR 5) needs a deliberate edit of this list and so a review.
-var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true, "Deployment": true, "ConfigMap": true, "PodDisruptionBudget": true, "Role": true, "RoleBinding": true}
+var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true, "Deployment": true, "ConfigMap": true, "PodDisruptionBudget": true, "Role": true, "RoleBinding": true, "NetworkPolicy": true}
 
 func labelsOf(d map[string]any) map[string]any {
 	md, _ := d["metadata"].(map[string]any)
