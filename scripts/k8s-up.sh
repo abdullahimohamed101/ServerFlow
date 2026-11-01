@@ -630,10 +630,9 @@ usage_seen() {
 }
 
 k10_usage_rows() {
-  local i
   K10_TENANT="smoke-usage-$$"
   make_tenant "$K10_TENANT" 600 || return 1
-  for i in 1 2 3; do gw_curl "$SCRATCH/$K10_TENANT.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions"; done
+  for _ in 1 2 3; do gw_curl "$SCRATCH/$K10_TENANT.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions"; done
   poll 90 usage_seen
 }
 
@@ -704,6 +703,7 @@ k13_no_secrets_leaked() {
   bytes="$(wc -c <"$hay" | tr -d ' ')"
   [ "$bytes" -gt 5000 ] || return 1
   hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  echo "K13 diagnostic: objects and events matched $hits needle line(s) of $nneedles needles" >&2
   # 2. every container log (the previous instance of a restarted container too)
   : >"$hay"
   for p in $(kc -n "$NAMESPACE" get pods -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}'); do
@@ -713,6 +713,7 @@ k13_no_secrets_leaked() {
   bytes="$(wc -c <"$hay" | tr -d ' ')"
   [ "$bytes" -gt 1000 ] || return 1
   hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  echo "K13 diagnostic: after pod logs the running total is $hits" >&2
   # 3. the node's container logs (kubelet writes them under /var/log/pods; the log directory of a deleted pod, the admin pods'
   # included, lingers until the kubelet collects it). Nothing is excluded: the search is repeated for up to 90 s and fails only
   # if a secret is still found, and the admin pods' directories must be gone by then.
@@ -728,6 +729,7 @@ k13_no_secrets_leaked() {
     [ "$(date +%s)" -lt "$deadline" ] || return 1
     sleep 2
   done
+  echo "K13 diagnostic: node logs matched $node_hits line(s), total $hits" >&2
   hits=$((hits + node_hits))
   : >"$hay"
   [ "$hits" = 0 ]
