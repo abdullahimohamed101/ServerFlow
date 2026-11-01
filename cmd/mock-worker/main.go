@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"syscall"
 	"time"
 
 	"serverflow/internal/mockworker"
+	"serverflow/internal/shutdown"
 	"serverflow/internal/telemetry"
 	"serverflow/internal/tracing"
 )
@@ -35,11 +35,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// After the first signal start the drain, and give signals back to the
-	// default handler so a second Ctrl-C force-quits instead of being swallowed.
-	go func() { <-ctx.Done(); stop() }()
+	// The first signal starts the shutdown; a second one ends the process at once (internal/shutdown).
 
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
