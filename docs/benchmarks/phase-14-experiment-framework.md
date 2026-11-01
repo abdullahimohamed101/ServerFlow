@@ -34,6 +34,13 @@ make bench BENCH_ARGS="--scheduler least-work --workers 3 --sim-profile fast,med
 `--sim-profile` takes built-in profile names, each worker taking the next in turn. `--load-overlay`, `--input-weight` and `--output-fraction` set `scheduler.load_overlay` and `scheduler.cost.*` of the embedded gateway
 (`least-tokens` and `least-work` need the `ledger` overlay and get it unless you say otherwise; saying `max` is refused). They apply to the embedded cluster only; a `--target` run is refused if any is set.
 
+`--upstream-header-timeout` (a duration, default `0` = the harness's 30s) sets `gateway.upstream_header_timeout` of the embedded gateway. A non-streaming completion sends its
+response headers only once generation has finished, so a long one (the long class of `mixed` and `heavy-tail` asks for 500 to 1500 output tokens) on a medium or slow simulated worker can take
+more than 30s and the gateway answers `504 UPSTREAM_TIMEOUT` whatever the strategy. That is a harness artefact that counts against the error-rate validity gate, so experiments with long
+non-streaming requests must pass `--upstream-header-timeout 120s`, together with a `--request-timeout` at least as long (its default is already 120s). The default stays 30s, so existing runs
+and baselines are unchanged. The value is recorded as `metadata.experiment.options.upstream_header_timeout_ms` only when it is not the default, and `compare` warns (different scheduler options)
+when two runs differ in it. Like the other flags it is refused with `--target`.
+
 Each run records, under `metadata.experiment`:
 
 ```json

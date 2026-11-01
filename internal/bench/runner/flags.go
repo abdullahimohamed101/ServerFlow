@@ -46,6 +46,7 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.StringVar(&o.LoadOverlay, "load-overlay", "", "embedded: scheduler.load_overlay, max or ledger (default: max, or ledger for the work-aware strategies)")
 	fs.Float64Var(&o.InputWeight, "input-weight", 1, "embedded: scheduler.cost.input_weight, in [0, 100], for the work-aware strategies")
 	fs.Float64Var(&o.OutputFraction, "output-fraction", 1, "embedded: scheduler.cost.output_fraction, in (0, 1], for the work-aware strategies")
+	fs.DurationVar(&o.UpstreamHeaderTimeout, "upstream-header-timeout", 0, "embedded: gateway.upstream_header_timeout (default 0 = the harness's 30s). A non-streaming completion sends headers only when generation completes, so set 120s for workloads with long non-streaming requests or they fail with 504")
 	fs.StringVar(&o.GPUType, "gpu-type", "", "GPU type to record for --target (embedded mock workers have none)")
 
 	fs.StringVar(&o.Workload, "workload", workload.Mixed, "workload: uniform-short, uniform-long, mixed, burst, hot-model, multi-tenant, heavy-tail, prefill-heavy, decode-heavy")

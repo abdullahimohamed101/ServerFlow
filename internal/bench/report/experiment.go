@@ -43,6 +43,9 @@ type SchedulerOptions struct {
 	// capacity_floor.
 	CapacityHalflifeMs int64   `json:"capacity_halflife_ms"`
 	CapacityFloor      float64 `json:"capacity_floor"`
+	// UpstreamHeaderTimeoutMs is gateway.upstream_header_timeout in milliseconds, recorded only when it is not the
+	// harness default (30s); 0 means the default. A short one fails long non-streaming requests with 504.
+	UpstreamHeaderTimeoutMs int64 `json:"upstream_header_timeout_ms,omitempty"`
 }
 
 // Label is the options on one line, for messages: equal options give equal labels.
@@ -50,8 +53,12 @@ func (o *SchedulerOptions) Label() string {
 	if o == nil {
 		return Unknown
 	}
-	return fmt.Sprintf("overlay=%s output_fraction=%g input_weight=%g capacity_halflife=%dms capacity_floor=%g",
+	s := fmt.Sprintf("overlay=%s output_fraction=%g input_weight=%g capacity_halflife=%dms capacity_floor=%g",
 		o.LoadOverlay, o.OutputFraction, o.InputWeight, o.CapacityHalflifeMs, o.CapacityFloor)
+	if o.UpstreamHeaderTimeoutMs != 0 {
+		s += fmt.Sprintf(" upstream_header_timeout=%dms", o.UpstreamHeaderTimeoutMs)
+	}
+	return s
 }
 
 // ParameterHash identifies the parameters of an embedded cluster: its profile, heartbeat and registry
