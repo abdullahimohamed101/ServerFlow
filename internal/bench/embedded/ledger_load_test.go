@@ -122,21 +122,48 @@ func TestLedgerRefusalsAndOversubscriptionUnderLoad(t *testing.T) {
 		}
 	}
 	for _, cl := range cells {
-		mx := runLoad(t, config.LoadOverlayMax, cl.res, cl.maxTokens, cl.clients, cl.dur)
-		lg := runLoad(t, config.LoadOverlayLedger, cl.res, cl.maxTokens, cl.clients, cl.dur)
-		t.Logf("resilience=%-3q max_tokens=%3d clients=%2d | max: ok=%5d refused=%5.2f%% p50=%v p95=%v maxActive=%d | ledger: ok=%5d refused=%5.2f%% p50=%v p95=%v maxActive=%d",
-			cl.res, cl.maxTokens, cl.clients, mx.ok, mx.refusedPct(), mx.p50.Round(time.Millisecond), mx.p95.Round(time.Millisecond), mx.maxActive,
-			lg.ok, lg.refusedPct(), lg.p50.Round(time.Millisecond), lg.p95.Round(time.Millisecond), lg.maxActive)
-		if !cl.assertCell {
-			continue
+		reps := 1
+		if cl.refusalGuard {
+			reps = guardRepetitions
 		}
-		if d := lg.refusedPct() - mx.refusedPct(); cl.refusalGuard && d >= 0.5 {
-			t.Errorf("ledger refuses %.2f%% against max %.2f%%: more than 0.5 percentage points worse (the H1 guard)", lg.refusedPct(), mx.refusedPct())
+		var diffs []float64
+		for rep := 0; rep < reps; rep++ {
+			mx := runLoad(t, config.LoadOverlayMax, cl.res, cl.maxTokens, cl.clients, cl.dur)
+			lg := runLoad(t, config.LoadOverlayLedger, cl.res, cl.maxTokens, cl.clients, cl.dur)
+			t.Logf("resilience=%-3q max_tokens=%3d clients=%2d | max: ok=%5d refused=%5.2f%% p50=%v p95=%v maxActive=%d | ledger: ok=%5d refused=%5.2f%% p50=%v p95=%v maxActive=%d",
+				cl.res, cl.maxTokens, cl.clients, mx.ok, mx.refusedPct(), mx.p50.Round(time.Millisecond), mx.p95.Round(time.Millisecond), mx.maxActive,
+				lg.ok, lg.refusedPct(), lg.p50.Round(time.Millisecond), lg.p95.Round(time.Millisecond), lg.maxActive)
+			if !cl.assertCell {
+				continue
+			}
+			diffs = append(diffs, lg.refusedPct()-mx.refusedPct())
+			if lg.maxActive > 8+1 {
+				t.Errorf("a worker ran %d requests at once with 8 slots: the overlay under-counted", lg.maxActive)
+			}
 		}
-		if lg.maxActive > 8+1 {
-			t.Errorf("a worker ran %d requests at once with 8 slots: the overlay under-counted", lg.maxActive)
+		if med := medianOf(diffs); cl.refusalGuard && med >= 0.5 {
+			t.Errorf("ledger refuses %.2f percentage points more than max (median of %d paired runs; all differences %.2f): more than 0.5 worse (the H1 guard)", med, len(diffs), diffs)
 		}
 	}
+}
+
+// guardRepetitions is how many paired runs of the refusal-guard cell the H1 guard takes the median of. A single run is
+// not a stable statistic: below saturation a worker's stale or boundary-misclassified report makes it look full for
+// the rest of one heartbeat interval (1 s in the embedded cluster), and when that coincides with the load every
+// client is refused for that second. That happens under both overlays (ledger 2 of 250 idle 4 s runs, max 3 of 250,
+// not distinguishable at that sample size) and shows as one run with 1 to 5% refusals among runs with none, so one
+// run of each overlay differing by 0.5 points is an episode, not a rate. The median of the paired differences is
+// moved by an episode only when it hits at least 3 of 5 pairs, whereas an overlay that over-counts systematically
+// refuses in most runs and moves it (the H1 guard still fails; see docs/architecture/scheduling.md).
+const guardRepetitions = 5
+
+func medianOf(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	c := append([]float64(nil), v...)
+	sort.Float64s(c)
+	return c[len(c)/2]
 }
 
 // sampleActive reads each worker's active-request count, ignoring a worker that cannot be reached right now (a
