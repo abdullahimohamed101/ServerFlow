@@ -1,5 +1,6 @@
-# The static foundation (Phase 17 PR 2): namespace with Pod Security `restricted`, ServiceAccounts, the data tier and the
-# one-shot jobs. No Secret is here and none may be (they are generated into .dev/ and created by scripts/k8s-up.sh).
+# The Kubernetes deployment (Phase 17): namespace with Pod Security `restricted`, ServiceAccounts, the data tier, the one-shot
+# jobs (PR 2) and the core system: control plane, gateway, mock workers with their agents, usage consumer (PR 3). No Secret is
+# here and none may be (they are generated into .dev/ and created by scripts/k8s-up.sh).
 # Render with the command in scripts/k8s-up.sh (`render`): the load restrictor is relaxed because later pull requests read
 # observability/ files; do not `kubectl apply -k` this directory.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -12,3 +13,41 @@ resources:
   - redis.yaml
   - redpanda.yaml
   - jobs.yaml
+  - control-plane.yaml
+  - gateway.yaml
+  - worker.yaml
+  - usage-consumer.yaml
+# The gateway's settings are a generated ConfigMap: kustomize appends a hash of the content to its name and rewrites the
+# reference in the Deployment, so changing a value rolls the gateway pods (this is also how the rolling-update test of PR 6
+# triggers a rollout). Nothing secret belongs here: the passwords, the DSN and the tokens come from Secrets (envFrom).
+# The settings of the drain (D12, D19) are explicit because the shipped defaults are not enough for it: resilience.mode on,
+# readiness_grace 5s < shutdown_timeout 30s < terminationGracePeriodSeconds 45 (gateway.yaml).
+configMapGenerator:
+  - name: gateway-config
+    options:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/part-of: serverflow
+        serverflow.dev/phase: core
+    literals:
+      - SERVERFLOW_GATEWAY_WORKER_SOURCE=registry
+      - SERVERFLOW_GATEWAY_CONTROL_PLANE_URL=http://control-plane:9090
+      - SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT=true
+      - SERVERFLOW_SCHEDULER_STRATEGY=round-robin
+      - SERVERFLOW_RESILIENCE_MODE=on
+      - SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=5s
+      - SERVERFLOW_GATEWAY_SHUTDOWN_TIMEOUT=30s
+      - SERVERFLOW_METRICS_LISTEN=0.0.0.0:9100
+      - SERVERFLOW_AUTH_MODE=required
+      - SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT=true
+      - SERVERFLOW_RATE_LIMIT_MODE=required
+      - SERVERFLOW_REDIS_ADDRESS=redis:6379
+      - SERVERFLOW_REDIS_ALLOW_INSECURE_TRANSPORT=true
+      - SERVERFLOW_EVENTS_MODE=on
+      - SERVERFLOW_EVENTS_BROKERS=redpanda:9092
+      - SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256
+      - SERVERFLOW_EVENTS_SASL_USERNAME=serverflow
+      # Jaeger arrives in PR 4, which turns tracing on.
+      - SERVERFLOW_TRACING_ENABLED=false
+      - GOMEMLIMIT=100MiB

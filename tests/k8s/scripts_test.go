@@ -85,7 +85,7 @@ func runWithFake(t *testing.T, bash, context, server string, args ...string) fak
 // context explicitly, and the foreign KUBECONFIG of the environment is gone.
 func TestForeignContextIsRefused(t *testing.T) {
 	for _, bash := range bashes(t) {
-		for _, cmdName := range []string{"status", "smoke"} {
+		for _, cmdName := range []string{"status", "smoke", "audit"} {
 			for _, bad := range []struct{ context, server string }{
 				{"prod", "https://127.0.0.1:6443"},
 				{"docker-desktop", "https://127.0.0.1:6443"},
@@ -163,7 +163,7 @@ func TestEveryKubectlCallIsGuarded(t *testing.T) {
 		t.Error("the script must unset KUBECONFIG before anything else")
 	}
 	// guard_context runs first in every command that reaches the cluster.
-	for _, fn := range []string{"cmd_status", "cmd_smoke"} {
+	for _, fn := range []string{"cmd_status", "cmd_smoke", "cmd_audit"} {
 		m := regexp.MustCompile(`(?s)\n` + fn + `\(\) \{\n  guard_context\n`).MatchString(script)
 		if !m {
 			t.Errorf("%s must start with guard_context", fn)
@@ -191,7 +191,7 @@ func TestScriptsUnderStrictShell(t *testing.T) {
 			}
 		}
 		// Unknown commands and a missing kubectl fail cleanly, not with an unbound variable.
-		for _, args := range [][]string{{"scripts/k8s-up.sh", "bogus"}, {"scripts/k8s-up.sh"}, {"scripts/k8s-up.sh", "audit"}, {"scripts/k8s-up.sh", "status"}} {
+		for _, args := range [][]string{{"scripts/k8s-up.sh", "bogus"}, {"scripts/k8s-up.sh"}, {"scripts/k8s-up.sh", "roll-test"}, {"scripts/k8s-up.sh", "audit"}, {"scripts/k8s-up.sh", "status"}} {
 			out, err := execOut(t, bash, append([]string{"-u"}, args...)...)
 			if err == nil {
 				t.Errorf("%s -u %v: expected a failure", bash, args)

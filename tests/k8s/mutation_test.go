@@ -131,7 +131,7 @@ func TestPolicyCatchesMutations(t *testing.T) {
 		}}},
 		{"Job/migrate", mutation{"serverflow image latest", "other than latest", func(p *pod) { first(p).Image = "serverflow/admin:latest" }}},
 		{"Job/migrate", mutation{"unknown serverflow image", "not one of the six", func(p *pod) { first(p).Image = "serverflow/evil:dev" }}},
-		{"Job/migrate", mutation{"image the script does not build", "does not build and load", func(p *pod) { first(p).Image = "serverflow/gateway:dev" }}},
+		{"Job/migrate", mutation{"serverflow image without a tag", "other than latest", func(p *pod) { first(p).Image = "serverflow/gateway" }}},
 		{"Job/migrate", mutation{"job runs forever", "backoffLimit and activeDeadlineSeconds", func(p *pod) { p.W.Spec.ActiveDeadlineSeconds = nil }}},
 		{"Job/migrate", mutation{"job restarts in place forever", "restartPolicy", func(p *pod) { p.Spec.RestartPolicy = "Always" }}},
 	}
@@ -167,7 +167,7 @@ func contains(vs []string, sub string) bool {
 	return false
 }
 
-// drain is what a gateway Deployment must satisfy once PR 3 adds it (D12, D19): the numbers are read from the manifest.
+// drain is what the gateway Deployment must satisfy (D12, D19): the numbers are read from the manifest (see gatewayDrain).
 type drain struct {
 	ResilienceMode                  string
 	ReadinessGrace, ShutdownTimeout int
@@ -200,9 +200,8 @@ func drainViolations(d drain) []string {
 	return v
 }
 
-// TestGatewayDrainRelations tests the checker that PR 3 applies to the gateway Deployment: the plan's numbers satisfy it and
-// each way of breaking a relation (the plan's mutation list) is named. No gateway exists in this pull request, so the render is
-// asserted to hold none; PR 3 replaces that assertion with the checker applied to the manifest.
+// TestGatewayDrainRelations tests the checker that TestGatewayDrainSettingsInTheManifest applies to the gateway Deployment:
+// the plan's numbers satisfy it and each way of breaking a relation (the plan's mutation list) is named.
 func TestGatewayDrainRelations(t *testing.T) {
 	good := drain{ResilienceMode: "on", ReadinessGrace: 5, ShutdownTimeout: 30, TerminationGrace: 45, MaxUnavailable: 0, Replicas: 3}
 	if v := drainViolations(good); len(v) != 0 {
@@ -224,11 +223,6 @@ func TestGatewayDrainRelations(t *testing.T) {
 		f(&d)
 		if len(drainViolations(d)) == 0 {
 			t.Errorf("%s: not caught", name)
-		}
-	}
-	for _, p := range overlayManifests(t).Pods {
-		if p.Labels["app.kubernetes.io/component"] == "gateway" {
-			t.Errorf("%s exists: replace this assertion with drainViolations applied to its settings", p.id())
 		}
 	}
 }

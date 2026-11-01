@@ -1,9 +1,35 @@
 # The tested target: the kind cluster. `images:` is the single place that sets where ServerFlow's own images come from
 # (D5): they are built from deploy/docker/Dockerfile and loaded into the node by scripts/k8s-up.sh, never pushed. A
-# registry and a digest would be set here. PR 3 adds NodePorts, replica counts and the worker CIDR.
+# registry and a digest would be set here. PR 3 adds the NodePorts (D15; kind maps host 127.0.0.1:28080 and :29090 to them,
+# deploy/kubernetes/kind/cluster.yaml), three gateway replicas and the worker CIDR.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../base
 images:
   - {name: serverflow/admin, newTag: dev}
+  - {name: serverflow/gateway, newTag: dev}
+  - {name: serverflow/control-plane, newTag: dev}
+  - {name: serverflow/worker-agent, newTag: dev}
+  - {name: serverflow/mock-worker, newTag: dev}
+  - {name: serverflow/usage-consumer, newTag: dev}
+replicas:
+  # Three gateways: a rolling update needs at least two, and three exercise the shared rate limit (smoke K14).
+  - {name: gateway, count: 3}
+configMapGenerator:
+  - name: gateway-config
+    behavior: merge
+    literals:
+      # The pod network of the kind cluster (podSubnet in kind/cluster.yaml, pinned by a test): the only addresses the gateway
+      # will dial. This closes ADR-021's "empty worker_networks" item for this deployment (D11).
+      - SERVERFLOW_GATEWAY_WORKER_NETWORKS=10.244.0.0/16
+patches:
+  # The entry points of the kind cluster (D15): NodePorts that kind maps to 127.0.0.1 only.
+  - target: {kind: Service, name: gateway}
+    patch: |-
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30080}
+  - target: {kind: Service, name: control-plane}
+    patch: |-
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30090}

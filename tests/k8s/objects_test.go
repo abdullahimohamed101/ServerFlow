@@ -11,7 +11,7 @@ import (
 
 // allowedKinds is the whole vocabulary of the render. A kind that is not here (a ClusterRole, a hostPath PersistentVolume, a
 // NetworkPolicy before PR 5) needs a deliberate edit of this list and so a review.
-var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true}
+var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true, "Deployment": true, "ConfigMap": true, "PodDisruptionBudget": true}
 
 func labelsOf(d map[string]any) map[string]any {
 	md, _ := d["metadata"].(map[string]any)
@@ -76,28 +76,30 @@ func TestEveryObjectIsInTheNamespaceWithTheLabels(t *testing.T) {
 			}
 		}
 		phase, _ := l["serverflow.dev/phase"].(string)
-		if phase != "foundation" && phase != "data" && phase != "jobs" {
-			t.Errorf("%s/%s has the phase %q; scripts/k8s-up.sh applies foundation, data and jobs", kind, name, phase)
+		if phase != "foundation" && phase != "data" && phase != "jobs" && phase != "core" {
+			t.Errorf("%s/%s has the phase %q; scripts/k8s-up.sh applies foundation, data, jobs and core", kind, name, phase)
 		}
 	}
 }
 
-// TestServicesSelectPodsAndTargetDeclaredPorts: a Service must select some pod template, its targetPort names must exist in
-// that pod, nothing is a NodePort or LoadBalancer yet (PR 3 adds the NodePorts, bound by kind to 127.0.0.1).
+// TestServicesSelectPodsAndTargetDeclaredPorts: a Service must select some pod template and its targetPort names must exist in
+// that pod. The base has only ClusterIP Services; the overlay turns exactly the gateway and the control plane into NodePorts
+// (D15), on the ports kind maps to 127.0.0.1 (TestNodePortsMatchKind), and nothing is a LoadBalancer.
 func TestServicesSelectPodsAndTargetDeclaredPorts(t *testing.T) {
 	m := overlayManifests(t)
-	if len(m.Services) < 3 {
-		t.Fatalf("expected the three data-tier Services, found %d", len(m.Services))
+	if len(m.Services) < 5 {
+		t.Fatalf("expected the three data-tier Services, the control plane and the gateway, found %d", len(m.Services))
 	}
+	nodePortAllowed := map[string]bool{"gateway": true, "control-plane": true}
 	for _, s := range m.Services {
 		name := s.Metadata.Name
-		for _, sp := range s.Spec.Ports {
-			if sp.NodePort != 0 {
-				t.Errorf("service %s port %s sets nodePort %d; there are no NodePorts until PR 3", name, sp.Name, sp.NodePort)
-			}
+		if s.Spec.Type != "ClusterIP" && (s.Spec.Type != "NodePort" || !nodePortAllowed[name]) {
+			t.Errorf("service %s is %q; only the gateway and the control plane are NodePorts in the overlay, everything else ClusterIP", name, s.Spec.Type)
 		}
-		if s.Spec.Type != "ClusterIP" {
-			t.Errorf("service %s is %q; only ClusterIP exists until PR 3", name, s.Spec.Type)
+		for _, sp := range s.Spec.Ports {
+			if sp.NodePort != 0 && !nodePortAllowed[name] {
+				t.Errorf("service %s port %s sets nodePort %d", name, sp.Name, sp.NodePort)
+			}
 		}
 		matched := false
 		for _, p := range m.Pods {
@@ -146,7 +148,7 @@ func TestServicesSelectPodsAndTargetDeclaredPorts(t *testing.T) {
 		}
 	}
 	// Service names equal Compose's (D21): DSNs and env files are reused unchanged.
-	want := map[string]bool{"postgres": false, "redis": false, "redpanda": false}
+	want := map[string]bool{"postgres": false, "redis": false, "redpanda": false, "control-plane": false, "gateway": false}
 	for _, s := range m.Services {
 		if _, ok := want[s.Metadata.Name]; ok {
 			want[s.Metadata.Name] = true
@@ -155,6 +157,12 @@ func TestServicesSelectPodsAndTargetDeclaredPorts(t *testing.T) {
 	for n, ok := range want {
 		if !ok {
 			t.Errorf("no Service named %s (the Compose name)", n)
+		}
+	}
+	// The base has no NodePort at all: the entry points are a property of the target cluster.
+	for _, s := range parse(t, render(t, "deploy/kubernetes/base")).Services {
+		if s.Spec.Type != "ClusterIP" {
+			t.Errorf("base service %s is %q; only the overlay may publish a NodePort", s.Metadata.Name, s.Spec.Type)
 		}
 	}
 }

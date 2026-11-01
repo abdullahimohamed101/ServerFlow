@@ -1,0 +1,131 @@
+# Mock workers: one Deployment, three identical replicas (D8). Each pod runs the mock worker (the backend) and the worker agent
+# (a second regular container, D7) that registers the pod IP with the control plane and heartbeats. The worker ID is the pod
+# name (unique per pod, so a replaced pod never supersedes its predecessor); POD_NAME and POD_IP come from the downward API and
+# Kubernetes expands $(VAR) in args and env values (no shell, no new flag; the variables are defined before they are used).
+# Pod readiness is both containers' readiness: the agent's /readyz means registered with a heartbeat accepted, so a rolling
+# update keeps the old pod until the new one is registered (spec 39). The agent's status endpoint is on loopback only
+# (127.0.0.1:9102), so its probes are exec probes running the `healthcheck` binary. The agent has no HTTP port on the pod network.
+# Drain: mock-worker --drain-announce=6s exceeds heartbeat (2 s) + registry refresh (1 s) + margin (docs/operations/resilience.md);
+# terminationGracePeriodSeconds 45 exceeds --drain-timeout 30s.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-worker
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: mock-worker
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: core
+spec:
+  replicas: 3
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: mock-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: mock-worker
+        app.kubernetes.io/part-of: serverflow
+    spec:
+      serviceAccountName: mock-worker
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mock-worker
+          image: serverflow/mock-worker
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr=0.0.0.0:9000
+            - --worker-id=$(POD_NAME)
+            - --model=mock-model
+            - --ttft=150ms
+            - --tokens-per-second=60
+            - --max-concurrency=8
+            - --queue-size=64
+            - --seed=2
+            - --drain-announce=6s
+            - --drain-timeout=30s
+          ports:
+            - {name: http, containerPort: 9000}
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: GOMEMLIMIT, value: 48MiB}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 1
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {memory: 64Mi}
+        - name: worker-agent
+          image: serverflow/worker-agent
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef: {name: controlplane}
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: SERVERFLOW_WORKER_ID, value: "$(POD_NAME)"}
+            - {name: SERVERFLOW_WORKER_MODEL, value: mock-model}
+            - {name: SERVERFLOW_WORKER_BACKEND_URL, value: "http://127.0.0.1:9000"}
+            - {name: SERVERFLOW_WORKER_ADVERTISE_URL, value: "http://$(POD_IP):9000"}
+            - {name: SERVERFLOW_WORKER_CONTROL_PLANE_URL, value: "http://control-plane:9090"}
+            - {name: SERVERFLOW_WORKER_STATUS_LISTEN, value: "127.0.0.1:9102"}
+            - {name: SERVERFLOW_CONTROL_PLANE_ALLOW_INSECURE_TRANSPORT, value: "true"}
+            - {name: GOMEMLIMIT, value: 24MiB}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          # Liveness: the heartbeat loop is running; it does not depend on the control plane, so a control-plane outage cannot
+          # restart every agent. Readiness: registered, heartbeat accepted, backend answering.
+          startupProbe:
+            exec:
+              command: [/usr/local/bin/healthcheck, "http://127.0.0.1:9102/healthz"]
+            periodSeconds: 1
+            timeoutSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            exec:
+              command: [/usr/local/bin/healthcheck, "http://127.0.0.1:9102/readyz"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            exec:
+              command: [/usr/local/bin/healthcheck, "http://127.0.0.1:9102/healthz"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 25m, memory: 16Mi}
+            limits: {memory: 32Mi}

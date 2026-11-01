@@ -1,0 +1,93 @@
+# The control plane (worker registry), one replica with `Recreate` (D11): the registry is in memory, so two instances would hold
+# two divergent views (agents register through the Service with whichever answers). A restart empties the registry until the
+# agents re-register; the gateways keep their last view for gateway.registry_max_staleness. This is a limit of the code.
+# The token (Secret `controlplane`) and the metrics token (Secret `metrics`) come from Secrets, never from this file. The token
+# crosses the cluster network in plain HTTP (ADR-021 W1, hence ALLOW_INSECURE_TRANSPORT in the clients): NetworkPolicy (PR 5)
+# narrows who can reach it, it does not encrypt.
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: core
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: control-plane
+  ports:
+    - {name: api, port: 9090, targetPort: api}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: core
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  progressDeadlineSeconds: 120
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: control-plane
+        app.kubernetes.io/part-of: serverflow
+    spec:
+      serviceAccountName: control-plane
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: control-plane
+          image: serverflow/control-plane
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: api, containerPort: 9090}
+            - {name: metrics, containerPort: 9101}
+          envFrom:
+            - secretRef: {name: controlplane}
+            - secretRef: {name: metrics}
+          env:
+            - {name: SERVERFLOW_CONTROL_PLANE_ADDR, value: "0.0.0.0:9090"}
+            - {name: SERVERFLOW_METRICS_LISTEN, value: "0.0.0.0:9101"}
+            - {name: GOMEMLIMIT, value: 48MiB}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          # /healthz is open (no token) and does not depend on anything else: liveness and readiness are the same question.
+          startupProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 1
+            timeoutSeconds: 2
+            failureThreshold: 20
+          readinessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: api}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {memory: 64Mi}
