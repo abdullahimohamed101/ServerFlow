@@ -60,7 +60,7 @@ go run ./cmd/benchmark verdict --predictions P --freeze F --runs DIR [--tuned T]
 go run ./cmd/benchmark verdict --predictions P --print-hash
 ```
 
-It reads the predictions, the freeze record and every `DIR/*/result.json`, prints one verdict per hypothesis and the summary, and exits non-zero if any verdict is INVALID (it still prints everything). It never writes a file and never edits a prediction.
+It reads the predictions, the freeze record and every `DIR/*/result.json`, prints one verdict per hypothesis and the summary, and exits with status 1 if any verdict is INVALID (it still prints everything) or an input is refused; CONFIRMED, REFUTED and INCONCLUSIVE all exit 0. Scripts must read the printed verdicts, not the exit status, to learn the outcome. It never writes a file and never edits a prediction.
 The output is a pure function of its inputs (no clock, no paths, no randomness beyond the seeded bootstrap); a golden test pins it.
 
 ### The predictions file
@@ -84,8 +84,8 @@ Unknown fields, a field that does not apply to the kind, a bad number or a dupli
 | --- | --- | --- |
 | `superiority` | `metric`, `a`, `b`, `seeds`, `direction` (`lower` or `higher`: where B must move against A), `confirm_min_effect`, `refute_max_effect`, `confirmatory`, optional `resamples`, `bootstrap_seed` | CONFIRMED if the median effect (the improvement as a fraction of A) reaches `confirm_min_effect` and the 95% interval excludes zero (and, if confirmatory, the Holm-adjusted p-value is below 0.05). REFUTED if the whole interval lies below `refute_max_effect`. Otherwise INCONCLUSIVE |
 | `equivalence` | `metric`, `a`, `b`, `seeds`, `margin`, optional `refute_margin` (default `margin`), `invalid_margin` | CONFIRMED if the 95% interval of the median relative difference lies entirely inside (-margin, +margin); REFUTED if entirely outside `refute_margin`; INVALID if entirely outside `invalid_margin` (the harness is suspect, H11); otherwise INCONCLUSIVE |
-| `tuned_range` | `value_key`, `min`, `max` | CONFIRMED if the tuned value is inside, REFUTED if outside, INVALID without a tuned file (H5's first part) |
-| `all_of` | `parts` (ids of other hypotheses) | CONFIRMED if all are, REFUTED if any is, INVALID if any is and none is refuted, else INCONCLUSIVE (composite hypotheses such as H4) |
+| `tuned_range` | `value_key`, `min` < `max` (a point is rejected) | CONFIRMED if the tuned value is inside, REFUTED if outside, INVALID without a tuned file (H5's first part) |
+| `all_of` | `parts` (ids of other hypotheses) | CONFIRMED if all are, REFUTED if any is, INVALID if any is and none is refuted, else INCONCLUSIVE (composite hypotheses such as H4). **Note for PR J:** a refuted part makes the roll-up REFUTED even when another part is INVALID, so a roll-up can read REFUTED while some of its evidence is missing; read the parts |
 
 Selectors (`a`, `b`) need `scheduler` and `workload`; optional `world`, `load_overlay`, `input_weight` (or `input_weight_tuned`: a key of the tuned file whose value must equal the recorded input weight), `output_fraction`, `concurrency`, `rate_per_second`.
 Fractions are fractions: `0.10` is 10%.
@@ -94,6 +94,19 @@ Fractions are fractions: `0.10` is 10%.
 
 Pairs are formed by `(seed, repeat index)`; only the registered `seeds` count. For each pair the relative difference is `(b - a) / a`; the summary is the median; the interval is the percentile bootstrap (default 10,000 resamples, seed 20260101, 95%); the p-value and the Holm correction are
 defined in `internal/bench/verdict/doc.go`, which is the place to read the formulas. The family of Holm is every `confirmatory: true` hypothesis in the file, **whether or not it has data**: one without data counts with p = 1, so missing data can never make another claim easier to confirm.
+
+**The p-value used is floored at the exact sign-test minimum `2/2^n`** (n = non-zero pairs), because a bootstrap p-value is anti-conservative at small n (five all-positive pairs give 0.0002; the exact floor is 0.0625). Consequences at alpha = 0.05, plainly:
+
+| Non-zero pairs | Smallest p | Can a superiority claim be CONFIRMED? |
+| --- | --- | --- |
+| 5 | 0.0625 | No, whatever the effect |
+| 6 | 0.03125 | Yes, alone (family of 1); not with a second confirmatory claim (0.0625 after Holm) |
+| 7 | 0.0156 | Yes, also with two confirmatory claims in the family (0.031) |
+| 20 | about 2e-6 | Yes |
+
+**Plan check (D25/D26).** The plan's offline simulator cells use 20 seeds (confirmable), but the **real-time embedded cells use 5 repeats per side, which cannot confirm a superiority claim at all** (and H3/H4 together as a Holm family of 2 need 7 or more pairs). Equivalence (H2, H11) and refutation do not use the p-value and work at 5. Real-time cells aimed at H3/H4 need at least 7 pairs, or the claims must be carried by the 20-seed cells. This is flagged for PR I; the plan was not changed.
+
+**Degenerate data.** If every pair has exactly the same value (identical repeats, a constant improvement) the cell is INCONCLUSIVE with "degenerate: zero spread", for superiority and equivalence. Repeats of one deterministic simulated seed are not independent samples (same request stream; only timing differs), and a cell backed by fewer than 3 distinct seeds prints a warning (the verdict does not change).
 
 INVALID (not "pass") is the verdict whenever the evidence cannot answer: a missing arm or pair, a registered seed with no run, fewer than 5 pairs, a run with `valid: false` (invalid runs are reported, not dropped), a run without an experiment record, runs in different worlds (different parameter hashes), two runs for one
 pair, a metric that was not measured, a non-positive baseline.

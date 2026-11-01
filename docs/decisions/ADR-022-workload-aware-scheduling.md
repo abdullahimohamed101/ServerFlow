@@ -191,6 +191,12 @@ PR G-lite builds the instruments of the experiments and runs none. No scheduler 
 9. *Composite hypotheses* (H4's two parts, H11's several strategies) are expressed as separate hypotheses rolled up by an `all_of` kind. H5's first half is a `tuned_range` kind.
 10. *Exit status.* Any INVALID verdict makes the command exit 1 after printing; REFUTED and INCONCLUSIVE exit 0.
 
+**Decided by the coordinator under delegated authority** (after the independent verification of this PR):
+11. *The p-value is floored at the exact sign-test minimum `2/2^n`* (n non-zero pairs, cap 1) for Holm and for confirmation, because a bootstrap p-value is anti-conservative at small n (five all-positive pairs: 0.0002 against an exact floor of 0.0625). With alpha 0.05 a superiority claim cannot be confirmed from 5 pairs, needs 6 non-zero pairs alone and 7 inside a Holm family of two. **Consequence for the plan:** D26's real-time cells (5 repeats per side) cannot confirm H3 or H4; only cells with at least 7 pairs (the 20-seed offline cells, or more real-time repeats) can. Equivalence and refutation are unaffected. Flagged for PR I; the plan text is unchanged.
+12. *Zero spread is never CONFIRMED or REFUTED.* If all pair values are identical the cell is INCONCLUSIVE ("degenerate: zero spread"), for superiority and equivalence. Repeats of one deterministic simulated seed are not independent samples; pairing is by (seed, repeat index); a cell backed by fewer than 3 distinct seeds carries a warning (no verdict change).
+13. *A `tuned_range` needs `min < max`* (a point is rejected at parse time).
+14. *Exit codes:* INVALID or a refused input exits 1; CONFIRMED, REFUTED and INCONCLUSIVE exit 0. An `all_of` is REFUTED if any part is refuted even if another part is INVALID; PR J must read the parts.
+
 **Deviations.** None from the plan's decisions. The plan's tuned-values rule and the H4 shape had to be interpreted (items 8 and 9). The verdict tool reads the harness's `latency_p50/p95/p99`, `ttft_p95`, `throughput` and `error_rate` only.
 
 **Limits.** The tool cannot tell which data a tuning pass used; it cannot tell that a predictions file was written before the runs (that is `git log`, D25); the bootstrap on 5 to 20 pairs is wide and coarse; a CONFIRMED verdict is a statement about the simulated worlds, workloads and seeds in the result files, simulator-validated, not hardware-validated. Pairing real-time repeats of one seed by index pairs the workload, not the timing noise.
