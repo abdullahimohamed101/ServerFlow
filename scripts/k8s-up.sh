@@ -666,7 +666,7 @@ k12_worker_failover() {
 # kube-proxy spreads over the gateways. A per-gateway counter would admit about 3 per gateway (up to 9); the shared Redis
 # counter admits at most 3 in all, and the 429s must have been issued by at least two different gateway pods (their logs).
 k14_shared_quota() {
-  local name="smoke-scale-$$" admitted=0 c i p rejecting=0 n
+  local name="smoke-scale-$$" admitted=0 c p rejecting=0 n
   [ "$(gateway_pods | wc -l | tr -d ' ')" -ge 2 ] || return 1
   make_tenant "$name" 3 || return 1
   for _ in $(seq 1 30); do
