@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 
@@ -24,6 +23,7 @@ import (
 	"serverflow/internal/bench/report"
 	"serverflow/internal/bench/runner"
 	"serverflow/internal/config"
+	"serverflow/internal/shutdown"
 )
 
 const usage = `benchmark: scheduler benchmark harness
@@ -46,10 +46,8 @@ workers x mock-concurrency: above 60% of that is warned about, above 100% refuse
 or --rate (open loop). A run with more than 5% failed requests is invalid and exits non-zero.`
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	// After the first signal restore the default behaviour, so a second Ctrl-C force-quits a
-	// run that is slow to wind down.
-	go func() { <-ctx.Done(); stop() }()
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// The first signal starts the shutdown; a second one ends the process at once (internal/shutdown).
 	code := execute(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)

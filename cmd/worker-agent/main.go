@@ -11,12 +11,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"syscall"
 	"time"
 
 	"serverflow/internal/config"
 	"serverflow/internal/registry/client"
+	"serverflow/internal/shutdown"
 	"serverflow/internal/telemetry"
 	"serverflow/internal/worker"
 )
@@ -51,9 +51,9 @@ func main() {
 		ReadyTimeout: cfg.Worker.UnhealthyTimeout,
 	}, worker.NewMockBackend(cfg.Worker.BackendURL), client.New(cfg.Worker.ControlPlaneURL, cfg.ControlPlane.Token, nil), logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// The first signal starts the graceful shutdown; a second one ends the process at once (internal/shutdown).
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() { <-ctx.Done(); stop() }() // a second signal force-quits
 
 	// The status endpoint (worker.status_listen) is off by default. It outlives Run on purpose: while the agent
 	// deregisters, probes see 503 "draining" rather than a refused connection, and it is closed last.

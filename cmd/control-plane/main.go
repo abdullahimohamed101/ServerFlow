@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"syscall"
 
 	"serverflow/internal/config"
 	"serverflow/internal/registry"
 	"serverflow/internal/registry/server"
+	"serverflow/internal/shutdown"
 	"serverflow/internal/telemetry"
 	"serverflow/internal/telemetry/metricsserver"
 )
@@ -50,11 +50,9 @@ func main() {
 	}
 	srv := server.New(reg, server.Config{Token: cfg.ControlPlane.Token}, logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// After the first signal start the shutdown, and give signals back to the
-	// default handler so a second Ctrl-C force-quits.
-	go func() { <-ctx.Done(); stop() }()
+	// The first signal starts the shutdown; a second one ends the process at once (internal/shutdown).
 
 	ln, err := net.Listen("tcp", cfg.ControlPlane.Addr)
 	if err != nil {
