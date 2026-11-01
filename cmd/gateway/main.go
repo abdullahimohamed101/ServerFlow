@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/signal"
 	"syscall"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"serverflow/internal/postgres"
 	"serverflow/internal/ratelimit"
 	"serverflow/internal/redis"
+	"serverflow/internal/shutdown"
 	"serverflow/internal/telemetry"
 	"serverflow/internal/telemetry/metricsserver"
 )
@@ -43,11 +43,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// After the first signal start the drain, and give signals back to the default handler so a second
-	// Ctrl-C or SIGTERM ends the process at once instead of being swallowed.
-	go func() { <-ctx.Done(); stop() }()
+	// The first signal starts the shutdown; a second one ends the process at once (internal/shutdown).
 
 	// With auth.mode=required the gateway must be able to verify keys, so a database that is
 	// unreachable or not migrated is a startup failure, not a surprise at the first request.
