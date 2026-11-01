@@ -42,6 +42,13 @@ const (
 	e0LedgerMax = 200 * time.Millisecond
 )
 
+// The probe is sent only after the gateway has released the abandoned streams (its in-flight gauge is back to the
+// other worker's two). Without that wait the probe races the release: when it reaches the gateway first it finds
+// every worker full and queues, and the release then hands the freed slot straight to it (ADR-022 D11, by design,
+// without consulting any report), so a `max` repetition answers in about 15 ms although the stale report would have
+// hidden the worker from a request that came after the release. On a loaded machine that happened in about one
+// repetition in ten.
+//
 // The mechanism itself is pinned deterministically, with a fake clock, in internal/gateway
 // (TestStaleHighReportNoLongerHidesAnEmptiedWorker); this test is the real-time measurement. It is sensitive to a
 // starved machine (a test goroutine that is not scheduled for a second misses the heartbeat window it is built
@@ -174,6 +181,7 @@ func runRecoveredWorker(t *testing.T, overlay string) (answer, gap time.Duration
 			s.cancel()
 		}
 	}
+	awaitGatewayActive(t, c, e0Slots)
 	probeDone := make(chan time.Duration, 1)
 	go func() {
 		resp, err := chat(t, c.GatewayURL, 2, false)
@@ -198,6 +206,34 @@ func runRecoveredWorker(t *testing.T, overlay string) (answer, gap time.Duration
 	case <-time.After(10 * time.Second):
 		t.Fatal("the probe was never answered")
 		return 0, gap
+	}
+}
+
+// awaitGatewayActive waits until the gateway counts exactly want requests in flight (inference_requests_active). The
+// gauge falls when a request is completed, which the gateway does after it has released the request's worker slot.
+func awaitGatewayActive(t *testing.T, c *Cluster, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mfs, err := c.Metrics().Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got float64
+		for _, mf := range mfs {
+			if strings.HasSuffix(mf.GetName(), "inference_requests_active") {
+				for _, m := range mf.GetMetric() {
+					got += m.GetGauge().GetValue()
+				}
+			}
+		}
+		if got == float64(want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the gateway still counts %v requests in flight, want %d: it did not release the abandoned streams", got, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
