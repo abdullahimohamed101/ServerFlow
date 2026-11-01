@@ -319,7 +319,11 @@ k8s() {
     TestMemoryFitsTheEngineMinimum TestStateDirIsConfinedToDotDev TestDownAndResetScope TestUpRefusesAForeignCluster \
     TestDestructiveCommandsAreWhitelisted TestSecretsGeneratorIgnoresTheEnvironmentsShellOptions TestToolRunnerIsConfined TestQualityGateListsEveryTest \
     TestContextCheckUnderStrictShell TestForeignContextIsRefused TestEveryKubectlCallIsGuarded TestScriptsUnderStrictShell TestMakefileTargets \
-    TestKustomizeCommandIsPinned TestSecretsNeverTouchACommandLine; do
+    TestKustomizeCommandIsPinned TestSecretsNeverTouchACommandLine \
+    TestGatewayDrainSettingsInTheManifest TestGatewayDrainMutationsOnTheManifest TestGatewayRolloutAndDisruptionBudget \
+    TestControlPlaneIsOneRecreatedReplica TestWorkerPodShape TestWorkerPodMutations TestNodePortsMatchKind TestWorkerNetworksIsThePodSubnet \
+    TestEnvironmentNamesAreHonoured TestAdminPodTemplateIsHardened TestAdminRunBuildsAHardenedPodAndRefusesOddArguments \
+    TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   if grep -q -- "--- SKIP" "$log"; then

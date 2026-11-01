@@ -1,10 +1,11 @@
 name: Kubernetes
 
-# Phase 17: the kind cluster. Advisory (not in the owner's required-check list, docs/development/ci.md): it creates a real
-# single-node kind cluster on the runner, loads the ServerFlow images, deploys the data tier under Pod Security `restricted`
-# and runs the data-tier smoke checks. It has not run on GitHub before the pull request that adds it; until a run is green its
-# result is unknown (docs/operations/kubernetes-deployment.md, "What is verified"). The static checks are the k8s-static job
-# in ci.yml, which runs on every pull request.
+# Phase 17: the kind cluster. Advisory (not in the owner's required-check list, docs/development/ci.md, D24): it creates a real
+# single-node kind cluster on the runner, builds the six ServerFlow images and loads them, deploys the whole core system (data
+# tier, control plane, gateways, workers with agents, usage consumer) under Pod Security `restricted`, bootstraps tenants and
+# keys, runs the smoke checks K1-K7, K10, K12-K14 and D2-D7 and the audit. It has not run on GitHub before the pull request
+# that adds it; until a run is green its result is unknown (docs/operations/kubernetes-deployment.md, "What is verified").
+# The static checks are the k8s-static job in ci.yml, which runs on every pull request.
 # Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
 
 on:
@@ -12,6 +13,9 @@ on:
     paths:
       - "deploy/kubernetes/**"
       - "deploy/docker/**"
+      - "cmd/**"
+      - "internal/config/**"
+      - "observability/**"
       - "scripts/k8s-up.sh"
       - "scripts/k8s-tool.sh"
       - "scripts/dev-up.sh"
@@ -23,6 +27,8 @@ on:
       - ".github/workflows/kubernetes.yml"
   push:
     branches: [master, main]
+  schedule:
+    - cron: "47 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -33,8 +39,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  kind-data-tier:
-    name: k8s kind data tier (advisory)
+  kind-smoke:
+    name: k8s kind smoke (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -59,22 +65,27 @@ jobs:
           kind version
           docker info --format 'engine memory: {{.MemTotal}} bytes, {{.NCPU}} CPUs'
           df -h / | tail -1
-      - name: Cluster up (secrets, kind, images, namespace, data tier, jobs)
+      - name: Cluster up (secrets, kind, build and load the six images, data tier, jobs, core system, tenants and keys)
         run: |
           start=$(date +%s)
           scripts/k8s-up.sh up
           echo "k8s-up took $(( $(date +%s) - start )) s"
-      - name: Data-tier smoke checks (all must pass, none skipped)
+      - name: Smoke checks K1-K7, K10, K12-K14, D2-D7 (all must pass, none skipped)
         run: |
           set -o pipefail
           scripts/k8s-up.sh smoke 2>&1 | tee "$RUNNER_TEMP/k8s-smoke.log"
           tail -1 "$RUNNER_TEMP/k8s-smoke.log" | grep -Eq '^smoke: [0-9]+ of [0-9]+ checks passed, 0 failed, 0 skipped$'
+      - name: Audit (security context, resources and token mounts of every container)
+        run: |
+          set -o pipefail
+          scripts/k8s-up.sh audit 2>&1 | tee "$RUNNER_TEMP/k8s-audit.log"
+          tail -1 "$RUNNER_TEMP/k8s-audit.log" | grep -Eq '^audit: [0-9]+ pods, [0-9]+ containers, 0 exceptions$'
       - name: Cluster state on failure (secret-free by construction, and checked)
         if: failure()
         run: |
           scripts/k8s-up.sh diagnose > "$RUNNER_TEMP/k8s-diagnose.txt" 2>&1 || true
           # Belt and braces for the artifact: withhold the log if any generated secret value appears in it (nothing is printed).
-          { for f in .dev/*.env; do sed -n 's/^[A-Z_]*=//p' "$f"; done; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
+          { for f in .dev/*.env; do sed -n 's/^[A-Z_]*=//p' "$f"; done; for f in .dev/k8s/api_key*; do [ -f "$f" ] && tr -d '\n' < "$f" && echo; done; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
           if grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/k8s-diagnose.txt"; then
             echo "a generated secret appeared in the diagnostics; the artifact is withheld"
             rm -f "$RUNNER_TEMP/k8s-diagnose.txt"
@@ -88,6 +99,7 @@ jobs:
           path: |
             ${{ runner.temp }}/k8s-diagnose.txt
             ${{ runner.temp }}/k8s-smoke.log
+            ${{ runner.temp }}/k8s-audit.log
           if-no-files-found: ignore
       - name: Delete the cluster and check nothing is left behind
         if: always()

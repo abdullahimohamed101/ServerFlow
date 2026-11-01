@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # The local Kubernetes deployment of ServerFlow on kind (Phase 17, docs/operations/kubernetes-deployment.md).
-# This is the PR 2 skeleton: the cluster, the images, the Secrets and the data tier (PostgreSQL, Redis, Redpanda) with its
-# one-shot jobs. The gateway, control plane and workers arrive in PR 3.
+# The cluster, the six images, the Secrets, the data tier (PostgreSQL, Redis, Redpanda) with its one-shot jobs (PR 2) and the
+# core system: control plane, gateway, mock workers with their agents, usage consumer, the tenants and keys (PR 3).
+# Prometheus, Grafana and Jaeger arrive in PR 4, NetworkPolicy in PR 5, the rolling-update test in PR 6.
 #
 #   scripts/k8s-up.sh up        preflight, secrets, cluster, images, namespace, Secrets, data tier, jobs; idempotent
 #   scripts/k8s-up.sh down      delete the kind cluster and its kubeconfig (nothing else is touched)
 #   scripts/k8s-up.sh reset     down, then remove .dev/k8s/ (the images and the shared .dev/ secrets stay)
 #   scripts/k8s-up.sh status    pods, volumes and jobs of the namespace
-#   scripts/k8s-up.sh smoke     the data-tier checks D1-D7; the last line is "smoke: N of N checks passed, 0 failed, 0 skipped"
+#   scripts/k8s-up.sh smoke     the end-to-end checks K1-K7, K10, K12-K14 and D2-D7; the last line is
+#                               "smoke: N of N checks passed, 0 failed, 0 skipped"
+#   scripts/k8s-up.sh audit     per container: user, read-only root, capabilities, privilege escalation, seccomp, requests and
+#                               limits, token mounts; fails on any exception; the last line is "audit: N containers, 0 exceptions"
 #   scripts/k8s-up.sh diagnose  status, events, descriptions and the last log lines of every pod (secret-free), for a failed run
 #   scripts/k8s-up.sh render    the rendered manifests of the kind overlay (no Secret content), safe to paste
 #   scripts/k8s-up.sh check     the static checks without a cluster (render, kubeconform, tests/k8s): same as `make k8s-check`
-#   scripts/k8s-up.sh audit|roll-test   not implemented yet (PR 3 and PR 6)
+#   scripts/k8s-up.sh roll-test not implemented yet (PR 6)
 #   scripts/k8s-up.sh --check-context NAME   exit 0 only for the one allowed context, kind-serverflow (needs no Docker or kubectl)
 #
 # Safety (AC 12): every kubectl call goes through kc(), which passes the dedicated kubeconfig .dev/k8s/kubeconfig and the
@@ -67,10 +71,14 @@ DEV_DIR="${DEV_UP_DIR:-.dev}"
 OVERLAY=deploy/kubernetes/overlays/kind
 KIND_CONFIG=deploy/kubernetes/kind/cluster.yaml
 LOAD_RESTRICTOR=--load-restrictor=LoadRestrictionsNone
-# ServerFlow images built from deploy/docker/Dockerfile and loaded into the node (PR 3 adds the other five).
-IMAGES="admin"
-# .dev/<name>.env -> Secret <name> (PR 3 and PR 4 add controlplane, metrics and grafana).
-SECRETS="postgres dsn redis kafka"
+# ServerFlow images built from deploy/docker/Dockerfile and loaded into the node (the six of Phase 16).
+IMAGES="admin gateway control-plane worker-agent mock-worker usage-consumer"
+# .dev/<name>.env -> Secret <name> (PR 4 adds grafana and the Prometheus token file).
+SECRETS="postgres dsn redis kafka controlplane metrics"
+# The entry points kind maps to 127.0.0.1 (deploy/kubernetes/kind/cluster.yaml -> the NodePorts of the overlay); a test pins them.
+GATEWAY_URL=http://127.0.0.1:28080
+CONTROL_PLANE_URL=http://127.0.0.1:29090
+ADMIN_POD=deploy/kubernetes/tools/admin-pod.yaml
 MIN_MEMORY_MB=4096
 MIN_DISK_MB=8192
 
@@ -238,10 +246,11 @@ create_secrets() {
 # explain: what a person needs when a wait times out, without any secret (events and the last log lines).
 explain() {
   printf 'k8s-up: %s; status, events and the last log lines follow\n' "$1" >&2
-  kc -n "$NAMESPACE" get pods,pvc,jobs >&2 2>&1 || true
+  kc -n "$NAMESPACE" get deployments,pods,pvc,jobs >&2 2>&1 || true
   kc -n "$NAMESPACE" get events --sort-by=.lastTimestamp 2>&1 | tail -20 >&2 || true
   local p
-  for p in $(kc -n "$NAMESPACE" get pods -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+  # The one-off admin pods are left out: the log of a `key create` pod is an API key (it is deleted at once in a normal run).
+  for p in $(kc -n "$NAMESPACE" get pods -l 'app.kubernetes.io/component!=admin' -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
     printf -- '--- %s (last 20 lines) ---\n' "$p" >&2
     kc -n "$NAMESPACE" logs --tail 20 "$p" --all-containers >&2 2>&1 || true
   done
@@ -249,6 +258,10 @@ explain() {
 
 wait_statefulset() {
   kc -n "$NAMESPACE" rollout status "statefulset/$1" --timeout="${K8S_UP_WAIT:-300}s" >/dev/null 2>&1 || { explain "statefulset/$1 did not become ready"; die "statefulset/$1 did not become ready"; }
+}
+
+wait_deployment() {
+  kc -n "$NAMESPACE" rollout status "deployment/$1" --timeout="${K8S_UP_WAIT:-300}s" >/dev/null 2>&1 || { explain "deployment/$1 did not become ready"; die "deployment/$1 did not become ready"; }
 }
 
 # wait_job NAME: succeeds when the Job has succeeded, fails at once when it has failed, and at the deadline.
@@ -262,6 +275,76 @@ wait_job() {
     if [ "$(date +%s)" -ge "$deadline" ]; then explain "job/$1 did not finish"; die "job/$1 did not finish in time"; fi
     sleep 2
   done
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# The admin tool inside the cluster, and the tenants and keys.
+# ---------------------------------------------------------------------------------------------------------
+# admin_run ARGS...: runs the admin tool in a one-off pod (deploy/kubernetes/tools/admin-pod.yaml: the Secret `dsn`, the
+# restricted security context), waits for it to finish, prints its log (standard output and error together) and deletes the
+# pod. Each argument must match [A-Za-z0-9._:-]+ (they are substituted into the pod's args). A bare pod that is read after it
+# ends is used instead of `kubectl run --rm -i`: attaching to a container that exits at once loses output.
+admin_run() {
+  local name args sep="" a phase="" deadline rc=0
+  name="admin-$$-$RANDOM"
+  args="["
+  for a in "$@"; do
+    case "$a" in
+      '' | *[!A-Za-z0-9._:-]*) die "admin_run: refusing the argument '$a'" ;;
+    esac
+    args="$args$sep\"$a\""
+    sep=","
+  done
+  args="$args]"
+  sed -e "s|__ADMIN_POD_NAME__|$name|" -e "s|__ADMIN_ARGS__|$args|" "$ADMIN_POD" | kc create -f - >/dev/null || die "could not create the admin pod"
+  deadline=$(($(date +%s) + 120))
+  while :; do
+    phase="$(kc -n "$NAMESPACE" get pod "$name" -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+    case "$phase" in Succeeded | Failed) break ;; esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then phase=Timeout; break; fi
+    sleep 1
+  done
+  if [ "$phase" = Succeeded ]; then
+    kc -n "$NAMESPACE" logs "$name" 2>/dev/null || rc=1
+  else
+    rc=1
+    # Never print a line that looks like an API key (the log of a failed pod has none, but it is not worth finding out).
+    kc -n "$NAMESPACE" logs "$name" 2>&1 | grep -v '^sf_' | tail -5 >&2 || true
+    printf 'k8s-up: the admin pod %s ended as %s\n' "$name" "${phase:-unknown}" >&2
+  fi
+  kc -n "$NAMESPACE" delete pod "$name" --now --ignore-not-found >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# create_key TENANT FILE: a key is shown exactly once, on standard output; it goes straight into a 0600 file.
+create_key() {
+  local out
+  out="$(admin_run key create --tenant "$1" --label k8s-up)" || return 1
+  umask 077
+  printf '%s\n' "$out" | grep -E '^sf_[A-Za-z0-9_-]{20,}$' | head -1 >"$2" || true
+  out=""
+  chmod 600 "$2" 2>/dev/null || true
+  if ! grep -Eq '^sf_[A-Za-z0-9_-]{20,}$' "$2" 2>/dev/null; then
+    rm -f "$2"
+    return 1
+  fi
+}
+
+# bootstrap_tenants: the tenants `dev` (generous) and `limited` (3 requests per minute) and a key for each, as scripts/dev-up.sh
+# does for Compose, in .dev/k8s/api_key and .dev/k8s/api_key_limited (a key is valid only in the database that issued it).
+bootstrap_tenants() {
+  local existing
+  existing="$(admin_run tenant list)" || die "could not list the tenants"
+  if ! printf '%s\n' "$existing" | awk -F'\t' '$2=="dev"{f=1} END{exit !f}'; then
+    admin_run tenant create dev --rpm 6000 --tpm 100000000 --max-concurrent 64 >/dev/null || die "could not create the dev tenant"
+    rm -f "$K8S_DIR/api_key"
+  fi
+  if ! printf '%s\n' "$existing" | awk -F'\t' '$2=="limited"{f=1} END{exit !f}'; then
+    admin_run tenant create limited --rpm 3 --tpm 100000 --max-concurrent 2 >/dev/null || die "could not create the limited tenant"
+    rm -f "$K8S_DIR/api_key_limited"
+  fi
+  [ -s "$K8S_DIR/api_key" ] || create_key dev "$K8S_DIR/api_key" || die "could not create the dev key"
+  [ -s "$K8S_DIR/api_key_limited" ] || create_key limited "$K8S_DIR/api_key_limited" || die "could not create the limited key"
 }
 
 # ensure_secrets: the generator Compose uses. It is started without the shell options of the environment (SHELLOPTS=xtrace would make
@@ -294,8 +377,18 @@ cmd_up() {
   apply_phase jobs
   wait_job migrate
   wait_job redpanda-init
+  say "applying the core system (control plane, workers, usage consumer, gateway)"
+  apply_phase core
+  wait_deployment control-plane
+  wait_deployment mock-worker
+  wait_deployment usage-consumer
+  wait_deployment gateway
+  say "creating the tenants and keys"
+  bootstrap_tenants
   t1=$(date +%s)
   say "up in $((t1 - t0))s"
+  say "gateway        $GATEWAY_URL   (key: $K8S_DIR/api_key, tenant dev; $K8S_DIR/api_key_limited allows 3 requests per minute)"
+  say "control plane  $CONTROL_PLANE_URL   (token: $DEV_DIR/controlplane.env)"
   say "next: make k8s-smoke    stop: make k8s-down"
 }
 
@@ -329,11 +422,12 @@ cmd_reset() {
 
 cmd_status() {
   guard_context
-  kc -n "$NAMESPACE" get pods,svc,pvc,jobs -o wide
+  kc -n "$NAMESPACE" get deployments,statefulsets,pods,svc,pvc,jobs -o wide
 }
 
 # ---------------------------------------------------------------------------------------------------------
-# smoke (data tier): each check is PASS or FAIL; the last line is the contract of the Phase 16 smoke.
+# smoke: each check is PASS or FAIL; the last line is the contract of the Phase 16 smoke. Checks never print a key, token or
+# password: keys reach curl on standard input, never an argument. Every wait is a poll with a deadline.
 # ---------------------------------------------------------------------------------------------------------
 PASSED=0
 FAILED=0
@@ -408,17 +502,298 @@ redis_resets() {
   [ -z "$(redis_cli 'REDISCLI_AUTH="$SERVERFLOW_REDIS_PASSWORD" redis-cli get k8s_smoke' 2>/dev/null | tr -d '\r\n')" ]
 }
 
+# --- helpers for the end-to-end checks ---
+BODY='{"model":"mock-model","messages":[{"role":"user","content":"say hello"}],"max_tokens":16}'
+SBODY='{"model":"mock-model","messages":[{"role":"user","content":"say hello"}],"max_tokens":16,"stream":true}'
+SCRATCH="$K8S_DIR/smoke"
+
+# poll SECONDS COMMAND...: true as soon as the command succeeds, false at the deadline.
+poll() {
+  local deadline=$(($(date +%s) + $1))
+  shift
+  while ! "$@" >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep 1
+  done
+}
+
+# gw_curl KEYFILE curl-args...: the key is read from KEYFILE and handed to curl on standard input (an empty KEYFILE sends none).
+gw_curl() {
+  local keyfile="$1" key
+  shift
+  if [ -n "$keyfile" ]; then
+    read -r key <"$keyfile" || return 1
+    printf 'header = "Authorization: Bearer %s"\n' "$key" | curl -sS -K - --max-time 60 "$@"
+  else
+    curl -sS --max-time 60 "$@"
+  fi
+}
+
+# cp_curl PATH: GET on the control plane's published port with the token from .dev/controlplane.env, handed over on stdin.
+cp_curl() {
+  local tok
+  tok="$(sed -n 's/^SERVERFLOW_CONTROL_PLANE_TOKEN=//p' "$DEV_DIR/controlplane.env")"
+  [ -n "$tok" ] || return 1
+  printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -sS -K - --max-time 10 "$CONTROL_PLANE_URL$1"
+}
+
+# make_tenant NAME RPM: a throwaway tenant and its key in $SCRATCH/NAME.key (smoke tenants are named smoke-*).
+make_tenant() {
+  admin_run tenant create "$1" --rpm "$2" --tpm 100000000 --max-concurrent 8 >/dev/null || return 1
+  create_key "$1" "$SCRATCH/$1.key"
+}
+
+mock_worker_pods() { kc -n "$NAMESPACE" get pods -l app.kubernetes.io/component=mock-worker -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}'; }
+gateway_pods() { kc -n "$NAMESPACE" get pods -l app.kubernetes.io/component=gateway -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}'; }
+
+# eligible_workers: the worker IDs the registry would route to, one per line.
+eligible_workers() { cp_curl '/v1/workers?eligible=true' | grep -o '"worker_id":"[^"]*"' | cut -d'"' -f4; }
+
+k1_pods_ready() { poll 60 pods_ready_no_restarts; }
+
+k2_gateway_ready() {
+  ready() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$GATEWAY_URL/readyz")" = 200 ]; }
+  models() { gw_curl "$K8S_DIR/api_key" -s "$GATEWAY_URL/v1/models" | grep -q mock-model; }
+  poll 60 ready && poll 30 models
+}
+
+k3_auth_required() {
+  local c1 c2
+  c1="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+  printf 'header = "Authorization: Bearer sf_live_0000000000000000000000000000000000000000"\n' >"$SCRATCH/bad.cfg"
+  c2="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -K "$SCRATCH/bad.cfg" -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+  [ "$c1" = 401 ] && [ "$c2" = 401 ]
+}
+
+k4_completion() {
+  local out code
+  out="$(gw_curl "$K8S_DIR/api_key" -s -w '\n%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")" || return 1
+  code="$(printf '%s' "$out" | tail -1)"
+  [ "$code" = 200 ] && printf '%s' "$out" | grep -q '"choices"' && printf '%s' "$out" | grep -q '"usage"'
+}
+
+k5_streaming() {
+  local n
+  gw_curl "$K8S_DIR/api_key" -sN -H 'Content-Type: application/json' -d "$SBODY" "$GATEWAY_URL/v1/chat/completions" >"$SCRATCH/stream.txt" || return 1
+  n="$(grep -c '^data:' "$SCRATCH/stream.txt" || true)"
+  [ "$n" -ge 2 ] && [ "$(grep '^data:' "$SCRATCH/stream.txt" | tail -1 | tr -d '\r')" = "data: [DONE]" ]
+}
+
+# worker_ok_count POD: worker_requests_total{result="ok"} of a mock worker, read through the API server's pod proxy (the mock
+# worker's /metrics needs no token; the gateway's does, and the proxy would not forward one).
+worker_ok_count() {
+  kc get --raw "/api/v1/namespaces/$NAMESPACE/pods/$1:9000/proxy/metrics" 2>/dev/null | sed -n 's/^worker_requests_total{result="ok"} \([0-9][0-9]*\).*/\1/p' | head -1
+}
+
+workers_with_requests() {
+  local p c n=0
+  for p in $(mock_worker_pods); do
+    c="$(worker_ok_count "$p")"
+    if [ "${c:-0}" -gt 0 ]; then n=$((n + 1)); fi
+  done
+  [ "$n" -ge 3 ]
+}
+
+k6_three_workers() {
+  local i c
+  for i in 1 2 3 4; do
+    for c in 1 2 3 4 5 6; do
+      gw_curl "$K8S_DIR/api_key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions" &
+    done
+    wait
+  done
+  poll 45 workers_with_requests
+}
+
+k7_rate_limit() {
+  local name="smoke-limited-$$" codes="" retry_after="" c first4 i
+  make_tenant "$name" 3 || return 1
+  for i in 1 2 3 4 5; do
+    c="$(gw_curl "$SCRATCH/$name.key" -s -D "$SCRATCH/h.txt" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+    codes="$codes $c"
+    if [ "$c" = 429 ] && [ -z "$retry_after" ]; then retry_after="$(grep -i '^retry-after:' "$SCRATCH/h.txt" | tr -d '\r' | cut -d: -f2 | tr -d ' ')"; fi
+  done
+  first4="$(printf '%s\n' "$codes" | awk '{print $1, $2, $3, $4}')"
+  [ "$first4" = "200 200 200 429" ] && [ -n "$retry_after" ]
+}
+
+K10_TENANT=""
+usage_seen() {
+  admin_run usage summary --since 1h --tenant "$K10_TENANT" | grep -o 'requests=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{exit !(s>=3)}'
+}
+
+k10_usage_rows() {
+  local i
+  K10_TENANT="smoke-usage-$$"
+  make_tenant "$K10_TENANT" 600 || return 1
+  for i in 1 2 3; do gw_curl "$SCRATCH/$K10_TENANT.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions"; done
+  poll 90 usage_seen
+}
+
+K12_VICTIM=""
+victim_ready() { eligible_workers | grep -qx "$K12_VICTIM"; }
+victim_gone() { ! eligible_workers | grep -qx "$K12_VICTIM"; }
+replacement_registered() { [ "$(eligible_workers | wc -l | tr -d ' ')" -ge 3 ] && victim_gone; }
+
+k12_worker_failover() {
+  local bad=0 c i
+  K12_VICTIM="$(mock_worker_pods | head -1)"
+  [ -n "$K12_VICTIM" ] || return 1
+  poll 30 victim_ready || return 1
+  kc -n "$NAMESPACE" delete pod "$K12_VICTIM" --wait=false >/dev/null || return 1
+  for i in 1 2 3 4 5 6; do
+    c="$(gw_curl "$K8S_DIR/api_key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+    [ "$c" = 200 ] || bad=$((bad + 1))
+  done
+  poll 60 victim_gone || return 1
+  for i in 1 2 3 4 5 6; do
+    c="$(gw_curl "$K8S_DIR/api_key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+    [ "$c" = 200 ] || bad=$((bad + 1))
+  done
+  [ "$bad" = 0 ] || return 1
+  # The Deployment starts a replacement: three eligible workers again, none of them the victim.
+  poll 120 replacement_registered
+}
+
+# k14_shared_quota (S13's check): a tenant limited to 3 requests per minute sends 30 requests through the node port, which
+# kube-proxy spreads over the gateways. A per-gateway counter would admit about 3 per gateway (up to 9); the shared Redis
+# counter admits at most 3 in all, and the 429s must have been issued by at least two different gateway pods (their logs).
+k14_shared_quota() {
+  local name="smoke-scale-$$" admitted=0 c i p rejecting=0 n
+  [ "$(gateway_pods | wc -l | tr -d ' ')" -ge 2 ] || return 1
+  make_tenant "$name" 3 || return 1
+  for i in $(seq 1 30); do
+    c="$(gw_curl "$SCRATCH/$name.key" -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
+    if [ "$c" = 200 ]; then admitted=$((admitted + 1)); fi
+  done
+  if [ "$admitted" -lt 1 ] || [ "$admitted" -gt 3 ]; then return 1; fi
+  for p in $(gateway_pods); do
+    n="$(kc -n "$NAMESPACE" logs "$p" --since=10m 2>/dev/null | grep -c 'rate limited' || true)"
+    if [ "${n:-0}" -gt 0 ]; then rejecting=$((rejecting + 1)); fi
+  done
+  [ "$rejecting" -ge 2 ]
+}
+
+# k13_no_secrets_leaked: none of the generated secret values (the .dev/*.env values and the API keys) appears in any non-Secret
+# object, event, pod log, or in the node's container logs. The values are searched, never printed; the check also fails if it
+# searched next to nothing (too few needles, or empty haystacks), so it cannot pass vacuously.
+k13_no_secrets_leaked() {
+  local needles="$SCRATCH/needles" hay="$SCRATCH/haystack" f p hits=0 nneedles bytes node="$CLUSTER-control-plane"
+  : >"$needles"
+  for f in "$DEV_DIR"/*.env; do
+    [ -f "$f" ] || continue
+    case "$f" in */compose.env) continue ;; esac
+    sed -n 's/^[A-Z_]*=//p' "$f"
+  done | grep -E '.{12,}' >>"$needles" || true
+  for f in "$K8S_DIR"/api_key*; do
+    [ -f "$f" ] || continue
+    tr -d '\n' <"$f"
+    echo
+  done | grep -E '.{12,}' >>"$needles" || true
+  nneedles="$(wc -l <"$needles" | tr -d ' ')"
+  [ "$nneedles" -ge 6 ] || return 1
+  # 1. every non-Secret object and the events
+  kc -n "$NAMESPACE" get pods,deployments,replicasets,statefulsets,jobs,services,configmaps,serviceaccounts,persistentvolumeclaims,poddisruptionbudgets,events -o yaml >"$hay" 2>/dev/null || return 1
+  bytes="$(wc -c <"$hay" | tr -d ' ')"
+  [ "$bytes" -gt 5000 ] || return 1
+  hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  # 2. every container log (the previous instance of a restarted container too)
+  : >"$hay"
+  for p in $(kc -n "$NAMESPACE" get pods -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}'); do
+    kc -n "$NAMESPACE" logs "$p" --all-containers --tail=-1 >>"$hay" 2>/dev/null || true
+    kc -n "$NAMESPACE" logs "$p" --all-containers --previous --tail=-1 >>"$hay" 2>/dev/null || true
+  done
+  bytes="$(wc -c <"$hay" | tr -d ' ')"
+  [ "$bytes" -gt 1000 ] || return 1
+  hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  # 3. the node's container logs (kubelet writes them under /var/log/pods, deleted pods' included until they are collected)
+  docker exec "$node" sh -c 'cat /var/log/pods/*/*/*.log 2>/dev/null' >"$hay" 2>/dev/null || return 1
+  bytes="$(wc -c <"$hay" | tr -d ' ')"
+  [ "$bytes" -gt 1000 ] || return 1
+  hits=$((hits + $(grep -F -c -f "$needles" "$hay" || true)))
+  : >"$hay"
+  [ "$hits" = 0 ]
+}
+
+smoke_cleanup() {
+  rm -f "${SCRATCH:?}"/* 2>/dev/null || true
+  rmdir "$SCRATCH" 2>/dev/null || true
+}
+
 cmd_smoke() {
   guard_context
-  check D1 "every pod is ready with zero restarts" pods_ready_no_restarts
+  command -v curl >/dev/null 2>&1 || die "curl is not installed"
+  [ -s "$K8S_DIR/api_key" ] || die "there is no API key in $K8S_DIR (make k8s-up creates it)"
+  (umask 077 && mkdir -p "$SCRATCH")
+  trap smoke_cleanup EXIT
+  local started
+  started=$(date +%s)
+  check K1 "every pod is ready with zero restarts" k1_pods_ready
   check D2 "the migrate job succeeded and the schema exists" migrate_ok
   check D3 "the redpanda-init job succeeded and the lifecycle topic exists" topic_ok
   check D4 "redis refuses an unauthenticated client and answers PONG to the Secret's password" redis_needs_auth
+  check K2 "the gateway is ready through the node port and lists mock-model" k2_gateway_ready
+  check K3 "a request without a key and one with a bad key are 401" k3_auth_required
+  check K4 "a non-streaming completion has choices and usage" k4_completion
+  check K5 "a streaming completion ends with [DONE]" k5_streaming
+  check K6 "24 requests reached all three worker pods (worker_requests_total, read through the API server)" k6_three_workers
+  check K7 "a tenant limited to 3 per minute gets 200 200 200 then 429 with Retry-After" k7_rate_limit
+  check K10 "usage rows for a fresh tenant appeared (gateway, Redpanda, consumer, PostgreSQL)" k10_usage_rows
+  check K12 "deleting a worker pod: it left the pool, requests stayed 200, its replacement registered" k12_worker_failover
+  check K14 "the rate limit is shared by the gateways: 30 requests, at most 3 admitted, 429s from two or more gateway pods" k14_shared_quota
   check D5 "PostgreSQL keeps its data across a pod restart (PVC)" postgres_keeps_data
   check D6 "Redpanda keeps the lifecycle topic across a pod restart (PVC)" redpanda_keeps_topic
   check D7 "Redis loses its keys across a pod restart (emptyDir, by design)" redis_resets
+  check K13 "no generated secret appears in any object, event, pod log or node container log (searched, never printed)" k13_no_secrets_leaked
+  printf 'duration: %ds\n' "$(($(date +%s) - started))"
   printf 'smoke: %d of %d checks passed, %d failed, 0 skipped\n' "$PASSED" "$TOTAL" "$FAILED"
   [ "$FAILED" = 0 ]
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# audit: what Pod Security admitted, read back from the API (AC 3). One line per container; any exception fails the command.
+# ---------------------------------------------------------------------------------------------------------
+cmd_audit() {
+  guard_context
+  local rows
+  # One line per pod: pod|automount|pod runAsUser|pod runAsNonRoot|pod seccomp|volumes|then per container, separated by ';':
+  # name,runAsUser,runAsNonRoot,readOnlyRootFilesystem,allowPrivilegeEscalation,privileged,drop,add,seccomp,cpuRequest,memRequest,memLimit,cpuLimit
+  rows="$(kc -n "$NAMESPACE" get pods -o 'jsonpath={range .items[*]}{.metadata.name}{"|"}{.spec.automountServiceAccountToken}{"|"}{.spec.securityContext.runAsUser}{"|"}{.spec.securityContext.runAsNonRoot}{"|"}{.spec.securityContext.seccompProfile.type}{"|"}{range .spec.volumes[*]}{.name}{","}{end}{"|"}{range .spec.containers[*]}{.name}{","}{.securityContext.runAsUser}{","}{.securityContext.runAsNonRoot}{","}{.securityContext.readOnlyRootFilesystem}{","}{.securityContext.allowPrivilegeEscalation}{","}{.securityContext.privileged}{","}{.securityContext.capabilities.drop}{","}{.securityContext.capabilities.add}{","}{.securityContext.seccompProfile.type}{","}{.resources.requests.cpu}{","}{.resources.requests.memory}{","}{.resources.limits.memory}{","}{.resources.limits.cpu}{";"}{end}{"\n"}{end}')" || die "cannot read the pods"
+  [ -n "$rows" ] || die "no pods in the namespace $NAMESPACE"
+  printf '%s\n' "$rows" | awk -F'|' '
+    function mib(q,   n) { if (q ~ /Mi$/) { n = q; sub(/Mi$/, "", n); return n + 0 } if (q ~ /Gi$/) { n = q; sub(/Gi$/, "", n); return (n + 0) * 1024 } return -1 }
+    function bad(msg) { exceptions++; printf "EXCEPTION %s: %s\n", pod, msg }
+    {
+      pod = $1; pods++
+      if ($2 != "false") bad("automountServiceAccountToken is not false (" $2 ")")
+      if ($6 ~ /kube-api-access/) bad("an API token volume is mounted")
+      n = split($7, cs, ";")
+      for (i = 1; i <= n; i++) {
+        if (cs[i] == "") continue
+        split(cs[i], f, ",")
+        c = f[1]; user = (f[2] != "" ? f[2] : $3); nonroot = (f[3] != "" ? f[3] : $4)
+        seccomp = (f[9] != "" ? f[9] : $5)
+        total++
+        printf "%-44s user=%-6s nonroot=%-4s readOnlyRoot=%-4s noPrivEsc=%-5s drop=%-8s seccomp=%-14s req=%s/%s limit=%s\n", pod "/" c, user, nonroot, f[4], f[5], f[7], seccomp, f[10], f[11], f[12]
+        if (user == "" || user == "0") bad(c ": runs as root or has no explicit runAsUser (" user ")")
+        if (nonroot != "true") bad(c ": runAsNonRoot is not true")
+        if (f[4] != "true") bad(c ": readOnlyRootFilesystem is not true")
+        if (f[5] != "false") bad(c ": allowPrivilegeEscalation is not false")
+        if (f[6] == "true") bad(c ": privileged")
+        if (f[7] != "[\"ALL\"]") bad(c ": does not drop exactly ALL capabilities (" f[7] ")")
+        if (f[8] != "") bad(c ": adds capabilities (" f[8] ")")
+        if (seccomp != "RuntimeDefault") bad(c ": seccomp is not RuntimeDefault (" seccomp ")")
+        if (f[10] == "" || f[11] == "") bad(c ": has no cpu or memory request")
+        if (f[12] == "") bad(c ": has no memory limit")
+        if (f[13] != "") bad(c ": has a CPU limit")
+        m = mib(f[12]); if (m >= 0) sum += m
+      }
+    }
+    END {
+      printf "audit: sum of the memory limits of the running containers: %d MiB\n", sum
+      printf "audit: %d pods, %d containers, %d exceptions\n", pods, total, exceptions
+      exit (exceptions > 0 || total == 0)
+    }' || die "the audit found exceptions"
 }
 
 # diagnose: what CI keeps when a run fails. Pod descriptions show the names of the Secrets a pod reads, never their values.
@@ -443,7 +818,8 @@ case "$CMD" in
   secrets) ensure_secrets ;;
   check) cmd_check ;;
   diagnose) cmd_diagnose ;;
-  audit | roll-test) die "$CMD is not implemented yet (the audit arrives with the workloads in PR 3, the rolling-update test in PR 6)" ;;
+  audit) cmd_audit ;;
+  roll-test) die "roll-test is not implemented yet (the rolling-update test is PR 6)" ;;
   *)
     printf 'usage: scripts/k8s-up.sh up|down|reset|status|smoke|render|check|diagnose|audit|roll-test | --check-context NAME\n' >&2
     exit 2

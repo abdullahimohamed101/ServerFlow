@@ -122,9 +122,9 @@ func TestStaticJobAndKindJob(t *testing.T) {
 
 	text := read(t, ".github/workflows/kubernetes.yml")
 	kw := loadWorkflow(t, ".github/workflows/kubernetes.yml")
-	k, ok := kw.Jobs["kind-data-tier"]
+	k, ok := kw.Jobs["kind-smoke"]
 	if !ok || !strings.Contains(k.Name, "advisory") {
-		t.Fatal("kubernetes.yml needs the advisory job kind-data-tier")
+		t.Fatal("kubernetes.yml needs the advisory job kind-smoke")
 	}
 	var runs []string
 	cleanup := false
@@ -135,7 +135,7 @@ func TestStaticJobAndKindJob(t *testing.T) {
 		}
 	}
 	joined := strings.Join(runs, "\n")
-	for _, want := range []string{"scripts/k8s-up.sh up", "scripts/k8s-up.sh smoke", "scripts/k8s-up.sh diagnose", "0 failed, 0 skipped"} {
+	for _, want := range []string{"scripts/k8s-up.sh up", "scripts/k8s-up.sh smoke", "scripts/k8s-up.sh diagnose", "scripts/k8s-up.sh audit", "0 failed, 0 skipped", "0 exceptions"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the kind job never runs %q", want)
 		}
@@ -192,5 +192,24 @@ func TestWorkflowTokenHygiene(t *testing.T) {
 	}
 	if regexp.MustCompile(`(?m)^\s*(grep -qF[^\n]*\|\||if \[ -z)`).MatchString(k) {
 		t.Error("the secret filter must not be disabled with || true")
+	}
+}
+
+// TestKindJobTriggersAndBudget (D24): advisory, 30-minute budget, triggers on the files that change what runs in the cluster, on
+// every push to master and nightly, and the node image comes from the pinned mirror.
+func TestKindJobTriggersAndBudget(t *testing.T) {
+	text := read(t, ".github/workflows/kubernetes.yml")
+	for _, path := range []string{"deploy/kubernetes/**", "scripts/k8s-up.sh", "scripts/dev-up.sh", "cmd/**", "internal/config/**", "deploy/docker/**", "observability/**"} {
+		if !strings.Contains(text, `- "`+path+`"`) {
+			t.Errorf("kubernetes.yml does not trigger on %s", path)
+		}
+	}
+	for _, want := range []string{"timeout-minutes: 30", "schedule:", "branches: [master, main]", "workflow_dispatch:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("kubernetes.yml lost %q", want)
+		}
+	}
+	if !strings.HasPrefix(pins(t)["KIND_NODE_IMAGE"], "mirror.gcr.io/") {
+		t.Error("the kind node image must come from mirror.gcr.io")
 	}
 }

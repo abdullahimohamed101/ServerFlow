@@ -341,7 +341,7 @@ func checkLabels(p pod) []string {
 			v = append(v, p.id()+": object lacks the label "+l)
 		}
 	}
-	if p.Kind != "Job" {
+	if p.Kind != "Job" && p.Kind != "Pod" {
 		if len(p.W.Spec.Selector.MatchLabels) == 0 {
 			v = append(v, p.id()+": no selector")
 		}

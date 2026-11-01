@@ -1,0 +1,42 @@
+# A one-off pod that runs the admin tool inside the cluster (tenants, keys, usage summary). scripts/k8s-up.sh fills in the two
+# placeholders (a unique name and the argument list, each argument checked against [A-Za-z0-9._:-]+), creates the pod, waits for
+# it to finish, reads its log and deletes it. It is not part of the kustomization and holds no secret: the DSN comes from the
+# Secret `dsn`. tests/k8s applies the same hardening policies to it as to every workload.
+# A key printed by `key create` is in this pod's log on the node until the pod is deleted (D9: a residual window inside a
+# throwaway cluster; the smoke check K13 searches the node's logs afterwards).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __ADMIN_POD_NAME__
+  namespace: serverflow
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: admin
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: tools
+spec:
+  serviceAccountName: admin
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 120
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: admin
+      image: serverflow/admin:dev
+      imagePullPolicy: IfNotPresent
+      args: __ADMIN_ARGS__
+      envFrom:
+        - secretRef: {name: dsn}
+      env:
+        - {name: SERVERFLOW_POSTGRES_ALLOW_INSECURE_TRANSPORT, value: "true"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 50m, memory: 32Mi}
+        limits: {memory: 64Mi}

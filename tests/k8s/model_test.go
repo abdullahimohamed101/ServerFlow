@@ -38,6 +38,9 @@ type envVar struct {
 	Value     string `yaml:"value"`
 	ValueFrom *struct {
 		SecretKeyRef *struct{ Name, Key string } `yaml:"secretKeyRef"`
+		FieldRef     *struct {
+			FieldPath string `yaml:"fieldPath"`
+		} `yaml:"fieldRef"`
 	} `yaml:"valueFrom"`
 }
 
@@ -114,6 +117,7 @@ type podSpec struct {
 	ShareProcessNamespace         *bool       `yaml:"shareProcessNamespace"`
 	TerminationGracePeriodSeconds *int64      `yaml:"terminationGracePeriodSeconds"`
 	RestartPolicy                 string      `yaml:"restartPolicy"`
+	ActiveDeadlineSeconds         int64       `yaml:"activeDeadlineSeconds"`
 	SecurityContext               *secCtx     `yaml:"securityContext"`
 	InitContainers                []container `yaml:"initContainers"`
 	Containers                    []container `yaml:"containers"`
@@ -175,7 +179,7 @@ type pod struct {
 func (p pod) id() string { return p.Kind + "/" + p.Name }
 
 // longRunning pods must have probes; a Job's pod runs to completion.
-func (p pod) longRunning() bool { return p.Kind != "Job" && p.Kind != "CronJob" }
+func (p pod) longRunning() bool { return p.Kind != "Job" && p.Kind != "CronJob" && p.Kind != "Pod" }
 
 func (p pod) all() []container {
 	return append(append([]container{}, p.Spec.InitContainers...), p.Spec.Containers...)
