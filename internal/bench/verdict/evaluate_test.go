@@ -966,3 +966,24 @@ func TestTunedValueWindowIsInclusiveToTheNanosecond(t *testing.T) {
 		}
 	}
 }
+
+func TestAnIntervalWhoseUpperEndEqualsTheRefutationThresholdIsNotBelowIt(t *testing.T) {
+	// Baseline 100, treatment 95 (an exact 5% improvement) in five pairs and 96 in one: every resample median is
+	// 5%, 4.5% or 4%, so the upper end of the interval is exactly 0.05 = refute_max_effect. "Entirely below" is
+	// strict, so the cell is inconclusive.
+	var runs []report.Result
+	for seed := int64(1); seed <= 6; seed++ {
+		b := 95.0
+		if seed == 6 {
+			b = 96
+		}
+		runs = append(runs,
+			mkRun(runSpec{id: fmt.Sprintf("a%d", seed), strategy: "least-active", workload: "mixed", seed: seed, p95: 100}),
+			mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-tokens", workload: "mixed", seed: seed, p95: b}))
+	}
+	pred := sup("H1", "mixed", "least-tokens", 6, `"confirm_min_effect":0.10,"refute_max_effect":0.05`)
+	v := status(t, eval(t, pred, runs), "H1")
+	if v.Stats.Hi != 0.05 || v.Status != Inconclusive {
+		t.Fatalf("%s %+v %s", v.Status, v.Stats, reasons(v))
+	}
+}

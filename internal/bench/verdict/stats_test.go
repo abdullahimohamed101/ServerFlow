@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"testing"
 )
 
@@ -577,5 +578,18 @@ func TestTOSTEdgeCases(t *testing.T) {
 		if f() == nil {
 			t.Errorf("%s must be refused", name)
 		}
+	}
+}
+
+func TestParseFreezeTunedWindowBoundaryToTheNanosecond(t *testing.T) {
+	h := strings.Repeat("a", 64)
+	mk := func(tunedFrozen string) string {
+		return `{"predictions_sha256":"` + h + `","frozen_at":"2026-11-02T10:00:00Z","tuned_values_sha256":"` + h + `","tuned_values_frozen_at":"` + tunedFrozen + `"}`
+	}
+	if _, err := ParseFreeze([]byte(mk("2026-11-02T10:00:00Z"))); err != nil {
+		t.Errorf("tuned-values freeze equal to the predictions freeze is allowed: %v", err)
+	}
+	if _, err := ParseFreeze([]byte(mk("2026-11-02T09:59:59.999999999Z"))); err == nil {
+		t.Error("one nanosecond before the predictions freeze must be refused")
 	}
 }

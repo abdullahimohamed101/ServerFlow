@@ -243,3 +243,12 @@ func TestMarkdownReportShowsTheWorldOnlyWhenRecorded(t *testing.T) {
 		t.Error("an old result has no world row")
 	}
 }
+
+// The parameter hash is a stored format: results written today are compared with results written later. Changing
+// what it covers or how it is encoded must be a decision, so one value is pinned.
+func TestParameterHashIsAStoredFormat(t *testing.T) {
+	const want = "0704596c8db0ccb5b11a620f4fa47145bb1e1ad183546b649c479248c3083067"
+	if got := ParameterHash(simCluster()); got != want {
+		t.Fatalf("ParameterHash(simCluster()) = %s, pinned %s", got, want)
+	}
+}
