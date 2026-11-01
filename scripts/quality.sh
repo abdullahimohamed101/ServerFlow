@@ -328,7 +328,8 @@ k8s() {
     TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget TestK1JudgesPhaseReadinessAndRestarts TestK13AndK2Hygiene \
     TestPrometheusKubernetesConfigMatchesTheOthers TestObservabilityConfigMapsAreTheRepositoryFiles TestEveryConfigMapAndSecretVolumeResolves \
     TestPrometheusAPIAccessIsReadOnlyPodsAndPrometheusOnly TestTracingPointsAtJaeger TestK8JudgesTargetsAndRequests TestK9JudgesDashboardsAndDatasource \
-    TestK11JudgesTheTrace TestObservabilityIsPartOfUp TestGrafanaIsLockedDown; do
+    TestK11JudgesTheTrace TestObservabilityIsPartOfUp TestGrafanaIsLockedDown \
+    TestNetworkPolicyIsDefaultDenyAndEqualsTheTraffic TestNetworkPolicyCatchesMutations TestProbePodIsHardenedAndOutsideTheAllowList TestK15JudgesEnforcement TestNetpolProbeRefusesOddInput; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   if grep -q -- "--- SKIP" "$log"; then

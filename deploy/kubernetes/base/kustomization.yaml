@@ -9,6 +9,7 @@ namespace: serverflow
 resources:
   - namespace.yaml
   - serviceaccounts.yaml
+  - networkpolicy.yaml
   - postgres.yaml
   - redis.yaml
   - redpanda.yaml

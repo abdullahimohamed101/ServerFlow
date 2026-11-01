@@ -1,0 +1,44 @@
+# A one-off pod that tries TCP connections and reports which ones opened (smoke check K15, the proof that NetworkPolicy is enforced).
+# scripts/k8s-up.sh fills in the three placeholders (a unique name, the component label, the targets as "IP:PORT" words), creates the
+# pod, waits for it to finish, reads its log and deletes it. It is not part of the kustomization and holds no secret.
+# The component label is the whole point: `netpol-probe` is selected by no allow rule, so it may only resolve names (the default-deny
+# and DNS policies), while `admin` is selected by the admin policy (PostgreSQL 5432 only), the control that shows the probe itself works.
+# The targets are ClusterIPs, never names, so a blocked DNS lookup can never make a blocked connection look like a pass.
+# The image is the one Redis runs (already on the node; BusyBox nc). Each probe sends a few bytes so that a server that is reached
+# closes the connection and nc exits 0 at once; a connection that is dropped or refused ends as "timed out" (-w 3) with status 1.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __PROBE_NAME__
+  namespace: serverflow
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: __PROBE_COMPONENT__
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: tools
+spec:
+  serviceAccountName: admin
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 90
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: probe
+      image: mirror.gcr.io/library/redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+      imagePullPolicy: IfNotPresent
+      command: [sh, -c]
+      args:
+        - 'for t in $TARGETS; do if printf "QUIT\r\n" | nc -w 3 "${t%:*}" "${t##*:}" >/dev/null 2>&1; then echo "$t open"; else echo "$t closed"; fi; done'
+      env:
+        - {name: TARGETS, value: "__PROBE_TARGETS__"}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 50m, memory: 16Mi}
+        limits: {memory: 32Mi}
