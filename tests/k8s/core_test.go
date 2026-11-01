@@ -579,7 +579,7 @@ func entryViolations(services []service, kc kindConfig, script string) []string 
 		n, _ := strconv.Atoi(m[1])
 		return n
 	}
-	for name, urlVar := range map[string]string{"gateway": "GATEWAY_URL", "control-plane": "CONTROL_PLANE_URL"} {
+	for name, urlVar := range map[string]string{"gateway": "GATEWAY_URL", "control-plane": "CONTROL_PLANE_URL", "prometheus": "PROMETHEUS_URL", "grafana": "GRAFANA_URL", "jaeger-ui": "JAEGER_URL"} {
 		found := false
 		for _, s := range services {
 			if s.Metadata.Name != name {
@@ -1014,9 +1014,9 @@ func TestSmokeChecksAndScriptHygiene(t *testing.T) {
 	for _, m := range regexp.MustCompile(`(?m)^  check ([KD][0-9]+) "`).FindAllStringSubmatch(smoke, -1) {
 		ids = append(ids, m[1])
 	}
-	want := []string{"K1", "D2", "D3", "D4", "K2", "K3", "K4", "K5", "K6", "K7", "K10", "K12", "K14", "D5", "D6", "D7", "K13"}
+	want := []string{"K1", "D2", "D3", "D4", "K2", "K3", "K4", "K5", "K6", "K7", "K8", "K9", "K10", "K11", "K12", "K14", "D5", "D6", "D7", "K13"}
 	if strings.Join(ids, " ") != strings.Join(want, " ") {
-		t.Errorf("the smoke runs %v, want %v (K13 last: it searches the logs everything else produced; K8, K9 and K11 need PR 4)", ids, want)
+		t.Errorf("the smoke runs %v, want %v (K13 last: it searches the logs everything else produced; K8 and K9 follow K7 and K11 follows K10 because they need requests; K12 comes after them because it deletes a worker)", ids, want)
 	}
 	if !strings.Contains(smoke, `smoke: %d of %d checks passed, %d failed, 0 skipped`) {
 		t.Error("the smoke's last line is no longer the contract `smoke: N of N checks passed, 0 failed, 0 skipped`")

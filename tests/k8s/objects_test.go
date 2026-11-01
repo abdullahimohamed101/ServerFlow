@@ -11,7 +11,7 @@ import (
 
 // allowedKinds is the whole vocabulary of the render. A kind that is not here (a ClusterRole, a hostPath PersistentVolume, a
 // NetworkPolicy before PR 5) needs a deliberate edit of this list and so a review.
-var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true, "Deployment": true, "ConfigMap": true, "PodDisruptionBudget": true}
+var allowedKinds = map[string]bool{"Namespace": true, "ServiceAccount": true, "Service": true, "StatefulSet": true, "Job": true, "Deployment": true, "ConfigMap": true, "PodDisruptionBudget": true, "Role": true, "RoleBinding": true}
 
 func labelsOf(d map[string]any) map[string]any {
 	md, _ := d["metadata"].(map[string]any)
@@ -76,8 +76,8 @@ func TestEveryObjectIsInTheNamespaceWithTheLabels(t *testing.T) {
 			}
 		}
 		phase, _ := l["serverflow.dev/phase"].(string)
-		if phase != "foundation" && phase != "data" && phase != "jobs" && phase != "core" {
-			t.Errorf("%s/%s has the phase %q; scripts/k8s-up.sh applies foundation, data, jobs and core", kind, name, phase)
+		if phase != "foundation" && phase != "data" && phase != "jobs" && phase != "core" && phase != "observability" {
+			t.Errorf("%s/%s has the phase %q; scripts/k8s-up.sh applies foundation, data, jobs, observability and core", kind, name, phase)
 		}
 	}
 }
@@ -90,11 +90,11 @@ func TestServicesSelectPodsAndTargetDeclaredPorts(t *testing.T) {
 	if len(m.Services) < 5 {
 		t.Fatalf("expected the three data-tier Services, the control plane and the gateway, found %d", len(m.Services))
 	}
-	nodePortAllowed := map[string]bool{"gateway": true, "control-plane": true}
+	nodePortAllowed := map[string]bool{"gateway": true, "control-plane": true, "prometheus": true, "grafana": true, "jaeger-ui": true}
 	for _, s := range m.Services {
 		name := s.Metadata.Name
 		if s.Spec.Type != "ClusterIP" && (s.Spec.Type != "NodePort" || !nodePortAllowed[name]) {
-			t.Errorf("service %s is %q; only the gateway and the control plane are NodePorts in the overlay, everything else ClusterIP", name, s.Spec.Type)
+			t.Errorf("service %s is %q; only the gateway, the control plane, Prometheus, Grafana and the Jaeger UI are NodePorts in the overlay, everything else ClusterIP", name, s.Spec.Type)
 		}
 		for _, sp := range s.Spec.Ports {
 			if sp.NodePort != 0 && !nodePortAllowed[name] {
