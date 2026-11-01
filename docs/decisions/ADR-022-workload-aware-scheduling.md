@@ -2,7 +2,8 @@
 
 Status: Proposed, delivered in parts. Phase 14 is a sequence of pull requests (plan: `docs/plans/active/phase-14-workload-aware-scheduler.md`, decisions D1 to D29).
 This record grows with each of them. Sections are marked **[PR A]** (delivered: the seam and the estimator extraction, no behaviour change), **[PR B]** (the signals library, the ledger and the opt-in overlay v2),
-**[PR C1]** (the `least-tokens` and `least-work` strategies and their configuration) or
+**[PR C1]** (the `least-tokens` and `least-work` strategies and their configuration),
+**[PR G-lite]** (the experiment framework: workloads, recorded worlds, the verdict tool) or
 **[later PR]** (placeholder: the decision is in the plan, the text lands with the pull request that implements it).
 Date: 2026-10-22
 
@@ -169,10 +170,41 @@ candidate is untracked the choice is `least-active`'s, flagged degraded; (i) cap
 are not caught; (g) the TTFT signal and the probe-priority rule (D7, D11) are PR C2's, so a half-open
 breaker's worker is probed by the existing Phase 15 mechanism only.
 
-### [later PR] Observability beyond the minimum, simulator, experiments (D24 to D28)
+### [PR G-lite] Experiment framework: workloads, recorded worlds, the verdict tool (D25, D26, criteria 15 and 16)
 
-`latency-aware` and the TTFT signal (PR C2), the rest of D24, the simulator (PR E), the experiment framework (G-lite), the pre-registered predictions (PR I)
-and the results (PR J) are recorded here as they land. Until then the plan is the source of truth. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
+PR G-lite builds the instruments of the experiments and runs none. No scheduler comparison exists in this repository (D28 step 1); the only runs made are the sub-second pipeline runs inside the unit tests, whose numbers are asserted on structure, not compared, and nothing was kept. Usage: `docs/benchmarks/phase-14-experiment-framework.md`.
+
+**What was built.**
+- Workloads `heavy-tail` (90% `short`, 10% `long`), `prefill-heavy` (4000-8000 in, 20-100 out) and `decode-heavy` (50-200 in, 1000-2000 out), with the digests of all nine workloads pinned at two seeds (the six existing rows were recorded before the change and are unchanged).
+- Additive recording: `metadata.experiment` (strategy, world label, parameter hash, scheduler options as the gateway ran with them) and `sim_profile`/`sim_params_hash` per worker; both omitted when empty, so existing results and golden files are byte-identical. `benchmark run` gains `--sim-profile`, `--load-overlay`, `--input-weight`, `--output-fraction` (embedded clusters only). `compare` warns on differing world, parameter hash, overlay (unless the strategies differ) and options, and when a repeat group mixes parameter hashes.
+- `internal/bench/verdict`: percentile bootstrap interval and p-value of the median of paired relative differences, Holm, TOST (interval form decides; the t-based form is printed as a descriptive cross-check), a predictions-file parser, freeze and tuned-value checks, and the evaluation. Pure: no clock, no I/O except `LoadRuns`. Formulas are in `doc.go`.
+- `benchmark verdict` and `make bench-verdict`.
+
+**Decided by the implementer, open for review** (the plan is silent or ambiguous; each is the conservative choice):
+1. Workload parameters of the three workloads (above). The plan names only "10% long".
+2. *Refutation is interval-based.* The plan's "falsified if < 5% or interval includes 0" is read as: refuted only when the whole 95% interval lies below `refute_max_effect`; an interval that includes zero is INCONCLUSIVE (criterion 16 and D26 "no claim from an interval that includes zero"), never REFUTED. A point-estimate rule would refute on noise.
+3. *Confirmation* needs the median to reach the threshold **and** the 95% interval to exclude zero (D26), and for confirmatory hypotheses the Holm-adjusted p-value below 0.05 (strict). The p-value is a two-sided bootstrap p-value with the +1 correction.
+4. *The Holm family* is every confirmatory hypothesis in the file, with p = 1 for one that has no data.
+5. *Equivalence* uses the 95% interval (so TOST at 0.025 per side, more demanding than the textbook 90% interval); inside means strictly inside the margin.
+6. *Pairing* is by (seed, repeat index); the registered seeds must all have runs in both arms; at least 5 pairs; bootstrap default 10,000 resamples, seed 20260101, overridable per hypothesis in the registered file.
+7. *Invalid runs make the cell INVALID* (listed, not dropped); a run without an experiment record cannot be verified and is INVALID; runs with different parameter hashes cannot be compared.
+8. *Freeze mechanics.* The predictions hash covers the text before a `## Amendments` heading; a separate JSON freeze record pins it; a mismatch makes every verdict INVALID and exits non-zero. Tuned values are refused unless the freeze records them (hash and time), and unless `frozen_at <= tuned_at <= tuned_values_frozen_at`. The plan's "newer than the freeze" was read as "newer than the tuned-values freeze".
+9. *Composite hypotheses* (H4's two parts, H11's several strategies) are expressed as separate hypotheses rolled up by an `all_of` kind. H5's first half is a `tuned_range` kind.
+10. *Exit status.* Any INVALID verdict makes the command exit 1 after printing; REFUTED and INCONCLUSIVE exit 0.
+
+**Decided by the coordinator under delegated authority** (after the independent verification of this PR):
+11. *The p-value is floored at the exact sign-test minimum `2/2^n`* (n non-zero pairs, cap 1) for Holm and for confirmation, because a bootstrap p-value is anti-conservative at small n (five all-positive pairs: 0.0002 against an exact floor of 0.0625). With alpha 0.05 a superiority claim cannot be confirmed from 5 pairs, needs 6 non-zero pairs alone and 7 inside a Holm family of two. **Consequence for the plan:** D26's real-time cells (5 repeats per side) cannot confirm H3 or H4; only cells with at least 7 pairs (the 20-seed offline cells, or more real-time repeats) can. Equivalence and refutation are unaffected. Flagged for PR I; the plan text is unchanged.
+12. *Zero spread is never CONFIRMED or REFUTED.* If all pair values are identical the cell is INCONCLUSIVE ("degenerate: zero spread"), for superiority and equivalence. Repeats of one deterministic simulated seed are not independent samples; pairing is by (seed, repeat index); a cell backed by fewer than 3 distinct seeds carries a warning (no verdict change).
+13. *A `tuned_range` needs `min < max`* (a point is rejected at parse time).
+14. *Exit codes:* INVALID or a refused input exits 1; CONFIRMED, REFUTED and INCONCLUSIVE exit 0. An `all_of` is REFUTED if any part is refuted even if another part is INVALID; PR J must read the parts.
+
+**Deviations.** None from the plan's decisions. The plan's tuned-values rule and the H4 shape had to be interpreted (items 8 and 9). The verdict tool reads the harness's `latency_p50/p95/p99`, `ttft_p95`, `throughput` and `error_rate` only.
+
+**Limits.** The tool cannot tell which data a tuning pass used; it cannot tell that a predictions file was written before the runs (that is `git log`, D25); the bootstrap on 5 to 20 pairs is wide and coarse; a CONFIRMED verdict is a statement about the simulated worlds, workloads and seeds in the result files, simulator-validated, not hardware-validated. Pairing real-time repeats of one seed by index pairs the workload, not the timing noise.
+Mutation passes (hand-made): the implementer's 56 compiling mutants (53 killed, 3 equivalent); the verifier's script of 64 applicable mutants, re-run after the fix round (every survivor killed by a new test except two argued equivalent: `t > 0` against `t >= 0` in the t CDF at exactly 0, and a no-op rewrite); and 22 mutants of the new floor, degenerate-data and warning code (20 killed, 2 equivalent: `n <= 0` against `n <= 1` in `SignTestFloor`, where both give 1, and `p <= Alpha` against `p < Alpha`, a value no input can produce since p is a multiple of 1/10001 or a power of two over two).
+
+The rest of PR G-lite's neighbours are recorded here as they land: `latency-aware` and the TTFT signal (PR C2), the rest of D24, the pre-registered predictions (PR I)
+and the results (PR J). Until then the plan is the source of truth. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
 
 ## Consequences
 

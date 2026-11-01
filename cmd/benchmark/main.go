@@ -5,6 +5,7 @@
 //	benchmark chaos --scenario worker-freeze --repeat 3
 //	benchmark compare run_001 run_004
 //	benchmark list
+//	benchmark verdict --predictions P --freeze F --runs DIR
 //
 // See docs/benchmarks/phase-7-harness.md.
 package main
@@ -16,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 
@@ -24,6 +24,7 @@ import (
 	"serverflow/internal/bench/report"
 	"serverflow/internal/bench/runner"
 	"serverflow/internal/config"
+	"serverflow/internal/shutdown"
 )
 
 const usage = `benchmark: scheduler benchmark harness
@@ -33,6 +34,8 @@ Usage:
   benchmark chaos --scenario S      inject a fault (baseline, fault and recovery windows); -list names them
   benchmark compare [--dir D] A B   print the deltas between two runs (IDs or paths)
   benchmark list [--dir D]          list past runs
+  benchmark verdict --predictions P --freeze F --runs D
+                                    evaluate pre-registered predictions against result files (docs/benchmarks/phase-14-experiment-framework.md)
   benchmark run -h                  all flags of run
 
 Example (two repeat groups, then a comparison of one run from each):
@@ -46,10 +49,8 @@ workers x mock-concurrency: above 60% of that is warned about, above 100% refuse
 or --rate (open loop). A run with more than 5% failed requests is invalid and exits non-zero.`
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	// After the first signal restore the default behaviour, so a second Ctrl-C force-quits a
-	// run that is slow to wind down.
-	go func() { <-ctx.Done(); stop() }()
+	ctx, stop := shutdown.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// The first signal starts the shutdown; a second one ends the process at once (internal/shutdown).
 	code := execute(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
@@ -70,6 +71,8 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = cmdCompare(args[1:], stdout, stderr)
 	case "list":
 		err = cmdList(args[1:], stdout)
+	case "verdict":
+		err = cmdVerdict(args[1:], stdout)
 	case "help", "-h", "--help":
 		_, _ = fmt.Fprintln(stdout, usage)
 		return 0

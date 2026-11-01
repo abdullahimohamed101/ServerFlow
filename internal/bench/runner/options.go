@@ -18,6 +18,7 @@ import (
 	"serverflow/internal/bench/workload"
 	"serverflow/internal/config"
 	"serverflow/internal/scheduler"
+	"serverflow/internal/sim/engine"
 )
 
 // Defaults and caps. The caps stop a typo from flooding the machine or the target; flags
@@ -59,6 +60,14 @@ type Options struct {
 	MockConcurrent int
 	MockQueue      int
 	GPUType        string
+	// SimProfiles runs the embedded workers on the simulator engine (internal/sim/engine), each taking the next
+	// built-in profile in turn; empty keeps the constant-speed mock. LoadOverlay is "" (the strategy's default),
+	// "max" or "ledger". InputWeight and OutputFraction are scheduler.cost.*; the flags default to the gateway's
+	// own defaults (1), so leaving them alone changes nothing.
+	SimProfiles    []string
+	LoadOverlay    string
+	InputWeight    float64
+	OutputFraction float64
 	// Resilience is "on", "off" or "" (the build's default) for the embedded gateway (Phase 15). On a
 	// build without the feature it is a no-op and results record "absent".
 	Resilience string
@@ -109,8 +118,10 @@ func (o Options) Mode() driver.Mode {
 
 // EmbeddedConfig is the embedded cluster the options describe, serving models.
 func (o Options) EmbeddedConfig(models []string) embedded.Config {
-	return embedded.Config{Scheduler: o.Scheduler, Workers: o.Workers, Profile: o.Profile, Models: models,
-		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue, Resilience: o.Resilience}
+	iw, of := o.InputWeight, o.OutputFraction
+	return embedded.Config{Scheduler: o.Scheduler, Workers: o.Workers, Profile: o.Profile, Models: models, SimProfiles: o.SimProfiles,
+		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue, Resilience: o.Resilience,
+		LoadOverlay: o.LoadOverlay, InputWeight: &iw, OutputFraction: &of}
 }
 
 // Models returns the workload's model pair.
@@ -201,6 +212,11 @@ func (o Options) validateTarget() error {
 		if o.Profile != embedded.Identical && o.Profile != embedded.Heterogeneous {
 			return fmt.Errorf("--worker-profile %q is not valid (choose %s or %s)", o.Profile, embedded.Identical, embedded.Heterogeneous)
 		}
+		if err := o.validateScheduling(); err != nil {
+			return err
+		}
+	} else if len(o.SimProfiles) > 0 || o.LoadOverlay != "" || o.InputWeight != 1 || o.OutputFraction != 1 {
+		return errors.New("--sim-profile, --load-overlay, --input-weight and --output-fraction configure the embedded cluster; a --target runs with its own configuration")
 	} else {
 		if err := o.checkHost("--target", o.TargetURL); err != nil {
 			return err
@@ -213,6 +229,30 @@ func (o Options) validateTarget() error {
 		if o.Workers < 0 || o.Workers > 100000 {
 			return fmt.Errorf("--workers must be 0 (unknown) or a positive count, got %d", o.Workers)
 		}
+	}
+	return nil
+}
+
+// validateScheduling checks the Phase 14 experiment options of an embedded run.
+func (o Options) validateScheduling() error {
+	for _, name := range o.SimProfiles {
+		if _, ok := engine.Profile(name); !ok {
+			return fmt.Errorf("--sim-profile %q is not a built-in simulator profile (choose from: %s)", name, strings.Join(engine.ProfileNames(), ", "))
+		}
+	}
+	switch o.LoadOverlay {
+	case "", config.LoadOverlayMax, config.LoadOverlayLedger:
+	default:
+		return fmt.Errorf("--load-overlay %q is not valid (choose %s or %s, or leave it out)", o.LoadOverlay, config.LoadOverlayMax, config.LoadOverlayLedger)
+	}
+	if scheduler.WorkAware(o.Scheduler) && o.LoadOverlay == config.LoadOverlayMax {
+		return fmt.Errorf("--scheduler %s needs the ledger overlay: leave --load-overlay out or use --load-overlay %s", o.Scheduler, config.LoadOverlayLedger)
+	}
+	if !(o.InputWeight >= 0 && o.InputWeight <= 100) {
+		return fmt.Errorf("--input-weight must be between 0 and 100, got %v", o.InputWeight)
+	}
+	if !(o.OutputFraction > 0 && o.OutputFraction <= 1) {
+		return fmt.Errorf("--output-fraction must be in (0, 1], got %v", o.OutputFraction)
 	}
 	return nil
 }
