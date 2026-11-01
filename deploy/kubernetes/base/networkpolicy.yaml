@@ -8,7 +8,8 @@
 # addresses, not from a pod. Which address depends on the path: the pod network's gateway on the node (10.244.0.1, the host side
 # of the pod's veth in kind) and the node's address on kind's Docker network (a private range: 172.16.0.0/12 is Docker's default
 # pool, 192.168.0.0/16 the other one engines use). The pod CIDR 10.244.0.0/16 is deliberately NOT allowed, so no pod can use these
-# rules. Only pods that are published on a NodePort, probed over the network or reached by the API server list them.
+# rules. kube-network-policies evaluates NodePort traffic before SNAT, so there the source is the Docker bridge gateway (172.x),
+# and 10.244.0.1/32 is what kubelet probes arrive from. Only pods that are published on a NodePort, probed over the network or reached by the API server list them.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

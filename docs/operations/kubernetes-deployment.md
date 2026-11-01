@@ -49,8 +49,7 @@ node-originated traffic at all, is **not verified**: if the advisory job shows p
 reaches is a pod rule.
 
 **Enforcement (K15).** NetworkPolicy objects are accepted by any API server; they only do something when the CNI enforces them. kind's default CNI is kindnet,
-and kind v0.33.0 ships a kindnet whose network-policy support is, to the best of this document's knowledge, on by default; **that was not verified from this
-repository** (kind and kubectl cannot run where this was written), so the smoke does not assume it. K15 runs two short-lived pods built from `tools/netpol-probe.yaml`
+and since kind v0.24.0 kindnet embeds `sigs.k8s.io/kube-network-policies`: the kind v0.33.0 kindnetd source enforces ingress, egress and `ipBlock` rules (nftables with NFQUEUE, so the runner's kernel needs the nft queue modules; kindnetd runs fail-open, so a stopped queue listener lets traffic through, and if it cannot start the controller it logs that it is skipping network policies and enforces nothing). That was read from the sources, not observed on a cluster (kind and kubectl cannot run where this was written), so the smoke does not assume it. NodePort traffic is evaluated before SNAT, so its source is the Docker bridge gateway (172.x), while `10.244.0.1/32` is the source of kubelet probes. K15 runs two short-lived pods built from `tools/netpol-probe.yaml`
 (restricted-compliant, Redis' image already on the node, deleted afterwards): an *outsider* (component `netpol-probe`, selected by no allow rule) tries Redis,
 PostgreSQL, Redpanda and the control plane by ClusterIP, and all four must fail (addressed by IP, so a blocked DNS lookup cannot fake it); a *control* labelled `admin`
 must reach PostgreSQL (so the probe tool works and an allow rule is honoured) and must not reach Redis; and a completion through the gateway NodePort must still be 200.

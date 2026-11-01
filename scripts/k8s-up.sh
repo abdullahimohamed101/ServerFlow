@@ -815,6 +815,8 @@ service_ip() { kc -n "$NAMESPACE" get service "$1" -o 'jsonpath={.spec.clusterIP
 k15_network_policy_enforced() {
   local redis pg rp cp out ctl code
   kc -n "$NAMESPACE" get networkpolicy default-deny-all >/dev/null 2>&1 || { echo "K15 diagnostic: the default-deny NetworkPolicy does not exist" >&2; return 1; }
+  # a probe pod left by a killed earlier run would fail K1 of the next smoke
+  kc -n "$NAMESPACE" delete pod -l app.kubernetes.io/component=netpol-probe --ignore-not-found >/dev/null 2>&1 || true
   redis="$(service_ip redis)"
   pg="$(service_ip postgres)"
   rp="$(service_ip redpanda)"
