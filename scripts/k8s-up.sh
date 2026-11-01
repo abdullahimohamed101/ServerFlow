@@ -602,8 +602,8 @@ workers_with_requests() {
 }
 
 k6_three_workers() {
-  local i c
-  for i in 1 2 3 4; do
+  local c
+  for _ in 1 2 3 4; do
     for c in 1 2 3 4 5 6; do
       gw_curl "$K8S_DIR/api_key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions" &
     done
@@ -613,9 +613,9 @@ k6_three_workers() {
 }
 
 k7_rate_limit() {
-  local name="smoke-limited-$$" codes="" retry_after="" c first4 i
+  local name="smoke-limited-$$" codes="" retry_after="" c first4
   make_tenant "$name" 3 || return 1
-  for i in 1 2 3 4 5; do
+  for _ in 1 2 3 4 5; do
     c="$(gw_curl "$SCRATCH/$name.key" -s -D "$SCRATCH/h.txt" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions")"
     codes="$codes $c"
     if [ "$c" = 429 ] && [ -z "$retry_after" ]; then retry_after="$(grep -i '^retry-after:' "$SCRATCH/h.txt" | tr -d '\r' | cut -d: -f2 | tr -d ' ')"; fi
