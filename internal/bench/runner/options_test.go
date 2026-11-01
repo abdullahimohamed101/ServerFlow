@@ -174,6 +174,26 @@ func TestErrorRateDefaultsAndFlags(t *testing.T) {
 	}
 }
 
+func TestUpstreamHeaderTimeoutFlag(t *testing.T) {
+	rf, err := parse(t)
+	if err != nil || rf.Options.UpstreamHeaderTimeout != 0 {
+		t.Fatalf("default must be zero (the harness's 30s): %v %+v", err, rf.Options)
+	}
+	rf, err = parse(t, "--upstream-header-timeout", "120s")
+	if err != nil || rf.Options.UpstreamHeaderTimeout != 120*time.Second {
+		t.Fatalf("%v %+v", err, rf.Options)
+	}
+	if got := rf.Options.EmbeddedConfig([]string{"m"}).UpstreamHeaderTimeout; got != 120*time.Second {
+		t.Fatalf("not plumbed to the embedded config: %v", got)
+	}
+	if _, err := parse(t, "--upstream-header-timeout", "-1s"); err == nil || !strings.Contains(err.Error(), "--upstream-header-timeout") {
+		t.Fatalf("negative must be refused: %v", err)
+	}
+	if _, err := parse(t, "--target", "http://127.0.0.1:1", "--upstream-header-timeout", "120s"); err == nil || !strings.Contains(err.Error(), "configure the embedded cluster") {
+		t.Fatalf("a --target has its own configuration: %v", err)
+	}
+}
+
 func TestExperimentOptionsParseAndAreValidated(t *testing.T) {
 	rf, err := parse(t, "--sim-profile", "fast,slow", "--scheduler", "least-work", "--input-weight", "0.3", "--output-fraction", "0.5", "--workload", "heavy-tail")
 	if err != nil {

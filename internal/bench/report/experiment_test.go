@@ -252,3 +252,29 @@ func TestParameterHashIsAStoredFormat(t *testing.T) {
 		t.Fatalf("ParameterHash(simCluster()) = %s, pinned %s", got, want)
 	}
 }
+
+func TestUpstreamHeaderTimeoutIsAdditiveAndCompared(t *testing.T) {
+	// Unset: not serialised, and the label is unchanged.
+	b, _ := json.Marshal(opts())
+	if strings.Contains(string(b), "upstream_header_timeout") || strings.Contains(opts().Label(), "upstream_header_timeout") {
+		t.Fatalf("default must be invisible: %s %s", b, opts().Label())
+	}
+	long := opts()
+	long.UpstreamHeaderTimeoutMs = 120000
+	b, _ = json.Marshal(long)
+	if !strings.Contains(string(b), `"upstream_header_timeout_ms":120000`) || !strings.Contains(long.Label(), "upstream_header_timeout=120000ms") {
+		t.Fatalf("%s %s", b, long.Label())
+	}
+	a := expResult("run_001", "least-work", simCluster(), opts())
+	c := Compare(a, expResult("run_002", "least-work", simCluster(), long))
+	if !warned(c, "different scheduler options") || !c.Unfair() {
+		t.Fatalf("%v", c.Warnings)
+	}
+	if _, ok := hasDiff(c, "scheduler options"); !ok {
+		t.Fatal("difference not listed")
+	}
+	c = Compare(expResult("run_003", "least-work", simCluster(), long), expResult("run_004", "least-work", simCluster(), long))
+	if warned(c, "different scheduler options") {
+		t.Fatalf("%v", c.Warnings)
+	}
+}

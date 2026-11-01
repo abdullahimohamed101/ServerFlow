@@ -166,3 +166,40 @@ func TestTheGatewaySeesEveryWorkerTheMomentStartReturns(t *testing.T) {
 		cancel()
 	}
 }
+
+func TestUpstreamHeaderTimeoutIsConfigurable(t *testing.T) {
+	// 40 tokens at 50 tokens/s take about 0.8s, and a non-streaming response sends its headers only when it is done.
+	slow := Config{Workers: 1, TokensPerSecond: 50}
+	short := slow
+	short.UpstreamHeaderTimeout = 300 * time.Millisecond
+	c := startCluster(t, short)
+	if got := c.SchedulerSettings().UpstreamHeaderTimeout; got != 300*time.Millisecond {
+		t.Fatalf("settings record %v", got)
+	}
+	resp, err := chat(t, c.GatewayURL, 40, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("a non-streaming request slower than the header timeout must be a 504, got %d", resp.StatusCode)
+	}
+
+	long := slow
+	long.UpstreamHeaderTimeout = 10 * time.Second
+	c = startCluster(t, long)
+	resp, err = chat(t, c.GatewayURL, 40, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("with a longer header timeout the same request must succeed, got %d", resp.StatusCode)
+	}
+
+	// Zero keeps the harness default.
+	c = startCluster(t, slow)
+	if got := c.SchedulerSettings().UpstreamHeaderTimeout; got != 30*time.Second {
+		t.Fatalf("default is %v", got)
+	}
+}

@@ -248,3 +248,26 @@ func TestResultRecordsStrategyWorldAndOptionsAdditively(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestResultRecordsUpstreamHeaderTimeoutOnlyWhenNotDefault(t *testing.T) {
+	o := quickOptions(t, "--workload", "uniform-short", "--duration", "500ms")
+	rs, err := Run(context.Background(), o, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rs[0].Metadata.Experiment.Options.UpstreamHeaderTimeoutMs; got != 0 {
+		t.Fatalf("a default run must not record it: %d", got)
+	}
+	b, err := os.ReadFile(filepath.Join(o.OutDir, "run_001", "result.json"))
+	if err == nil && strings.Contains(string(b), "upstream_header_timeout") {
+		t.Fatal("a default run's result file must not carry the key")
+	}
+	o = quickOptions(t, "--workload", "uniform-short", "--duration", "500ms", "--upstream-header-timeout", "120s")
+	rs, err = Run(context.Background(), o, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rs[0].Metadata.Experiment.Options.UpstreamHeaderTimeoutMs; got != 120000 {
+		t.Fatalf("a non-default value must be recorded: %d", got)
+	}
+}

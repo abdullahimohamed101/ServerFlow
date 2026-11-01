@@ -53,6 +53,10 @@ const (
 	HeartbeatInterval = time.Second
 	RegistryRefresh   = 100 * time.Millisecond
 
+	// DefaultUpstreamHeaderTimeout is the embedded gateway's gateway.upstream_header_timeout unless
+	// Config.UpstreamHeaderTimeout sets another: a hung worker must not cost minutes per repeat.
+	DefaultUpstreamHeaderTimeout = 30 * time.Second
+
 	// MockOutputTokens is the mock workers' natural output length: above the largest max_tokens
 	// any workload asks for, so max_tokens decides how much each request generates.
 	MockOutputTokens = 2000
@@ -108,6 +112,10 @@ type Config struct {
 	// before the gateway starts (the chaos harness lowers the header timeout through it). It must not
 	// change what the harness depends on: the worker source, control plane URL and token.
 	GatewayMutate func(*config.Config)
+	// UpstreamHeaderTimeout is gateway.upstream_header_timeout. Zero keeps DefaultUpstreamHeaderTimeout. A
+	// non-streaming completion sends its response headers only when generation completes, so a workload with long
+	// non-streaming requests on a slow simulated worker needs a longer one (120s) or the gateway answers 504.
+	UpstreamHeaderTimeout time.Duration
 	// Resilience is "on", "off" or "" for the build's default; see ApplyResilience. On a build without
 	// the feature it changes nothing and Cluster.Resilience reports "absent".
 	Resilience string
@@ -327,7 +335,11 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	gcfg.Gateway.ControlPlaneURL = cpURL
 	gcfg.Gateway.RegistryRefresh = RegistryRefresh
 	gcfg.Gateway.RegistryMaxStaleness = 10 * time.Second
-	gcfg.Gateway.UpstreamHeaderTimeout = 30 * time.Second // a hung worker must not cost minutes per repeat
+	// The default is 30s because a hung worker must not cost minutes per repeat; cfg.UpstreamHeaderTimeout raises it.
+	gcfg.Gateway.UpstreamHeaderTimeout = DefaultUpstreamHeaderTimeout
+	if cfg.UpstreamHeaderTimeout > 0 {
+		gcfg.Gateway.UpstreamHeaderTimeout = cfg.UpstreamHeaderTimeout
+	}
 	gcfg.Gateway.ShutdownTimeout = 2 * time.Second
 	gcfg.Worker.SuspectTimeout = 10 * time.Second
 	gcfg.ControlPlane.Token = token
@@ -358,7 +370,8 @@ func Start(ctx context.Context, cfg Config) (*Cluster, error) {
 	}
 	c.settings = SchedulerSettings{Strategy: gcfg.Scheduler.Strategy, LoadOverlay: gcfg.Scheduler.LoadOverlay,
 		OutputFraction: gcfg.Scheduler.Cost.OutputFraction, InputWeight: gcfg.Scheduler.Cost.InputWeight,
-		CapacityHalflife: gcfg.Scheduler.Signals.CapacityHalflife, CapacityFloor: gcfg.Scheduler.Signals.CapacityFloor}
+		CapacityHalflife: gcfg.Scheduler.Signals.CapacityHalflife, CapacityFloor: gcfg.Scheduler.Signals.CapacityFloor,
+		UpstreamHeaderTimeout: gcfg.Gateway.UpstreamHeaderTimeout}
 	gw, err := gateway.NewRegistry(gcfg, log)
 	if err != nil {
 		return fail(err)
@@ -491,6 +504,9 @@ type SchedulerSettings struct {
 	OutputFraction, InputWeight float64
 	CapacityHalflife            time.Duration
 	CapacityFloor               float64
+	// UpstreamHeaderTimeout is gateway.upstream_header_timeout (not a scheduler.* value, but it decides which
+	// requests fail and so what a comparison means).
+	UpstreamHeaderTimeout time.Duration
 }
 
 // SchedulerSettings returns the scheduler settings the gateway runs with.

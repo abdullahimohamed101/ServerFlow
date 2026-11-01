@@ -492,7 +492,8 @@ func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, 
 		st := t.cluster.SchedulerSettings()
 		m.Experiment = &report.Experiment{Strategy: st.Strategy, World: report.WorldLabel(c), ParameterHash: report.ParameterHash(c),
 			Options: &report.SchedulerOptions{LoadOverlay: st.LoadOverlay, OutputFraction: st.OutputFraction, InputWeight: st.InputWeight,
-				CapacityHalflifeMs: st.CapacityHalflife.Milliseconds(), CapacityFloor: st.CapacityFloor}}
+				CapacityHalflifeMs: st.CapacityHalflife.Milliseconds(), CapacityFloor: st.CapacityFloor,
+				UpstreamHeaderTimeoutMs: nonDefaultHeaderTimeoutMs(st.UpstreamHeaderTimeout)}}
 		return m
 	}
 	m.Experiment = &report.Experiment{Strategy: o.Scheduler, World: report.WorldLabel(nil)}
@@ -511,3 +512,12 @@ func metadata(ctx context.Context, o Options, wl *workload.Workload, t *target, 
 
 // say writes progress; a failing progress writer must not fail a benchmark.
 func say(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+
+// nonDefaultHeaderTimeoutMs is the gateway's upstream header timeout in milliseconds when it differs from the
+// harness default, else 0, so the metadata of a default run is unchanged.
+func nonDefaultHeaderTimeoutMs(d time.Duration) int64 {
+	if d == embedded.DefaultUpstreamHeaderTimeout {
+		return 0
+	}
+	return d.Milliseconds()
+}

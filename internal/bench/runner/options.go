@@ -68,6 +68,9 @@ type Options struct {
 	LoadOverlay    string
 	InputWeight    float64
 	OutputFraction float64
+	// UpstreamHeaderTimeout is gateway.upstream_header_timeout of the embedded gateway; 0 keeps the harness
+	// default (embedded.DefaultUpstreamHeaderTimeout, 30s).
+	UpstreamHeaderTimeout time.Duration
 	// Resilience is "on", "off" or "" (the build's default) for the embedded gateway (Phase 15). On a
 	// build without the feature it is a no-op and results record "absent".
 	Resilience string
@@ -121,7 +124,7 @@ func (o Options) EmbeddedConfig(models []string) embedded.Config {
 	iw, of := o.InputWeight, o.OutputFraction
 	return embedded.Config{Scheduler: o.Scheduler, Workers: o.Workers, Profile: o.Profile, Models: models, SimProfiles: o.SimProfiles,
 		TokensPerSecond: o.MockTPS, TTFT: o.MockTTFT, MaxConcurrency: o.MockConcurrent, QueueSize: o.MockQueue, Resilience: o.Resilience,
-		LoadOverlay: o.LoadOverlay, InputWeight: &iw, OutputFraction: &of}
+		LoadOverlay: o.LoadOverlay, InputWeight: &iw, OutputFraction: &of, UpstreamHeaderTimeout: o.UpstreamHeaderTimeout}
 }
 
 // Models returns the workload's model pair.
@@ -215,8 +218,8 @@ func (o Options) validateTarget() error {
 		if err := o.validateScheduling(); err != nil {
 			return err
 		}
-	} else if len(o.SimProfiles) > 0 || o.LoadOverlay != "" || o.InputWeight != 1 || o.OutputFraction != 1 {
-		return errors.New("--sim-profile, --load-overlay, --input-weight and --output-fraction configure the embedded cluster; a --target runs with its own configuration")
+	} else if len(o.SimProfiles) > 0 || o.LoadOverlay != "" || o.InputWeight != 1 || o.OutputFraction != 1 || o.UpstreamHeaderTimeout != 0 {
+		return errors.New("--sim-profile, --load-overlay, --input-weight, --output-fraction and --upstream-header-timeout configure the embedded cluster; a --target runs with its own configuration")
 	} else {
 		if err := o.checkHost("--target", o.TargetURL); err != nil {
 			return err
@@ -253,6 +256,9 @@ func (o Options) validateScheduling() error {
 	}
 	if !(o.OutputFraction > 0 && o.OutputFraction <= 1) {
 		return fmt.Errorf("--output-fraction must be in (0, 1], got %v", o.OutputFraction)
+	}
+	if o.UpstreamHeaderTimeout < 0 {
+		return fmt.Errorf("--upstream-header-timeout must not be negative, got %v", o.UpstreamHeaderTimeout)
 	}
 	return nil
 }
