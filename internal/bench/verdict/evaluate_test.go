@@ -671,3 +671,11 @@ func TestBootstrapSeedAndResamplesCanBePreRegistered(t *testing.T) {
 		t.Fatalf("%+v %+v", a.Stats, b.Stats)
 	}
 }
+
+func TestSignedNeverShowsNegativeZero(t *testing.T) {
+	for x, want := range map[float64]string{0: "+0.00%", -1e-9: "+0.00%", 0.1234: "+12.34%", -0.1234: "-12.34%", -0.0005: "-0.05%"} {
+		if got := signed(x); got != want {
+			t.Errorf("signed(%v) = %s, want %s", x, got, want)
+		}
+	}
+}

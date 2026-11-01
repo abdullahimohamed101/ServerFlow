@@ -1,0 +1,34 @@
+benchmark verdict (simulator-validated, not hardware-validated)
+frozen predictions text sha256 e126d88eeca98c5b80a7f17b833e5b649e00e8495be4d2db909808343bdb959b
+predictions match the freeze recorded at 2026-11-02T10:00:00Z
+68 result files loaded
+confirmatory family (Holm, alpha 0.05): H3
+Statistics: percentile bootstrap interval and p-value of the median paired relative difference (see internal/bench/verdict/doc.go). A verdict describes the simulated worlds, workloads and seeds in the result files; it is not a claim about hardware.
+
+H2  equivalence  CONFIRMED
+    claim: least-active vs least-tokens on uniform-short
+    latency_p95, median relative difference B against A: -0.25% [-1.00%, +1.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
+    bootstrap p-value 0.7541
+    t-TOST (descriptive, never decides): mean -0.13%, p 6.361e-06 (lower 6.361e-06, upper 4.558e-06)
+    - the 95% interval lies entirely inside +/-5.00%
+
+H3  superiority  CONFIRMED
+    claim: least-active vs least-tokens on heavy-tail
+    latency_p95, median effect (improvement as a share of A): +15.00% [+14.00%, +16.00%] at 95%, 10 pairs, 10000 resamples, seed 20260101
+    bootstrap p-value 0.0002; Holm-adjusted 0.0002 (family of 1)
+    - median effect 15.00% reaches the threshold 10.00% and its 95% interval excludes zero
+    - Holm-adjusted p-value 0.0002 (family of 1) is below 0.05
+
+H4  superiority  REFUTED
+    claim: least-tokens vs least-work on mixed
+    latency_p95, median effect (improvement as a share of A): +1.75% [+1.00%, +2.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
+    bootstrap p-value 0.0002
+    - the whole 95% interval lies below the refutation threshold 5.00%
+
+H7  superiority  INCONCLUSIVE
+    claim: least-work vs least-tokens on burst
+    latency_p95, median effect (improvement as a share of A): +0.00% [-20.00%, +25.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
+    bootstrap p-value 0.9051
+    - the 95% interval includes zero
+
+Summary: 2 confirmed, 1 refuted, 1 inconclusive, 0 invalid of 4.

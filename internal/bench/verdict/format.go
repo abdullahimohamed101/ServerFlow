@@ -56,4 +56,10 @@ func (r Report) Write(w io.Writer) error {
 	return err
 }
 
-func signed(x float64) string { return fmt.Sprintf("%+.2f%%", 100*x) }
+func signed(x float64) string {
+	s := fmt.Sprintf("%+.2f%%", 100*x)
+	if s == "-0.00%" { // a tiny negative number is not a sign worth showing
+		return "+0.00%"
+	}
+	return s
+}
