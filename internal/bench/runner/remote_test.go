@@ -180,3 +180,16 @@ func TestNotesReportAClockSkewOnlyAboveTwoSeconds(t *testing.T) {
 		}
 	}
 }
+
+func TestARemoteRunRecordsTheDeclaredStrategyAndNoWorldOrOptions(t *testing.T) {
+	t.Parallel()
+	o := remoteOptions(t, fakeGateway(t), "--scheduler", "least-work", "--duration", "300ms")
+	rs, err := Run(context.Background(), o, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := rs[0].Metadata.Experiment
+	if e == nil || e.Strategy != "least-work" || e.World != "remote" || e.ParameterHash != "" || e.Options != nil {
+		t.Fatalf("a remote gateway's settings and world are unknown, not guessed: %+v", e)
+	}
+}

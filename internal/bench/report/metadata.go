@@ -68,6 +68,9 @@ type Metadata struct {
 	// "absent" when the build has no resilience feature (never "off" then). Empty in results written
 	// before the field existed.
 	Resilience string `json:"resilience,omitempty"`
+	// Experiment is the Phase 14 record of strategy, world, parameter hash and scheduler options. Nil in
+	// results written before it existed (the key is then absent), and for results of other tools.
+	Experiment *Experiment `json:"experiment,omitempty"`
 	// Cluster describes the embedded cluster; nil for a remote target.
 	Cluster *Cluster `json:"cluster"`
 }
@@ -105,6 +108,10 @@ type ClusterWorker struct {
 	TTFTMillis      int64   `json:"ttft_ms"`
 	MaxConcurrency  int     `json:"max_concurrency"`
 	QueueSize       int     `json:"queue_size"`
+	// SimProfile and SimParamsHash say which simulator profile the worker ran and the hash of its parameters
+	// (internal/sim/engine.Params.Hash); both are absent for the constant-speed mock.
+	SimProfile    string `json:"sim_profile,omitempty"`
+	SimParamsHash string `json:"sim_params_hash,omitempty"`
 }
 
 // GitState is the commit and tree state of a source directory.

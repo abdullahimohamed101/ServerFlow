@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"strings"
 	"time"
 
 	"serverflow/internal/bench/driver"
@@ -41,6 +42,10 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.IntVar(&o.MockConcurrent, "mock-concurrency", embedded.DefaultMaxConcurrency, "embedded mock worker concurrent requests")
 	fs.IntVar(&o.MockQueue, "mock-queue", embedded.DefaultQueueSize, "embedded mock worker queue size")
 	fs.StringVar(&o.Resilience, "resilience", "", "embedded gateway: on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap and, since PR F, the gateway drain; the embedded gateway has no readiness grace); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
+	sim := fs.String("sim-profile", "", "embedded: run the workers on the simulator engine (simulator-validated, not hardware-validated); a comma-separated list of built-in profiles, each worker taking the next in turn, e.g. fast,medium,slow (default: the constant-speed mock)")
+	fs.StringVar(&o.LoadOverlay, "load-overlay", "", "embedded: scheduler.load_overlay, max or ledger (default: max, or ledger for the work-aware strategies)")
+	fs.Float64Var(&o.InputWeight, "input-weight", 1, "embedded: scheduler.cost.input_weight, in [0, 100], for the work-aware strategies")
+	fs.Float64Var(&o.OutputFraction, "output-fraction", 1, "embedded: scheduler.cost.output_fraction, in (0, 1], for the work-aware strategies")
 	fs.StringVar(&o.GPUType, "gpu-type", "", "GPU type to record for --target (embedded mock workers have none)")
 
 	fs.StringVar(&o.Workload, "workload", workload.Mixed, "workload: uniform-short, uniform-long, mixed, burst, hot-model, multi-tenant, heavy-tail, prefill-heavy, decode-heavy")
@@ -76,6 +81,9 @@ func ParseRun(args []string) (RunFlags, error) {
 	}
 	if fs.NArg() > 0 {
 		return rf, fmt.Errorf("unexpected argument %q (flags only)\n\n%s", fs.Arg(0), usage.String())
+	}
+	if *sim != "" {
+		o.SimProfiles = strings.Split(*sim, ",")
 	}
 	if *embeddedFlag && o.TargetURL != "" {
 		return rf, fmt.Errorf("--embedded and --target are mutually exclusive")
