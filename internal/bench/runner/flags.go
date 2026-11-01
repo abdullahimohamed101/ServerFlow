@@ -43,7 +43,7 @@ func ParseRun(args []string) (RunFlags, error) {
 	fs.StringVar(&o.Resilience, "resilience", "", "embedded gateway: on or off for the resilience feature (default: the build's default). Recorded as the configured mode. The gateway honours it since Phase 15 PR D (on: circuit breakers, retry budget, first-byte deadline and, since PR E, the admission queue, load shedding and the global request cap and, since PR F, the gateway drain; the embedded gateway has no readiness grace); on a build without the resilience configuration it is a no-op recorded as \"absent\"")
 	fs.StringVar(&o.GPUType, "gpu-type", "", "GPU type to record for --target (embedded mock workers have none)")
 
-	fs.StringVar(&o.Workload, "workload", workload.Mixed, "workload: uniform-short, uniform-long, mixed, burst, hot-model, multi-tenant")
+	fs.StringVar(&o.Workload, "workload", workload.Mixed, "workload: uniform-short, uniform-long, mixed, burst, hot-model, multi-tenant, heavy-tail, prefill-heavy, decode-heavy")
 	fs.Int64Var(&o.Seed, "seed", 1, "random seed; the same seed offers the same load")
 	fs.StringVar(&o.Model, "model", "qwen-7b", "model name requests ask for")
 	fs.StringVar(&o.Secondary, "secondary-model", "llama-8b", "second model, for hot-model")

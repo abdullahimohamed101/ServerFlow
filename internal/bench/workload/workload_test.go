@@ -77,6 +77,7 @@ const goldenMixedSeed1 = "d065b561cbd74cf2"
 func TestRangesHoldForEveryWorkload(t *testing.T) {
 	ranges := map[string][4]int{ // in min, in max, out min, out max
 		"short": {100, 300, 50, 150}, "medium": {500, 1500, 200, 500}, "long": {2000, 8000, 500, 1500},
+		"prefill": {4000, 8000, 20, 100}, "decode": {50, 200, 1000, 2000},
 	}
 	for _, name := range Names() {
 		w := mk(t, name, 3)
@@ -296,5 +297,139 @@ func TestNewRejectsBadSpecs(t *testing.T) {
 	}
 	if _, err := New(Spec{Name: "nope", Models: models}); err == nil || !strings.Contains(err.Error(), "uniform-short") {
 		t.Errorf("the error should list the valid workloads: %v", err)
+	}
+}
+
+// Digests of the first 1000 requests, built with mk (stream ratio 0.5, models qwen-7b and llama-8b).
+// The first six rows were recorded on master before the Phase 14 workloads were added, so a change to
+// an existing workload fails here; the last three are the Phase 14 workloads. Changing any class
+// range, weight, tenant or model rule of a workload changes its row. A deliberate change updates the
+// row in the same commit AND is a new workload as far as pre-registered predictions are concerned.
+var pinnedDigests = []struct {
+	name   string
+	seed   int64
+	digest string
+}{
+	{UniformShort, 1, "5c17a8e856433f54"}, {UniformShort, 101, "5a12199e33f6b8a1"},
+	{UniformLong, 1, "0c537300293f44c7"}, {UniformLong, 101, "e1c8510727f8646d"},
+	{Mixed, 1, "d065b561cbd74cf2"}, {Mixed, 101, "1686fc5bdc239cd9"},
+	{Burst, 1, "5c17a8e856433f54"}, {Burst, 101, "5a12199e33f6b8a1"},
+	{HotModel, 1, "1f5dc763ad8530c0"}, {HotModel, 101, "1302e93f0f03e341"},
+	{MultiTenant, 1, "8ddae41086921990"}, {MultiTenant, 101, "f4867a561bf487ea"},
+	{HeavyTail, 1, "bf1777d97b407723"}, {HeavyTail, 101, "4c1903439a20075e"},
+	{PrefillHeavy, 1, "0d1b64780f920b50"}, {PrefillHeavy, 101, "2c2576d0cf299854"},
+	{DecodeHeavy, 1, "bbb1f1dfa1bdab6a"}, {DecodeHeavy, 101, "2a7033f4b0e33aaa"},
+}
+
+func TestEveryWorkloadDigestIsPinned(t *testing.T) {
+	seen := map[string]bool{}
+	for _, p := range pinnedDigests {
+		seen[p.name] = true
+		if got := mk(t, p.name, p.seed).Digest(1000); got != p.digest {
+			t.Errorf("%s seed %d: digest %s, pinned %s: the planned load changed", p.name, p.seed, got, p.digest)
+		}
+	}
+	for _, n := range Names() {
+		if !seen[n] {
+			t.Errorf("workload %s has no pinned digest", n)
+		}
+	}
+}
+
+func TestPhase14WorkloadShapes(t *testing.T) {
+	rs := plan(mk(t, HeavyTail, 1), 30000)
+	near(t, "heavy-tail long share", share(rs, func(r Request) bool { return r.Class == "long" }), 0.1, 0.015)
+	near(t, "heavy-tail short share", share(rs, func(r Request) bool { return r.Class == "short" }), 0.9, 0.015)
+	for _, r := range rs {
+		if r.Class != "short" && r.Class != "long" {
+			t.Fatalf("heavy-tail has only short and long requests, got %+v", r)
+		}
+	}
+	// The long 10% carry most of the work, which is what makes the workload heavy-tailed.
+	var longWork, allWork float64
+	for _, r := range rs {
+		w := float64(r.InputTokens + r.MaxTokens)
+		allWork += w
+		if r.Class == "long" {
+			longWork += w
+		}
+	}
+	if longWork/allWork < 0.6 {
+		t.Errorf("the long requests carry %.2f of the work, want more than 0.6", longWork/allWork)
+	}
+	for _, c := range []struct {
+		name         string
+		class        string
+		inLo, inHi   int
+		outLo, outHi int
+	}{
+		{PrefillHeavy, "prefill", 4000, 8000, 20, 100},
+		{DecodeHeavy, "decode", 50, 200, 1000, 2000},
+	} {
+		sawLo, sawHi := false, false
+		for _, r := range plan(mk(t, c.name, 5), 20000) {
+			if r.Class != c.class || r.InputTokens < c.inLo || r.InputTokens > c.inHi || r.MaxTokens < c.outLo || r.MaxTokens > c.outHi {
+				t.Fatalf("%s: %+v outside its class", c.name, r)
+			}
+			sawLo = sawLo || r.MaxTokens == c.outLo
+			sawHi = sawHi || r.MaxTokens == c.outHi
+			if r.MaxTokens > 4096 {
+				t.Fatalf("%s: max_tokens %d is above the gateway limit", c.name, r.MaxTokens)
+			}
+		}
+		if !sawLo || !sawHi {
+			t.Errorf("%s: range ends must be reachable", c.name)
+		}
+	}
+	// The mix is input-dominated for prefill-heavy and output-dominated for decode-heavy.
+	ratio := func(name string) float64 {
+		var in, out float64
+		for _, r := range plan(mk(t, name, 1), 5000) {
+			in += float64(r.InputTokens)
+			out += float64(r.MaxTokens)
+		}
+		return in / out
+	}
+	if ratio(PrefillHeavy) < 20 || ratio(DecodeHeavy) > 0.2 {
+		t.Errorf("input/output token ratios prefill %.1f decode %.2f lost their shape", ratio(PrefillHeavy), ratio(DecodeHeavy))
+	}
+	for _, n := range []string{HeavyTail, PrefillHeavy, DecodeHeavy} {
+		w := mk(t, n, 1)
+		if len(w.ModelNames()) != 1 || len(w.Tenants()) != 1 {
+			t.Errorf("%s uses one model and one tenant", n)
+		}
+	}
+}
+
+// The digest is what protects a pre-registered workload: changing one parameter of its classes
+// must change it. This builds the heavy-tail workload with each parameter nudged in turn.
+func TestChangingAWorkloadParameterChangesItsDigest(t *testing.T) {
+	base := mk(t, HeavyTail, 1)
+	want := base.Digest(1000)
+	nudge := []func(c []Class){
+		func(c []Class) { c[0].Weight = 0.89; c[1].Weight = 0.11 },
+		func(c []Class) { c[0].InMin++ },
+		func(c []Class) { c[0].InMax++ },
+		func(c []Class) { c[0].OutMin++ },
+		func(c []Class) { c[0].OutMax++ },
+		func(c []Class) { c[1].InMin++ },
+		func(c []Class) { c[1].InMax-- },
+		func(c []Class) { c[1].OutMin++ },
+		func(c []Class) { c[1].OutMax-- },
+		func(c []Class) { c[0].Name = "shorter" },
+	}
+	for i, f := range nudge {
+		w := *base
+		w.classes = base.Classes()
+		f(w.classes)
+		if got := w.Digest(1000); got == want {
+			t.Errorf("nudge %d left the digest unchanged", i)
+		}
+	}
+	// And the control: an unmodified copy keeps it.
+	w := *base
+	w.classes = base.Classes()
+	if w.Digest(1000) != want {
+		t.Fatal("an unmodified copy must keep the digest")
 	}
 }
