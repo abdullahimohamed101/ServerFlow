@@ -178,6 +178,8 @@ observability() {
   scripts/promtool.sh check config observability/prometheus/prometheus.yml
   step "promtool check config (container stack, syntax only: the token file is generated at run time)"
   scripts/promtool.sh check config --syntax-only observability/prometheus/compose/prometheus.yml
+  step "promtool check config (Kubernetes, syntax only: the token file and the API credentials exist only in the cluster)"
+  scripts/promtool.sh check config --syntax-only observability/prometheus/kubernetes/prometheus.yml
   step "promtool check rules"
   scripts/promtool.sh check rules observability/prometheus/rules/recording.yml observability/prometheus/rules/alerts.yml
   step "promtool test rules"
@@ -323,7 +325,10 @@ k8s() {
     TestGatewayDrainSettingsInTheManifest TestGatewayDrainMutationsOnTheManifest TestGatewayRolloutAndDisruptionBudget \
     TestControlPlaneIsOneRecreatedReplica TestWorkerPodShape TestWorkerPodMutations TestNodePortsMatchKind TestWorkerNetworksIsThePodSubnet \
     TestEnvironmentNamesAreHonoured TestAdminPodTemplateIsHardened TestAdminRunBuildsAHardenedPodAndRefusesOddArguments \
-    TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget TestK1JudgesPhaseReadinessAndRestarts TestK13AndK2Hygiene; do
+    TestAuditJudgesWhatTheAPIReports TestSmokeChecksAndScriptHygiene TestKindJobTriggersAndBudget TestK1JudgesPhaseReadinessAndRestarts TestK13AndK2Hygiene \
+    TestPrometheusKubernetesConfigMatchesTheOthers TestObservabilityConfigMapsAreTheRepositoryFiles TestEveryConfigMapAndSecretVolumeResolves \
+    TestPrometheusAPIAccessIsReadOnlyPodsAndPrometheusOnly TestTracingPointsAtJaeger TestK8JudgesTargetsAndRequests TestK9JudgesDashboardsAndDatasource \
+    TestK11JudgesTheTrace TestObservabilityIsPartOfUp TestGrafanaIsLockedDown; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
   done
   if grep -q -- "--- SKIP" "$log"; then

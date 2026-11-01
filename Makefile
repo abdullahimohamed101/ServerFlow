@@ -203,10 +203,10 @@ dev-key:
 deploy-check:
 	scripts/quality.sh deploy
 
-# Phase 17: ServerFlow on a local kind cluster (docs/operations/kubernetes-deployment.md). Needs Docker with at least 4 GB of
+# Phase 17: ServerFlow on a local kind cluster (docs/operations/kubernetes-deployment.md). Needs Docker with at least 6 GB of
 # memory, kind and kubectl at the versions in deploy/kubernetes/tools.env (nothing is installed for you), and Compose's
 # secrets generator (scripts/dev-up.sh secrets). The cluster uses a dedicated kubeconfig, .dev/k8s/kubeconfig, and the scripts
-# refuse any context other than kind-serverflow. PR 2 deploys the data tier (PostgreSQL, Redis, Redpanda) and its jobs.
+# refuse any context other than kind-serverflow. The cluster runs the data tier, the core system and (PR 4) Prometheus, Grafana and Jaeger.
 .PHONY: k8s-up k8s-down k8s-reset k8s-smoke k8s-roll-test k8s-audit k8s-render k8s-check
 k8s-up:
 	scripts/k8s-up.sh up
