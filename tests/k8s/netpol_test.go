@@ -618,7 +618,7 @@ func TestNetworkPolicyCatchesMutations(t *testing.T) {
 			if len(r.Ports) == 1 && r.Ports[0].Port == port {
 				var keep []npPeer
 				for _, f := range r.From {
-					if c, ok := peerComponent(f); !(ok && c == src) {
+					if c, ok := peerComponent(f); !ok || c != src {
 						keep = append(keep, f)
 					}
 				}
