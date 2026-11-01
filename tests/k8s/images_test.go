@@ -109,7 +109,7 @@ func TestThirdPartyImagesEqualCompose(t *testing.T) {
 			used[repoOf(c.Image)] = true
 		}
 	}
-	for _, repo := range []string{"mirror.gcr.io/library/postgres", "mirror.gcr.io/library/redis", "mirror.gcr.io/redpandadata/redpanda"} {
+	for _, repo := range []string{"mirror.gcr.io/library/postgres", "mirror.gcr.io/library/redis", "mirror.gcr.io/redpandadata/redpanda", "quay.io/prometheus/prometheus", "mirror.gcr.io/grafana/grafana", "quay.io/jaegertracing/jaeger"} {
 		if !used[repo] {
 			t.Errorf("no workload uses %s, which docker-compose.yml runs", repo)
 		}

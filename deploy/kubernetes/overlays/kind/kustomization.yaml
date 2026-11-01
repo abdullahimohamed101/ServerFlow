@@ -33,3 +33,17 @@ patches:
     patch: |-
       - {op: replace, path: /spec/type, value: NodePort}
       - {op: add, path: /spec/ports/0/nodePort, value: 30090}
+  # Prometheus, Grafana and the Jaeger UI (PR 4): kind maps host 127.0.0.1:29091, :23000 and :26686 to these (kind/cluster.yaml).
+  # The OTLP port of Jaeger stays inside the cluster.
+  - target: {kind: Service, name: prometheus}
+    patch: |-
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30091}
+  - target: {kind: Service, name: grafana}
+    patch: |-
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30300}
+  - target: {kind: Service, name: jaeger-ui}
+    patch: |-
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30686}

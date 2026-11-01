@@ -1,0 +1,163 @@
+# Prometheus (PR 4): one replica, in-memory-lifetime storage (an emptyDir, 2 days of retention, gone with the pod), the rules
+# of observability/prometheus/rules (the same files as every other stack, through the generated ConfigMap prometheus-rules) and the
+# configuration observability/prometheus/kubernetes/prometheus.yml (prometheus-config). Targets come from Kubernetes pod discovery,
+# so the pod needs the API: automountServiceAccountToken stays false everywhere and this pod alone projects a short-lived
+# token (and the cluster CA) explicitly; the only Role bound to it reads pods of this namespace. The metrics bearer token comes
+# from the Secret `metrics` as a file. NodePort 30091 (overlay) is mapped by kind to 127.0.0.1:29091.
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: observability
+    app.kubernetes.io/component: prometheus
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/component: prometheus
+  ports:
+    - {name: http, port: 9090, targetPort: http}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-discovery
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: observability
+    app.kubernetes.io/component: prometheus
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-discovery
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: observability
+    app.kubernetes.io/component: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-discovery
+subjects:
+  - {kind: ServiceAccount, name: prometheus, namespace: serverflow}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: serverflow
+    app.kubernetes.io/part-of: serverflow
+    serverflow.dev/phase: observability
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  progressDeadlineSeconds: 120
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: serverflow
+      app.kubernetes.io/component: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/part-of: serverflow
+        app.kubernetes.io/component: prometheus
+    spec:
+      serviceAccountName: prometheus
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prometheus
+          image: quay.io/prometheus/prometheus:v2.55.1@sha256:2659f4c2ebb718e7695cb9b25ffa7d6be64db013daba13e05c875451cf51b0d3
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2d
+            - --web.listen-address=0.0.0.0:9090
+          ports:
+            - {name: http, containerPort: 9090}
+          env:
+            - {name: GOMEMLIMIT, value: 200MiB}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: metrics-token, mountPath: /etc/prometheus-secrets, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+            - {name: api-access, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      volumes:
+        # The configuration and the rules in one directory (rule_files: rules/*.yml is relative to the configuration file).
+        - name: config
+          projected:
+            sources:
+              - configMap:
+                  name: prometheus-config
+                  items:
+                    - {key: prometheus.yml, path: prometheus.yml}
+              - configMap:
+                  name: prometheus-rules
+                  items:
+                    - {key: recording.yml, path: rules/recording.yml}
+                    - {key: alerts.yml, path: rules/alerts.yml}
+        - name: metrics-token
+          secret:
+            secretName: metrics
+            defaultMode: 0440
+            items:
+              - {key: SERVERFLOW_METRICS_TOKEN, path: metrics_token}
+        - name: data
+          emptyDir: {sizeLimit: 512Mi}
+        # The one explicit API credential of the namespace: a token that expires (and is refreshed by the kubelet), the cluster CA,
+        # and the namespace name, laid out where the in-cluster client of Prometheus looks for them.
+        - name: api-access
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 3600}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - {key: ca.crt, path: ca.crt}
+              - downwardAPI:
+                  items:
+                    - {path: namespace, fieldRef: {fieldPath: metadata.namespace}}

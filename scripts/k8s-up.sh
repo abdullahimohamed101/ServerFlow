@@ -2,13 +2,13 @@
 # The local Kubernetes deployment of ServerFlow on kind (Phase 17, docs/operations/kubernetes-deployment.md).
 # The cluster, the six images, the Secrets, the data tier (PostgreSQL, Redis, Redpanda) with its one-shot jobs (PR 2) and the
 # core system: control plane, gateway, mock workers with their agents, usage consumer, the tenants and keys (PR 3).
-# Prometheus, Grafana and Jaeger arrive in PR 4, NetworkPolicy in PR 5, the rolling-update test in PR 6.
+# Prometheus, Grafana and Jaeger with tracing switched on (PR 4). NetworkPolicy arrives in PR 5, the rolling-update test in PR 6.
 #
 #   scripts/k8s-up.sh up        preflight, secrets, cluster, images, namespace, Secrets, data tier, jobs; idempotent
 #   scripts/k8s-up.sh down      delete the kind cluster and its kubeconfig (nothing else is touched)
 #   scripts/k8s-up.sh reset     down, then remove .dev/k8s/ (the images and the shared .dev/ secrets stay)
 #   scripts/k8s-up.sh status    pods, volumes and jobs of the namespace
-#   scripts/k8s-up.sh smoke     the end-to-end checks K1-K7, K10, K12-K14 and D2-D7; the last line is
+#   scripts/k8s-up.sh smoke     the end-to-end checks K1-K14 and D2-D7; the last line is
 #                               "smoke: N of N checks passed, 0 failed, 0 skipped"
 #   scripts/k8s-up.sh audit     per container: user, read-only root, capabilities, privilege escalation, seccomp, requests and
 #                               limits, token mounts; fails on any exception; the last line is "audit: N pods, M containers, 0 exceptions"
@@ -73,13 +73,16 @@ KIND_CONFIG=deploy/kubernetes/kind/cluster.yaml
 LOAD_RESTRICTOR=--load-restrictor=LoadRestrictionsNone
 # ServerFlow images built from deploy/docker/Dockerfile and loaded into the node (the six of Phase 16).
 IMAGES="admin gateway control-plane worker-agent mock-worker usage-consumer"
-# .dev/<name>.env -> Secret <name> (PR 4 adds grafana and the Prometheus token file).
-SECRETS="postgres dsn redis kafka controlplane metrics"
+# .dev/<name>.env -> Secret <name> (grafana: the admin password; metrics: Prometheus mounts its token as a file).
+SECRETS="postgres dsn redis kafka controlplane metrics grafana"
 # The entry points kind maps to 127.0.0.1 (deploy/kubernetes/kind/cluster.yaml -> the NodePorts of the overlay); a test pins them.
 GATEWAY_URL=http://127.0.0.1:28080
 CONTROL_PLANE_URL=http://127.0.0.1:29090
+PROMETHEUS_URL=http://127.0.0.1:29091
+GRAFANA_URL=http://127.0.0.1:23000
+JAEGER_URL=http://127.0.0.1:26686
 ADMIN_POD=deploy/kubernetes/tools/admin-pod.yaml
-MIN_MEMORY_MB=4096
+MIN_MEMORY_MB=6144
 MIN_DISK_MB=8192
 
 pin() { "$ROOT/scripts/k8s-tool.sh" pin "$1"; }
@@ -377,18 +380,25 @@ cmd_up() {
   apply_phase jobs
   wait_job migrate
   wait_job redpanda-init
+  say "applying Prometheus, Grafana and Jaeger"
+  apply_phase observability
+  # Jaeger first: the gateways and workers export spans to it from their first request.
+  wait_deployment jaeger
   say "applying the core system (control plane, workers, usage consumer, gateway)"
   apply_phase core
   wait_deployment control-plane
   wait_deployment mock-worker
   wait_deployment usage-consumer
   wait_deployment gateway
+  wait_deployment prometheus
+  wait_deployment grafana
   say "creating the tenants and keys"
   bootstrap_tenants
   t1=$(date +%s)
   say "up in $((t1 - t0))s"
   say "gateway        $GATEWAY_URL   (key: $K8S_DIR/api_key, tenant dev; $K8S_DIR/api_key_limited allows 3 requests per minute)"
   say "control plane  $CONTROL_PLANE_URL   (token: $DEV_DIR/controlplane.env)"
+  say "prometheus     $PROMETHEUS_URL   grafana $GRAFANA_URL (user admin, password in $DEV_DIR/grafana.env)   jaeger $JAEGER_URL"
   say "next: make k8s-smoke    stop: make k8s-down"
 }
 
@@ -624,6 +634,67 @@ k7_rate_limit() {
   [ "$first4" = "200 200 200 429" ] && [ -n "$retry_after" ]
 }
 
+# --- K8: Prometheus ---
+# prom_count EXPR: the value of a single-sample instant query, 0 when the result is empty (e.g. count of nothing).
+prom_count() {
+  local out n
+  out="$(curl -sS --max-time 10 -G --data-urlencode "query=$1" "$PROMETHEUS_URL/api/v1/query")" || return 1
+  case "$out" in *'"status":"success"'*) ;; *) return 1 ;; esac
+  n="$(printf '%s' "$out" | sed -n 's/.*"value":\[[0-9.]*,"\([0-9][0-9.e+]*\)"\].*/\1/p')"
+  printf '%s\n' "${n:-0}"
+}
+
+# prom_targets_up: every gateway pod, the control plane and every mock-worker pod is a target with up == 1, and none is down.
+prom_targets_up() {
+  local gw cp mw down want_gw want_mw
+  want_gw="$(gateway_pods | wc -l | tr -d ' ')"
+  want_mw="$(mock_worker_pods | wc -l | tr -d ' ')"
+  gw="$(prom_count 'count(up{job="serverflow-gateway"} == 1)')" || return 1
+  cp="$(prom_count 'count(up{job="serverflow-control-plane"} == 1)')" || return 1
+  mw="$(prom_count 'count(up{job="serverflow-mock-worker"} == 1)')" || return 1
+  down="$(prom_count 'count(up{job=~"serverflow-.*"} == 0)')" || return 1
+  [ "$want_gw" -ge 2 ] && [ "$gw" = "$want_gw" ] && [ "$cp" = 1 ] && [ "$want_mw" -ge 3 ] && [ "$mw" = "$want_mw" ] && [ "$down" = 0 ]
+}
+
+requests_counted() { prom_count 'sum(inference_requests_total)' | awk '{exit !($1 > 0)}'; }
+
+k8_prometheus_scrapes() {
+  poll 120 prom_targets_up && poll 90 requests_counted
+}
+
+# --- K9: Grafana ---
+# grafana_curl PATH: GET with the admin password from .dev/grafana.env, handed to curl on standard input.
+grafana_curl() {
+  local pw
+  pw="$(sed -n 's/^GF_SECURITY_ADMIN_PASSWORD=//p' "$DEV_DIR/grafana.env")"
+  [ -n "$pw" ] || return 1
+  printf 'user = "admin:%s"\n' "$pw" | curl -sS -K - --max-time 10 "$GRAFANA_URL$1"
+}
+
+grafana_database_ok() {
+  local body
+  body="$(curl -sS --max-time 5 "$GRAFANA_URL/api/health")" || return 1
+  printf '%s' "$body" | tr -d ' \n' | grep -q '"database":"ok"'
+}
+
+# The five dashboards of observability/grafana/dashboards, found by their fixed uids, and the datasource answering a query.
+grafana_provisioned() {
+  local body uid n
+  body="$(grafana_curl '/api/search?type=dash-db')" || return 1
+  body="$(printf '%s' "$body" | tr -d ' \n')"
+  for uid in sf-cluster-overview sf-scheduler sf-resilience sf-model sf-worker; do
+    case "$body" in *"\"uid\":\"$uid\""*) ;; *) return 1 ;; esac
+  done
+  n="$(printf '%s' "$body" | grep -o '"type":"dash-db"' | wc -l | tr -d ' ')"
+  [ "$n" = 5 ] || return 1
+  body="$(grafana_curl '/api/datasources/uid/serverflow-prometheus/health')" || return 1
+  printf '%s' "$body" | tr -d ' \n' | grep -q '"status":"OK"'
+}
+
+k9_grafana_dashboards() {
+  poll 90 grafana_database_ok && poll 60 grafana_provisioned
+}
+
 K10_TENANT=""
 usage_seen() {
   admin_run usage summary --since 1h --tenant "$K10_TENANT" | grep -o 'requests=[0-9]*' | cut -d= -f2 | awk '{s+=$1} END{exit !(s>=3)}'
@@ -634,6 +705,34 @@ k10_usage_rows() {
   make_tenant "$K10_TENANT" 600 || return 1
   for _ in 1 2 3; do gw_curl "$SCRATCH/$K10_TENANT.key" -s -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions"; done
   poll 90 usage_seen
+}
+
+# --- K11: Jaeger ---
+K11_RID=""
+# iso_utc EPOCH: RFC 3339 UTC (GNU date first, BSD date as the fallback).
+iso_utc() {
+  date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ
+}
+
+# The trace of request K11_RID holds spans of the gateway and of a mock worker (both services, one trace).
+trace_has_gateway_and_worker() {
+  local now out
+  now=$(date +%s)
+  out="$(curl -sS --max-time 10 -G --data-urlencode 'query.service_name=serverflow-gateway' \
+    --data-urlencode "query.attributes={\"serverflow.request_id\":\"$K11_RID\"}" \
+    --data-urlencode "query.start_time_min=$(iso_utc $((now - 7200)))" --data-urlencode "query.start_time_max=$(iso_utc $((now + 300)))" \
+    "$JAEGER_URL/api/v3/traces")" || return 1
+  out="$(printf '%s' "$out" | tr -d ' \n')"
+  case "$out" in *'"service.name","value":{"stringValue":"serverflow-gateway"}'*) ;; *) return 1 ;; esac
+  case "$out" in *'"service.name","value":{"stringValue":"serverflow-mock-worker"}'*) return 0 ;; *) return 1 ;; esac
+}
+
+k11_trace_in_jaeger() {
+  gw_curl "$K8S_DIR/api_key" -s -D "$SCRATCH/k11.txt" -o /dev/null -H 'Content-Type: application/json' -d "$BODY" "$GATEWAY_URL/v1/chat/completions" || return 1
+  K11_RID="$(awk 'tolower($1)=="x-request-id:"{print $2}' "$SCRATCH/k11.txt" | tr -d '\r')"
+  [ -n "$K11_RID" ] || return 1
+  # The span batch is flushed every 5 s.
+  poll 90 trace_has_gateway_and_worker
 }
 
 K12_VICTIM=""
@@ -758,7 +857,10 @@ cmd_smoke() {
   check K5 "a streaming completion ends with [DONE]" k5_streaming
   check K6 "24 requests reached all three worker pods (worker_requests_total, read through the API server)" k6_three_workers
   check K7 "a tenant limited to 3 per minute gets 200 200 200 then 429 with Retry-After" k7_rate_limit
+  check K8 "Prometheus: every gateway pod, the control plane and every worker pod is up, none is down, and inference_requests_total is non-zero" k8_prometheus_scrapes
+  check K9 "Grafana is healthy, provisions the five dashboards and its datasource answers Prometheus" k9_grafana_dashboards
   check K10 "usage rows for a fresh tenant appeared (gateway, Redpanda, consumer, PostgreSQL)" k10_usage_rows
+  check K11 "a request's trace in Jaeger holds spans of the gateway and of a mock worker" k11_trace_in_jaeger
   check K12 "deleting a worker pod: it left the pool, requests stayed 200, its replacement registered" k12_worker_failover
   check K14 "the rate limit is shared by the gateways: 30 requests, at most 3 admitted, 429s from two or more gateway pods" k14_shared_quota
   check D5 "PostgreSQL keeps its data across a pod restart (PVC)" postgres_keeps_data

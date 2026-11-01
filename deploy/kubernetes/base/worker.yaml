@@ -56,6 +56,9 @@ spec:
             - --seed=2
             - --drain-announce=6s
             - --drain-timeout=30s
+            # Spans for requests the gateway sampled (PR 4); plaintext to the Service jaeger inside the cluster.
+            - --otlp-endpoint=http://jaeger:4318
+            - --trace-insecure-ok
           ports:
             - {name: http, containerPort: 9000}
           env:

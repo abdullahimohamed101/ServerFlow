@@ -1,0 +1,66 @@
+# Prometheus configuration for the Kubernetes deployment (Phase 17, ADR-023), mounted as /etc/prometheus/prometheus.yml with
+# the rules (../rules, the same files as every other stack). It mirrors ../prometheus.yml (same job names, relabelling that
+# selects the components, sample limits, global settings and rule files; tests/k8s fails if they drift) with the differences a
+# cluster needs:
+#   - targets are found with Kubernetes pod discovery in the namespace serverflow, so every gateway and worker replica is
+#     scraped without editing anything. The pod's own API token is projected into the Prometheus pod only, and a Role that
+#     allows get/list/watch on pods in this namespace is its entire authority;
+#   - worker_id is the pod name, which is the worker ID the agents register with (SERVERFLOW_WORKER_ID), so the worker-side
+#     series join the control plane's per-worker gauges;
+#   - the gateway and control-plane jobs present the metrics bearer token (their listeners bind 0.0.0.0, which the binaries only
+#     allow with a token), read from a file mounted from the Secret `metrics`.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: serverflow
+
+rule_files:
+  - rules/*.yml
+
+scrape_configs:
+  - job_name: serverflow-gateway
+    sample_limit: 20000 # last line of defence against a cardinality blow-up (ADR-017 D5)
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus-secrets/metrics_token
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [serverflow]}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component, __meta_kubernetes_pod_container_port_name]
+        regex: gateway;metrics
+        action: keep
+      - {target_label: component, replacement: gateway}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}
+
+  - job_name: serverflow-control-plane
+    # Worker state comes from here, and failed-worker detection has a 10 s target (spec section 31): scrape
+    # fast enough that scrape plus the fleet rule group's evaluation (5 s each) fit in it with the heartbeat.
+    scrape_interval: 5s
+    sample_limit: 20000
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus-secrets/metrics_token
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [serverflow]}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component, __meta_kubernetes_pod_container_port_name]
+        regex: control-plane;metrics
+        action: keep
+      - {target_label: component, replacement: control-plane}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}
+
+  - job_name: serverflow-mock-worker
+    sample_limit: 20000
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [serverflow]}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component, __meta_kubernetes_pod_container_port_name]
+        regex: mock-worker;http
+        action: keep
+      - {target_label: component, replacement: mock-worker}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: worker_id}
+      - {source_labels: [__meta_kubernetes_pod_name], target_label: pod}

@@ -17,6 +17,9 @@ resources:
   - gateway.yaml
   - worker.yaml
   - usage-consumer.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  - jaeger.yaml
 # The gateway's settings are a generated ConfigMap: kustomize appends a hash of the content to its name and rewrites the
 # reference in the Deployment, so changing a value rolls the gateway pods (this is also how the rolling-update test of PR 6
 # triggers a rollout). Nothing secret belongs here: the passwords, the DSN and the tokens come from Secrets (envFrom).
@@ -48,6 +51,43 @@ configMapGenerator:
       - SERVERFLOW_EVENTS_BROKERS=redpanda:9092
       - SERVERFLOW_EVENTS_SASL_MECHANISM=scram-sha-256
       - SERVERFLOW_EVENTS_SASL_USERNAME=serverflow
-      # Jaeger arrives in PR 4, which turns tracing on.
-      - SERVERFLOW_TRACING_ENABLED=false
+      # Tracing (PR 4): OTLP/HTTP to the Service jaeger, plaintext inside the cluster (NetworkPolicy, PR 5, narrows who can send).
+      # Sampling everything is right for a demo cluster; the mock workers record spans only for requests the gateway sampled.
+      - SERVERFLOW_TRACING_ENABLED=true
+      - SERVERFLOW_TRACING_ENDPOINT=http://jaeger:4318
+      - SERVERFLOW_TRACING_SAMPLE_RATIO=1.0
+      - SERVERFLOW_TRACING_ALLOW_INSECURE_TRANSPORT=true
       - GOMEMLIMIT=100MiB
+  # Observability (PR 4). Every file below is read from observability/, the single source of the Compose and host stacks too, so
+  # a dashboard, rule or datasource changed there changes here (the names carry a content hash: a change rolls the pod).
+  # Only the Prometheus configuration is Kubernetes-specific (pod discovery); a test keeps it equal to the others where it must be.
+  - name: prometheus-config
+    options: &obs
+      labels:
+        app.kubernetes.io/name: serverflow
+        app.kubernetes.io/component: observability
+        app.kubernetes.io/part-of: serverflow
+        serverflow.dev/phase: observability
+    files:
+      - prometheus.yml=../../../observability/prometheus/kubernetes/prometheus.yml
+  - name: prometheus-rules
+    options: *obs
+    files:
+      - ../../../observability/prometheus/rules/recording.yml
+      - ../../../observability/prometheus/rules/alerts.yml
+  - name: grafana-datasources
+    options: *obs
+    files:
+      - prometheus.yml=../../../observability/grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboard-provider
+    options: *obs
+    files:
+      - serverflow.yml=../../../observability/grafana/provisioning/dashboards/serverflow.yml
+  - name: grafana-dashboards
+    options: *obs
+    files:
+      - ../../../observability/grafana/dashboards/cluster-overview.json
+      - ../../../observability/grafana/dashboards/model.json
+      - ../../../observability/grafana/dashboards/resilience.json
+      - ../../../observability/grafana/dashboards/scheduler.json
+      - ../../../observability/grafana/dashboards/worker.json
