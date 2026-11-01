@@ -230,3 +230,16 @@ func TestComparisonTextShowsTheExperimentWarnings(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownReportShowsTheWorldOnlyWhenRecorded(t *testing.T) {
+	r := expResult("run_001", "least-work", simCluster(), opts())
+	md := Markdown(r)
+	for _, want := range []string{"| World | sim:fast,slow (parameters `" + ParameterHash(simCluster())[:12] + "`) |", "| Scheduler options | overlay=ledger output_fraction=1 input_weight=1"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if old := Markdown(result("run_002", 10, 100, 0, 0.9, 0)); strings.Contains(old, "| World |") {
+		t.Error("an old result has no world row")
+	}
+}

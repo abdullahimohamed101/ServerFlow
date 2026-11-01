@@ -42,6 +42,16 @@ func Markdown(r Result) string {
 	if m.Resilience != "" {
 		row("Resilience", Clean(m.Resilience))
 	}
+	if e := m.Experiment; e != nil {
+		world := Clean(e.World)
+		if e.ParameterHash != "" {
+			world += " (parameters `" + hashLabel(Clean(e.ParameterHash)) + "`)"
+		}
+		row("World", world)
+		if e.Options != nil {
+			row("Scheduler options", Clean(e.Options.Label()))
+		}
+	}
 	row("Models", strings.Join(m.Models, ", "))
 	row("Workers", workersLine(m))
 	row("GPU", m.GPUType)
