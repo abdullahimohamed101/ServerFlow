@@ -3,6 +3,7 @@ package verdict
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -42,6 +43,8 @@ type Verdict struct {
 	Status          Status
 	// Reasons say why, in sentences; for INVALID they are the problems found.
 	Reasons []string
+	// Warnings do not change the verdict: for example, few distinct seeds behind the cell.
+	Warnings []string
 	// Stats, when set, are the numbers the verdict rests on.
 	Stats *Stats
 }
@@ -57,7 +60,11 @@ type Stats struct {
 	Level        float64
 	Resamples    int
 	BootstrapSed uint64
-	P            float64
+	// P is the p-value the verdict uses: the larger of the bootstrap p-value and the exact sign-test floor
+	// for the number of non-zero pairs (SignTestFloor). PBootstrap is the bootstrap p-value alone.
+	P          float64
+	PBootstrap float64
+	NonZero    int
 	// Adjusted and FamilySize are set for a confirmatory hypothesis (Holm).
 	Adjusted   *float64
 	FamilySize int
@@ -319,8 +326,21 @@ func evaluateComparison(h Hypothesis, runs []report.Result, tuned *Tuned) Verdic
 	if err != nil {
 		return invalid("%v", err)
 	}
+	nz := NonZero(signed)
 	v.Stats = &Stats{Metric: h.Metric, Pairs: len(keys), Effect: bs.Estimate, Lo: bs.Interval.Lo, Hi: bs.Interval.Hi, Level: Level,
-		Resamples: resamples, BootstrapSed: seed, P: bs.P}
+		Resamples: resamples, BootstrapSed: seed, P: math.Max(bs.P, SignTestFloor(nz)), PBootstrap: bs.P, NonZero: nz}
+	distinct := map[int64]bool{}
+	for _, k := range keys {
+		distinct[k.seed] = true
+	}
+	if len(distinct) < MinDistinctSeeds {
+		v.Warnings = append(v.Warnings, fmt.Sprintf("only %d distinct seed(s) back this cell: repeats of one deterministic simulated seed are not independent samples, so the interval understates the uncertainty across workloads", len(distinct)))
+	}
+	if ZeroSpread(signed) {
+		v.Status = Inconclusive
+		v.Reasons = []string{fmt.Sprintf("degenerate: zero spread (all %d pairs differ by exactly %s), so a bootstrap interval has no width and says nothing about uncertainty", len(keys), signed1(signed[0]))}
+		return v
+	}
 
 	if h.Kind == KindEquivalence {
 		if t, err := TOST(rel, h.Margin, Alpha/2); err == nil {
@@ -328,7 +348,7 @@ func evaluateComparison(h Hypothesis, runs []report.Result, tuned *Tuned) Verdic
 		}
 		return classifyEquivalence(h, v, bs.Interval)
 	}
-	return classifySuperiority(h, v, bs)
+	return classifySuperiority(h, v, bs, v.Stats.P)
 }
 
 func missingWhich(okA, okB bool) string {
@@ -342,10 +362,13 @@ func missingWhich(okA, okB bool) string {
 	}
 }
 
-func classifySuperiority(h Hypothesis, v Verdict, bs Bootstrap) Verdict {
+func classifySuperiority(h Hypothesis, v Verdict, bs Bootstrap, p float64) Verdict {
 	reaches := bs.Estimate >= h.ConfirmMinEffect
 	excludesZero := bs.Interval.Lo > 0
 	switch {
+	case reaches && excludesZero && !(p < Alpha):
+		v.Status = Inconclusive
+		v.Reasons = []string{fmt.Sprintf("the effect reaches the threshold and the interval excludes zero, but with %d non-zero pairs the smallest p-value an exact sign test can give is %.4g, not below %g: too few pairs to confirm", v.Stats.NonZero, SignTestFloor(v.Stats.NonZero), Alpha)}
 	case reaches && excludesZero:
 		v.Status = Confirmed
 		v.Reasons = []string{fmt.Sprintf("median effect %s reaches the threshold %s and its %.0f%% interval excludes zero", pct(bs.Estimate), pct(h.ConfirmMinEffect), 100*Level)}
@@ -385,6 +408,8 @@ func classifyEquivalence(h Hypothesis, v Verdict, iv Interval) Verdict {
 	}
 	return v
 }
+
+func signed1(x float64) string { return fmt.Sprintf("%+.2f%%", 100*x) }
 
 func pct(x float64) string { return fmt.Sprintf("%.2f%%", 100*x) }
 

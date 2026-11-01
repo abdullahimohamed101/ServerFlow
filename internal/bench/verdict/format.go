@@ -37,7 +37,10 @@ func (r Report) Write(w io.Writer) error {
 			}
 			fmt.Fprintf(&b, "    %s, %s: %s [%s, %s] at %.0f%%, %d pairs, %d resamples, seed %d\n", report.Clean(s.Metric), what,
 				signed(s.Effect), signed(s.Lo), signed(s.Hi), 100*s.Level, s.Pairs, s.Resamples, s.BootstrapSed)
-			fmt.Fprintf(&b, "    bootstrap p-value %.4g", s.P)
+			fmt.Fprintf(&b, "    p-value %.4g", s.P)
+			if s.PBootstrap != s.P {
+				fmt.Fprintf(&b, " (bootstrap %.4g raised to the exact sign-test floor for %d non-zero pairs)", s.PBootstrap, s.NonZero)
+			}
 			if s.Adjusted != nil {
 				fmt.Fprintf(&b, "; Holm-adjusted %.4g (family of %d)", *s.Adjusted, s.FamilySize)
 			}
@@ -45,6 +48,9 @@ func (r Report) Write(w io.Writer) error {
 			if t := s.TOST; t != nil {
 				fmt.Fprintf(&b, "    t-TOST (descriptive, never decides): mean %s, p %.4g (lower %.4g, upper %.4g)\n", signed(t.Mean), t.P, t.PLower, t.PUpper)
 			}
+		}
+		for _, w := range v.Warnings {
+			fmt.Fprintf(&b, "    ! warning: %s\n", report.Clean(w))
 		}
 		for _, why := range v.Reasons {
 			fmt.Fprintf(&b, "    - %s\n", report.Clean(why))

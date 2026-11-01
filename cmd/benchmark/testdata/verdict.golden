@@ -8,27 +8,27 @@ Statistics: percentile bootstrap interval and p-value of the median paired relat
 H2  equivalence  CONFIRMED
     claim: least-active vs least-tokens on uniform-short
     latency_p95, median relative difference B against A: -0.25% [-1.00%, +1.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
-    bootstrap p-value 0.7541
+    p-value 0.7541
     t-TOST (descriptive, never decides): mean -0.13%, p 6.361e-06 (lower 6.361e-06, upper 4.558e-06)
     - the 95% interval lies entirely inside +/-5.00%
 
 H3  superiority  CONFIRMED
     claim: least-active vs least-tokens on heavy-tail
     latency_p95, median effect (improvement as a share of A): +15.00% [+14.00%, +16.00%] at 95%, 10 pairs, 10000 resamples, seed 20260101
-    bootstrap p-value 0.0002; Holm-adjusted 0.0002 (family of 1)
+    p-value 0.001953 (bootstrap 0.0002 raised to the exact sign-test floor for 10 non-zero pairs); Holm-adjusted 0.001953 (family of 1)
     - median effect 15.00% reaches the threshold 10.00% and its 95% interval excludes zero
-    - Holm-adjusted p-value 0.0002 (family of 1) is below 0.05
+    - Holm-adjusted p-value 0.001953 (family of 1) is below 0.05
 
 H4  superiority  REFUTED
     claim: least-tokens vs least-work on mixed
     latency_p95, median effect (improvement as a share of A): +1.75% [+1.00%, +2.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
-    bootstrap p-value 0.0002
+    p-value 0.007812 (bootstrap 0.0002 raised to the exact sign-test floor for 8 non-zero pairs)
     - the whole 95% interval lies below the refutation threshold 5.00%
 
 H7  superiority  INCONCLUSIVE
     claim: least-work vs least-tokens on burst
     latency_p95, median effect (improvement as a share of A): +0.00% [-20.00%, +25.00%] at 95%, 8 pairs, 10000 resamples, seed 20260101
-    bootstrap p-value 0.9051
+    p-value 0.9051
     - the 95% interval includes zero
 
 Summary: 2 confirmed, 1 refuted, 1 inconclusive, 0 invalid of 4.

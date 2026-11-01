@@ -152,11 +152,14 @@ func TestDirectionHigherAndTheSignOfTheEffect(t *testing.T) {
 
 func TestThresholdBoundaries(t *testing.T) {
 	// Every pair has exactly the same effect, so the median and the interval are that value.
+	// Nearly the same effect in every pair (zero spread is degenerate and never confirmed): five at e and one
+	// pair 0.00005 either way, so the median is e and the interval is within 0.00005 of it.
 	same := func(e float64, n int) []float64 {
 		out := make([]float64, n)
 		for i := range out {
 			out[i] = e
 		}
+		out[0], out[n-1] = e-0.00005, e+0.00005
 		return out
 	}
 	run := func(e float64) Verdict {
@@ -297,14 +300,18 @@ func TestInvalidInputsAreInvalidNotPassed(t *testing.T) {
 
 func TestRepeatsOfOneSeedPairByRepeatIndex(t *testing.T) {
 	var runs []report.Result
-	for rep := 1; rep <= 5; rep++ {
+	for rep := 1; rep <= 7; rep++ {
 		runs = append(runs,
 			mkRun(runSpec{id: fmt.Sprintf("a%d", rep), strategy: "least-active", workload: "mixed", seed: 7, rep: rep, p95: 100}),
-			mkRun(runSpec{id: fmt.Sprintf("b%d", rep), strategy: "least-tokens", workload: "mixed", seed: 7, rep: rep, p95: 80}))
+			mkRun(runSpec{id: fmt.Sprintf("b%d", rep), strategy: "least-tokens", workload: "mixed", seed: 7, rep: rep, p95: 80 + float64(rep)/10}))
 	}
 	pred := block(`{"id":"H1","kind":"superiority","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":[7],"direction":"lower","confirm_min_effect":0.1,"refute_max_effect":0.05}`)
-	if v := status(t, eval(t, pred, runs), "H1"); v.Status != Confirmed || v.Stats.Pairs != 5 {
+	v := status(t, eval(t, pred, runs), "H1")
+	if v.Status != Confirmed || v.Stats.Pairs != 7 {
 		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	if len(v.Warnings) != 1 || !strings.Contains(v.Warnings[0], "only 1 distinct seed") {
+		t.Fatalf("repeats of one seed are not independent samples: %v", v.Warnings)
 	}
 }
 
@@ -313,7 +320,7 @@ func TestSelectorsPickTheOptionsOfAnArm(t *testing.T) {
 	for seed := int64(1); seed <= 6; seed++ {
 		runs = append(runs,
 			mkRun(runSpec{id: fmt.Sprintf("a%d", seed), strategy: "least-work", workload: "prefill-heavy", seed: seed, p95: 100, inputWeight: 1}),
-			mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-work", workload: "prefill-heavy", seed: seed, p95: 90, inputWeight: 0.3}),
+			mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-work", workload: "prefill-heavy", seed: seed, p95: 90 + float64(seed)/100, inputWeight: 0.3}),
 			mkRun(runSpec{id: fmt.Sprintf("c%d", seed), strategy: "least-work", workload: "prefill-heavy", seed: seed, p95: 50, inputWeight: 0.7}))
 	}
 	pred := block(`{"id":"H5b","kind":"superiority","metric":"latency_p95","a":{"scheduler":"least-work","workload":"prefill-heavy","input_weight":1},"b":{"scheduler":"least-work","workload":"prefill-heavy","input_weight_tuned":"input_weight"},"seeds":[1,2,3,4,5,6],"direction":"lower","confirm_min_effect":0.05,"refute_max_effect":0.03}`)
@@ -324,7 +331,7 @@ func TestSelectorsPickTheOptionsOfAnArm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := status(t, r, "H5b"); v.Status != Confirmed || v.Stats.Effect < 0.0999 || v.Stats.Effect > 0.1001 {
+	if v := status(t, r, "H5b"); v.Status != Confirmed || v.Stats.Effect < 0.0990 || v.Stats.Effect > 0.1001 {
 		t.Fatalf("the 0.3 arm (90 ms) against 1.0 (100 ms) is a 10%% effect: %s %+v %s", v.Status, v.Stats, reasons(v))
 	}
 	// Without the tuned file the arm cannot be selected.
@@ -624,7 +631,8 @@ func TestPredictionParsing(t *testing.T) {
 		{"resamples low", block(mut(`"seeds":[1]`, `"seeds":[1],"resamples":10`)), "resamples"},
 		{"equivalence margin zero", block(`{"id":"E","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"x","workload":"w"},"b":{"scheduler":"y","workload":"w"},"seeds":[1],"margin":0}`), "margin must be"},
 		{"equivalence refute below margin", block(`{"id":"E","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"x","workload":"w"},"b":{"scheduler":"y","workload":"w"},"seeds":[1],"margin":0.05,"refute_margin":0.03}`), "refute_margin"},
-		{"tuned range inverted", block(`{"id":"T","kind":"tuned_range","value_key":"k","min":2,"max":1}`), "min <= max"},
+		{"tuned range inverted", block(`{"id":"T","kind":"tuned_range","value_key":"k","min":2,"max":1}`), "min < max"},
+		{"tuned range of one point", block(`{"id":"T","kind":"tuned_range","value_key":"k","min":1,"max":1}`), "not a range"},
 		{"all_of nested", block(`{"id":"T","kind":"tuned_range","value_key":"k","min":0,"max":1}`) + block(`{"id":"A","kind":"all_of","parts":["T"]}`) + block(`{"id":"B","kind":"all_of","parts":["A"]}`), "itself an all_of"},
 		{"all_of self", block(`{"id":"A","kind":"all_of","parts":["A"]}`), "itself"},
 	} {
@@ -656,9 +664,16 @@ func TestFewerThanMinPairsIsInvalid(t *testing.T) {
 	if v.Status != Invalid || !strings.Contains(reasons(v), "fewer than the minimum of 5") {
 		t.Fatalf("%s %s", v.Status, reasons(v))
 	}
+	// Exactly the minimum is enough to compute, but not to confirm: with 5 non-zero pairs an exact sign test
+	// cannot give a p-value below 0.0625.
 	pred = sup("H1", "mixed", "least-tokens", MinPairs, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
-	if v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", tightGood[:MinPairs])), "H1"); v.Status != Confirmed {
-		t.Fatalf("exactly the minimum is enough: %s %s", v.Status, reasons(v))
+	v = status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", tightGood[:MinPairs])), "H1")
+	if v.Status != Inconclusive || !strings.Contains(reasons(v), "too few pairs to confirm") || v.Stats.P != 0.0625 {
+		t.Fatalf("%s %s %+v", v.Status, reasons(v), v.Stats)
+	}
+	pred = sup("H1", "mixed", "least-tokens", 6, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
+	if v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", tightGood[:6])), "H1"); v.Status != Confirmed || v.Stats.P != 0.03125 {
+		t.Fatalf("six non-zero pairs can confirm: %s %s", v.Status, reasons(v))
 	}
 }
 
@@ -692,13 +707,13 @@ func TestRunsOfUnregisteredSeedsAreIgnored(t *testing.T) {
 
 func TestResultsWithoutARepeatIndexPairWithRepeatOne(t *testing.T) {
 	var runs []report.Result
-	for seed := int64(1); seed <= 5; seed++ {
+	for seed := int64(1); seed <= 6; seed++ {
 		a := mkRun(runSpec{id: fmt.Sprintf("a%d", seed), strategy: "least-active", workload: "mixed", seed: seed, p95: 100})
 		a.Metadata.Repeat.Index = 0 // a result that never recorded one
-		b := mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-tokens", workload: "mixed", seed: seed, rep: 1, p95: 80})
+		b := mkRun(runSpec{id: fmt.Sprintf("b%d", seed), strategy: "least-tokens", workload: "mixed", seed: seed, rep: 1, p95: 80 + float64(seed)/10})
 		runs = append(runs, a, b)
 	}
-	pred := sup("H1", "mixed", "least-tokens", 5, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
+	pred := sup("H1", "mixed", "least-tokens", 6, `"confirm_min_effect":0.1,"refute_max_effect":0.05`)
 	if v := status(t, eval(t, pred, runs), "H1"); v.Status != Confirmed {
 		t.Fatalf("%s %s", v.Status, reasons(v))
 	}
@@ -725,5 +740,229 @@ func TestInvalidMarginIsSeparateFromTheRefuteMargin(t *testing.T) {
 	tight := strings.Replace(pred, `"invalid_margin":0.07`, `"invalid_margin":0.03`, 1)
 	if v := status(t, eval(t, tight, pairs("uniform-short", "least-active", "least-tokens", four)), "H11"); v.Status != Invalid {
 		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}
+
+func TestSignTestFloor(t *testing.T) {
+	for n, want := range map[int]float64{0: 1, 1: 1, 2: 0.5, 3: 0.25, 4: 0.125, 5: 0.0625, 6: 0.03125, 7: 0.015625, 8: 0.0078125, 10: 2.0 / 1024, 59: 2.0 / (1 << 59), 60: 0, 500: 0} {
+		if got := SignTestFloor(n); got != want {
+			t.Errorf("SignTestFloor(%d) = %v, want %v", n, got, want)
+		}
+	}
+	if NonZero([]float64{0, 1, -1, 0, 2}) != 3 || NonZero(nil) != 0 {
+		t.Error("NonZero")
+	}
+	if !ZeroSpread([]float64{3, 3, 3}) || !ZeroSpread([]float64{0}) || ZeroSpread([]float64{3, 3, 4}) || ZeroSpread(nil) {
+		t.Error("ZeroSpread")
+	}
+}
+
+// With n non-zero pairs the smallest p-value an exact sign test can give is 2/2^n, so at alpha = 0.05 five pairs
+// can never confirm a superiority claim, six can (0.03125), and with two confirmatory claims in the family
+// (Holm multiplies the smaller p by 2) seven are needed (0.0156 * 2 = 0.031; six give 0.0625).
+func TestTooFewPairsCannotConfirmWhateverTheEffect(t *testing.T) {
+	huge := func(n int) []float64 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = 0.4 + float64(i)/1000 // every pair improves by about 40%
+		}
+		return out
+	}
+	conf := `"confirm_min_effect":0.1,"refute_max_effect":0.05`
+	for n, want := range map[int]Status{5: Inconclusive, 6: Confirmed, 7: Confirmed} {
+		for _, extra := range []string{conf, cmpFields} { // exploratory and confirmatory (family of one)
+			pred := sup("H1", "mixed", "least-tokens", n, extra)
+			v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", huge(n))), "H1")
+			if v.Status != want {
+				t.Errorf("n=%d %q: %s (%s), want %s", n, extra, v.Status, reasons(v), want)
+			}
+			if v.Stats.PBootstrap > 0.001 || v.Stats.P != SignTestFloor(n) || v.Stats.NonZero != n {
+				t.Errorf("n=%d: bootstrap p is tiny but the p used is the floor: %+v", n, v.Stats)
+			}
+		}
+	}
+	// Two confirmatory claims: six pairs each is not enough, seven is.
+	for n, want := range map[int]Status{6: Inconclusive, 7: Confirmed} {
+		runs := append(pairs("mixed", "least-active", "least-tokens", huge(n)), pairs("burst", "least-active", "least-work", huge(n))...)
+		pred := sup("H1", "mixed", "least-tokens", n, cmpFields) + sup("H2", "burst", "least-work", n, cmpFields)
+		r := eval(t, pred, runs)
+		for _, id := range []string{"H1", "H2"} {
+			if v := status(t, r, id); v.Status != want {
+				t.Errorf("family of two, n=%d %s: %s (%s), want %s", n, id, v.Status, reasons(v), want)
+			}
+		}
+	}
+	// A pair with no change does not count: six pairs with one zero are five non-zero pairs.
+	z := huge(6)
+	z[0] = 0
+	v := status(t, eval(t, sup("H1", "mixed", "least-tokens", 6, conf), pairs("mixed", "least-active", "least-tokens", z)), "H1")
+	if v.Stats.NonZero != 5 || v.Status == Confirmed {
+		t.Errorf("%d non-zero, %s", v.Stats.NonZero, v.Status)
+	}
+	// The floor never lowers a larger bootstrap p-value.
+	effects := []float64{-0.5, -0.5, -0.5, 0.12, 0.13, 0.14, 0.15, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.22}
+	b := status(t, eval(t, sup("H1", "mixed", "least-tokens", 14, conf), pairs("mixed", "least-active", "least-tokens", effects)), "H1")
+	if b.Stats.P != b.Stats.PBootstrap || b.Stats.P < 0.025 {
+		t.Errorf("%+v", b.Stats)
+	}
+}
+
+func TestZeroSpreadIsNeverConfirmedOrRefuted(t *testing.T) {
+	same := func(e float64, n int) []float64 {
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = e
+		}
+		return out
+	}
+	conf := `"confirm_min_effect":0.1,"refute_max_effect":0.05`
+	for name, c := range map[string]struct {
+		pred    string
+		effects []float64
+	}{
+		"superiority, constant big gain":     {sup("H1", "mixed", "least-tokens", 10, conf), same(0.3, 10)},
+		"superiority, constant tiny gain":    {sup("H1", "mixed", "least-tokens", 10, conf), same(0.01, 10)},
+		"confirmatory, constant gain":        {sup("H1", "mixed", "least-tokens", 10, cmpFields), same(0.3, 10)},
+		"equivalence, identical (no change)": {block(fmt.Sprintf(`{"id":"H1","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":%s,"margin":0.05}`, seedList(10))), same(0, 10)},
+		"equivalence, constant large change": {block(fmt.Sprintf(`{"id":"H1","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":%s,"margin":0.05}`, seedList(10))), same(0.3, 10)},
+	} {
+		v := status(t, eval(t, c.pred, pairs("mixed", "least-active", "least-tokens", c.effects)), "H1")
+		if v.Status != Inconclusive || !strings.Contains(reasons(v), "degenerate: zero spread") {
+			t.Errorf("%s: %s (%s)", name, v.Status, reasons(v))
+		}
+	}
+	// One pair off by a hair is spread again, and the claim can be confirmed.
+	e := same(0.3, 10)
+	e[0] = 0.301
+	if v := status(t, eval(t, sup("H1", "mixed", "least-tokens", 10, conf), pairs("mixed", "least-active", "least-tokens", e)), "H1"); v.Status != Confirmed {
+		t.Errorf("%s %s", v.Status, reasons(v))
+	}
+	// A degenerate member keeps an all_of from being confirmed.
+	runs := pairs("mixed", "least-active", "least-tokens", same(0.3, 10))
+	pred := sup("P", "mixed", "least-tokens", 10, conf) + block(`{"id":"ALL","kind":"all_of","parts":["P"]}`)
+	if v := status(t, eval(t, pred, runs), "ALL"); v.Status != Inconclusive {
+		t.Errorf("%s", v.Status)
+	}
+}
+
+func TestFewDistinctSeedsWarnWithoutChangingTheVerdict(t *testing.T) {
+	// Three seeds, three repeats each (9 pairs): no warning. Two seeds: a warning, same kind of verdict.
+	build := func(seeds int) ([]report.Result, string) {
+		var runs []report.Result
+		var ss []string
+		for s := 1; s <= seeds; s++ {
+			ss = append(ss, fmt.Sprint(s))
+			for rep := 1; rep <= 9/seeds+1; rep++ {
+				runs = append(runs,
+					mkRun(runSpec{id: fmt.Sprintf("a%d-%d", s, rep), strategy: "least-active", workload: "mixed", seed: int64(s), rep: rep, p95: 100}),
+					mkRun(runSpec{id: fmt.Sprintf("b%d-%d", s, rep), strategy: "least-tokens", workload: "mixed", seed: int64(s), rep: rep, p95: 70 + float64(s*10+rep)/50}))
+			}
+		}
+		return runs, block(fmt.Sprintf(`{"id":"H1","kind":"superiority","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":[%s],"direction":"lower","confirm_min_effect":0.1,"refute_max_effect":0.05}`, strings.Join(ss, ",")))
+	}
+	for seeds, warn := range map[int]bool{1: true, 2: true, 3: false, 4: false} {
+		runs, pred := build(seeds)
+		r := eval(t, pred, runs)
+		v := status(t, r, "H1")
+		if v.Status != Confirmed {
+			t.Fatalf("%d seeds: %s %s", seeds, v.Status, reasons(v))
+		}
+		if (len(v.Warnings) == 1) != warn {
+			t.Errorf("%d seeds: warnings %v, want warning=%v", seeds, v.Warnings, warn)
+		}
+		var out bytes.Buffer
+		_ = r.Write(&out)
+		if strings.Contains(out.String(), "! warning:") != warn {
+			t.Errorf("%d seeds: the warning must be printed exactly when raised", seeds)
+		}
+	}
+}
+
+func TestAConfidenceIntervalWithLowerBoundExactlyZeroDoesNotExcludeZero(t *testing.T) {
+	// 4 pairs without change and 6 with a ~20% gain: the median is 20% but a resample can have a zero median
+	// with probability about 17%, so the lower end of the interval is exactly 0.
+	effects := []float64{0, 0, 0, 0, 0.2, 0.201, 0.202, 0.203, 0.204, 0.205}
+	v := status(t, eval(t, sup("H1", "mixed", "least-tokens", 10, `"confirm_min_effect":0.1,"refute_max_effect":0.05`), pairs("mixed", "least-active", "least-tokens", effects)), "H1")
+	if v.Stats.Lo != 0 || v.Stats.Effect < 0.1 {
+		t.Fatalf("fixture: %+v", v.Stats)
+	}
+	if v.Status != Inconclusive || !strings.Contains(reasons(v), "includes zero") {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}
+
+func TestEquivalenceRefuteMarginDefaultsToTheMargin(t *testing.T) {
+	pred := block(fmt.Sprintf(`{"id":"H2","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":%s,"margin":0.05}`, seedList(8)))
+	// An interval straddling the margin (about 4% to 6%) is neither inside it nor entirely outside it. With the
+	// default refute margin of 5% that is inconclusive; a refute margin of 0 would call it refuted.
+	straddle := []float64{0.04, 0.06, 0.045, 0.055, 0.05, 0.04, 0.06, 0.05}
+	if v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", straddle)), "H2"); v.Status != Inconclusive {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	// An explicit larger refute margin changes the outcome for entirely-outside data only if it is exceeded.
+	out := []float64{0.07, 0.08, 0.075, 0.07, 0.08, 0.075, 0.07, 0.08}
+	if v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", out)), "H2"); v.Status != Refuted {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+	wide := strings.Replace(pred, `"margin":0.05`, `"margin":0.05,"refute_margin":0.09`, 1)
+	if v := status(t, eval(t, wide, pairs("mixed", "least-active", "least-tokens", out)), "H2"); v.Status != Inconclusive {
+		t.Fatalf("%s %s", v.Status, reasons(v))
+	}
+}
+
+func TestTheDescriptiveTOSTUsesAlphaOverTwoAndEqualityIsNotEquivalence(t *testing.T) {
+	// Differences whose t-based TOST p-value lies between 0.025 and 0.05: equivalent at 0.05, not at 0.025, which
+	// is the level matching a 95% interval. The verdict's cross-check must use 0.025.
+	effects := []float64{0.01, -0.01, -0.02, 0, -0.03}
+	var margin float64
+	for m := 0.0240; m <= 0.0299; m += 0.0001 {
+		d := []float64{-0.01, 0.01, 0.02, 0, 0.03}
+		r, _ := TOST(d, m, 0.025)
+		if r.P > 0.03 && r.P < 0.045 {
+			margin = m
+			break
+		}
+	}
+	if margin == 0 {
+		t.Fatal("no margin found for the fixture")
+	}
+	pred := block(fmt.Sprintf(`{"id":"H2","kind":"equivalence","metric":"latency_p95","a":{"scheduler":"least-active","workload":"mixed"},"b":{"scheduler":"least-tokens","workload":"mixed"},"seeds":%s,"margin":%v}`, seedList(5), margin))
+	v := status(t, eval(t, pred, pairs("mixed", "least-active", "least-tokens", effects)), "H2")
+	if v.Stats.TOST == nil || v.Stats.TOST.P <= 0.025 || v.Stats.TOST.P >= 0.05 || v.Stats.TOST.Equivalent {
+		t.Fatalf("alpha 0.025 must be used: %+v", v.Stats.TOST)
+	}
+	// Equality with alpha is not equivalence (P < alpha, strictly).
+	r, _ := TOST([]float64{-0.01, 0.01, 0.02, 0, 0.03}, 0.03, 0.025)
+	if eq, _ := TOST([]float64{-0.01, 0.01, 0.02, 0, 0.03}, 0.03, r.P); eq.Equivalent {
+		t.Error("P equal to alpha must not be equivalent")
+	}
+}
+
+func TestTunedValueWindowIsInclusiveToTheNanosecond(t *testing.T) {
+	pred := sup("H3", "heavy-tail", "least-tokens", 10, cmpFields)
+	const predictionsFrozen, tunedFrozen = "2026-11-02T10:00:00Z", "2026-11-05T10:00:00Z"
+	try := func(tunedAt string) error {
+		b := []byte(`{"tuned_at":"` + tunedAt + `","values":{"input_weight":0.3}}`)
+		f := freezeFor(pred)
+		f.FrozenAt = predictionsFrozen
+		f.TunedValuesSHA256, f.TunedValuesFrozenAt = shaHex(b), tunedFrozen
+		_, err := Evaluate(Inputs{Predictions: []byte(pred), Freeze: f, Tuned: b})
+		return err
+	}
+	for at, ok := range map[string]bool{
+		"2026-11-02T09:59:59.999999999Z": false, // 1 ns before the predictions freeze
+		"2026-11-02T10:00:00Z":           true,
+		"2026-11-02T10:00:00.000000001Z": true,
+		"2026-11-05T09:59:59.999999999Z": true,
+		"2026-11-05T10:00:00Z":           true,  // exactly at the tuned-values freeze
+		"2026-11-05T10:00:00.000000001Z": false, // 1 ns after it
+	} {
+		err := try(at)
+		if ok && err != nil {
+			t.Errorf("tuned_at %s must be accepted: %v", at, err)
+		}
+		if !ok && err == nil {
+			t.Errorf("tuned_at %s must be refused", at)
+		}
 	}
 }

@@ -24,10 +24,20 @@
 //
 // P-value for H0 "the median is zero": two-sided, from the same replicates,
 //
-//	p = min(1, 2 * min( (1 + #{rep <= 0}) / (B + 1), (1 + #{rep >= 0}) / (B + 1) ))
+//	p_boot = min(1, 2 * min( (1 + #{rep <= 0}) / (B + 1), (1 + #{rep >= 0}) / (B + 1) ))
 //
-// The added 1 keeps p above zero (a bootstrap cannot show p = 0). With one test, p < 0.05 holds exactly when
-// the 95% interval excludes zero, up to the discreteness of B.
+// The added 1 keeps p above zero (a bootstrap cannot show p = 0). A bootstrap p-value is anti-conservative at
+// small n: five all-positive pairs give p_boot = 2/(B+1), about 0.0002, although the exact sign test on five pairs
+// cannot give less than 2/2^5 = 0.0625. The p-value a verdict uses is therefore
+//
+//	p = max( p_boot, 2 / 2^n )          (n = number of non-zero pairs; capped at 1)
+//
+// so it is never smaller than what an exact sign test could support. It is the value Holm adjusts and the value
+// confirmation is judged on (confirmation also needs the 95% interval to exclude zero, and the median to reach
+// the threshold). The floor is 0.0625 for n = 5, 0.03125 for n = 6, 0.0156 for n = 7, 0.0078 for n = 8.
+// Consequence, stated plainly: with alpha = 0.05 a superiority claim can never be CONFIRMED from 5 pairs, needs at
+// least 6 non-zero pairs on its own, and at least 7 when two confirmatory claims share the Holm family (2 * 0.0156 =
+// 0.031; with 6 pairs 2 * 0.03125 = 0.0625). Refutation and equivalence do not use the p-value and are unaffected.
 //
 // Holm: for m confirmatory p-values sorted ascending p_(1) <= ... <= p_(m), the adjusted values are
 //
@@ -43,6 +53,16 @@
 // is the two one-sided tests at alpha = 0.025 each. The package also computes the parametric t-based TOST
 // (two one-sided t-tests on the mean of the r_i, same margin, alpha = 0.025) and prints it as a descriptive
 // cross-check; it never decides a verdict.
+//
+// Degenerate data: if every pair has exactly the same value (zero spread: identical repeats, a constant
+// improvement) the bootstrap interval has no width and the median is exact by construction. Such a cell is
+// INCONCLUSIVE with the reason "degenerate: zero spread", for superiority and equivalence alike, never CONFIRMED
+// and never REFUTED.
+//
+// Independence: pairs are formed by (seed, repeat index). Repeats of one deterministic simulated seed are not
+// independent samples of the workload: they share the request stream, and only the timing differs. A cell backed
+// by fewer than 3 distinct seeds carries a warning (the verdict does not change); the registered seed list, not
+// the number of repeats, is what makes a cell evidence about a workload.
 //
 // What the verdicts mean: a statement about the simulated worlds and workloads in the result files, under the
 // seeds in the predictions. Nothing here supports a claim about real hardware.

@@ -24,6 +24,8 @@ const (
 	// MaxResamples bounds a hypothesis's bootstrap size (memory and time).
 	MaxResamples = 1_000_000
 	minResamples = 1000
+	// MinDistinctSeeds is the number of distinct seeds below which a verdict carries a warning.
+	MinDistinctSeeds = 3
 )
 
 // ErrNonFinite is returned for NaN or infinite data.
@@ -162,6 +164,41 @@ func BootstrapMedian(xs []float64, level float64, resamples int, seed uint64) (B
 	d := float64(resamples + 1)
 	p := 2 * math.Min(float64(le+1)/d, float64(ge+1)/d)
 	return Bootstrap{Estimate: est, Interval: Interval{Lo: lo, Hi: hi, Level: level}, P: math.Min(1, p), Resamples: resamples}, nil
+}
+
+// SignTestFloor is the smallest two-sided p-value an exact sign test can give with n non-zero pairs: 2 / 2^n,
+// capped at 1 (n = 0 gives 1). A bootstrap p-value can be far smaller (all-positive data gives 2/(B+1)), which at
+// small n claims more than the data can support, so the verdict uses max(bootstrap p, SignTestFloor). It is 0.0625
+// for n = 5, 0.03125 for n = 6, 0.0156 for n = 7 and 0.0078 for n = 8.
+func SignTestFloor(n int) float64 {
+	if n <= 1 {
+		return 1
+	}
+	if n >= 60 {
+		return 0
+	}
+	return math.Min(1, 2/float64(uint64(1)<<uint(n)))
+}
+
+// NonZero counts the values that are not zero.
+func NonZero(xs []float64) int {
+	n := 0
+	for _, x := range xs {
+		if x != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// ZeroSpread reports whether xs holds at least one value and all of them are equal.
+func ZeroSpread(xs []float64) bool {
+	for _, x := range xs {
+		if x != xs[0] {
+			return false
+		}
+	}
+	return len(xs) > 0
 }
 
 // InsideMargin reports whether the interval lies entirely inside (-margin, +margin); the bounds themselves

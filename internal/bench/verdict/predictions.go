@@ -261,8 +261,8 @@ func (h Hypothesis) validate() error {
 			return errors.New("invalid_margin must be in [margin, 10]")
 		}
 	case KindTunedRange:
-		if h.ValueKey == "" || h.Min == nil || h.Max == nil || !fin(*h.Min) || !fin(*h.Max) || *h.Min > *h.Max {
-			return errors.New("a tuned_range needs value_key and finite min <= max")
+		if h.ValueKey == "" || h.Min == nil || h.Max == nil || !fin(*h.Min) || !fin(*h.Max) || *h.Min >= *h.Max {
+			return errors.New("a tuned_range needs value_key and finite min < max (a point is not a range)")
 		}
 	case KindAllOf:
 		if len(h.Parts) == 0 {
