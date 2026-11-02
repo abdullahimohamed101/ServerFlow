@@ -109,4 +109,4 @@ field and type only; nothing fills it yet and no choice changes. The strategies 
 `least-work` is implemented and no longer refused at startup; `least-tokens` is added. Both are pure functions of the snapshot copy (`Observed`, filled by the router when the ledger overlay is on), start from
 `eligible()`, read no clock and use the shared rotor for ties, so the strategies stay pure and the `Scheduler` interface and the section 15 invariants are unchanged. They need `scheduler.load_overlay: ledger`: choosing
 either with the default `max` is a startup error. The default strategy (`round-robin`) and the default overlay (`max(reported, local)`) are unchanged, and no existing strategy's choice changes. `latency-aware` remains
-to come (the optional PR C2). Evidence for or against the new strategies is simulator-validated at best and is produced only by PR J.
+to come (the optional PR C2). Evidence for or against the new strategies is simulator-validated at best and was produced by PR J (ADR-022).
