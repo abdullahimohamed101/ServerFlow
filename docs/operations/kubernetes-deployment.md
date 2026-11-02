@@ -36,8 +36,8 @@ failures, therefore no outage".
 **Negative control.** The same procedure runs again after the gateway is configured with `SERVERFLOW_RESILIENCE_MODE=off` and
 `SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=0s` (the "feature off" path of Phase 15). It is expected to fail requests. If it fails none,
 the test could not have seen an outage, and the command fails with "the negative control produced no failure: the test cannot see the outage".
-The original gateway objects are applied again at the end (an exit trap, also on error or interrupt), the extra ConfigMaps are deleted and the
-restoring rollout is awaited. Reports, a per-request log (`unix ms,client,stream,keep-alive,status,class,latency ms`) and the pod observations
+The original gateway objects are applied again at the end (an exit trap, also on error or interrupt; signals are ignored while it restores), the extra ConfigMaps are deleted and the
+restoring rollout is awaited. The restore is silent and the verdict line is printed after it, so it is the last line; a restore that fails turns even a passing run into `roll-test: FAIL` with a non-zero exit status, and an interrupt exits 130 or 143. After each rollout the command checks that every gateway pod that existed before is gone and that as many exist now; a rollout that replaced nothing stops the run. The negative control passes only if the server failed requests *during the rollouts* (a failure in the baseline, or a request the generator could not build, does not count). Reports, a per-request log (`unix ms,client,stream,keep-alive,status,class,latency ms`) and the pod observations
 stay in `.dev/k8s/roll/`; `make k8s-reset` removes them.
 
 **Per replaced pod.** The harness polls the gateway pods once a second and records every pod with a `deletionTimestamp`. SIGTERM was sent at

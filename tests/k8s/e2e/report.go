@@ -29,14 +29,18 @@ type PhaseSummary struct {
 
 // Summary is the result of a run.
 type Summary struct {
-	Phases           []PhaseSummary `json:"phases"`
-	Requests         int            `json:"requests"`
-	Failures         int            `json:"failures"`
-	Classes          map[string]int `json:"failures_by_class"`
-	RolloutRequests  int            `json:"requests_during_rollouts"`
-	RolloutFailures  int            `json:"failures_during_rollouts"`
-	StreamRequests   int            `json:"stream_requests"`
-	KeepAliveRequest int            `json:"keep_alive_requests"`
+	Phases          []PhaseSummary `json:"phases"`
+	Requests        int            `json:"requests"`
+	Failures        int            `json:"failures"`
+	Classes         map[string]int `json:"failures_by_class"`
+	RolloutRequests int            `json:"requests_during_rollouts"`
+	RolloutFailures int            `json:"failures_during_rollouts"`
+	// GeneratorErrors are failures of the generator itself (a request it could not build), not observations of the server;
+	// RolloutGeneratorErrors are those inside the rollout phases. The negative control does not count them.
+	GeneratorErrors        int `json:"generator_errors"`
+	RolloutGeneratorErrors int `json:"generator_errors_during_rollouts"`
+	StreamRequests         int `json:"stream_requests"`
+	KeepAliveRequest       int `json:"keep_alive_requests"`
 }
 
 func isRollout(name string) bool { return strings.HasPrefix(name, "roll") }
@@ -74,8 +78,14 @@ func Summarize(phases []Phase, outcomes []Outcome, end time.Time) Summary {
 			ps.Classes[o.Class]++
 			s.Failures++
 			s.Classes[o.Class]++
+			if o.Class == ClassBadRequest {
+				s.GeneratorErrors++
+			}
 			if roll {
 				s.RolloutFailures++
+				if o.Class == ClassBadRequest {
+					s.RolloutGeneratorErrors++
+				}
 			}
 		}
 	}
@@ -93,12 +103,16 @@ func RuleOfThree(n int) float64 {
 // Verdict applies D20. expectFailures is the negative control: it passes only when the outage was seen.
 func Verdict(s Summary, minRollout int, expectFailures bool) (pass bool, why string) {
 	if expectFailures {
-		if s.Failures > 0 {
-			return true, fmt.Sprintf("the negative control produced %d failures: the test can see the outage", s.Failures)
+		// The outage must show during the rollouts, and as something the server did: a request the generator could not even
+		// build, or a failure in the baseline, is not the outage.
+		if seen := s.RolloutFailures - s.RolloutGeneratorErrors; seen > 0 {
+			return true, fmt.Sprintf("the negative control produced %d failures during the rollouts: the test can see the outage", seen)
 		}
-		return false, "the negative control produced no failure: the test cannot see the outage"
+		return false, "the negative control produced no server-side failure during the rollouts: the test cannot see the outage"
 	}
 	switch {
+	case s.GeneratorErrors > 0:
+		return false, fmt.Sprintf("the load generator failed to build %d requests", s.GeneratorErrors)
 	case s.Failures > 0:
 		return false, fmt.Sprintf("%d of %d requests failed", s.Failures, s.Requests)
 	case s.RolloutRequests < minRollout:

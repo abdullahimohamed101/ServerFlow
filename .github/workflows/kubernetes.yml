@@ -110,7 +110,8 @@ jobs:
         run: |
           set -o pipefail
           scripts/k8s-up.sh roll-test 2>&1 | tee "$RUNNER_TEMP/k8s-roll.log"
-          tail -1 "$RUNNER_TEMP/k8s-roll.log" | grep -Eq '^roll-test: PASS'
+          # The verdict is the last roll-test line (the script prints it after restoring the gateway); anything after it is ignored.
+          grep -E '^roll-test: ' "$RUNNER_TEMP/k8s-roll.log" | tail -1 | grep -q '^roll-test: PASS'
       - name: Cluster state on failure (secret-free by construction, and checked)
         if: failure()
         run: |

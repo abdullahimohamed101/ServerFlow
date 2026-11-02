@@ -153,8 +153,8 @@ func TestRollTestProcedure(t *testing.T) {
 		`--clients 24`, `ROLL_MIN_REQUESTS=3000`, `--url "$GATEWAY_URL"`, `--key-file "$K8S_DIR/api_key"`, `ROLL_PHASE_SECONDS:-20`,
 		`roll_step roll1`, `roll_step roll2`, `printf 'mark after\n'`, `--expect "$expect"`,
 		`roll_scenario main normal none`, `roll_scenario control control failures`,
-		`rollout status deployment/gateway --timeout=300s`, `trap roll_cleanup EXIT INT TERM`, `ROLL_DIRTY=1`,
-		`roll_restore`, `roll-test: PASS`, `the test cannot see the outage`,
+		`rollout status deployment/gateway --timeout=300s`, `trap roll_cleanup EXIT`, `ROLL_DIRTY=1`,
+		`roll_restore`, `ROLL_VERDICT='roll-test: PASS`, `the test cannot see the outage`, `did not replace every gateway pod`,
 	} {
 		if !strings.Contains(r, want) {
 			t.Errorf("the roll-test section lacks %q", want)
@@ -201,7 +201,7 @@ func TestRollTestCIWiring(t *testing.T) {
 	k := read(t, ".github/workflows/kubernetes.yml")
 	for _, want := range []string{
 		"scripts/k8s-up.sh roll-test", "schedule | workflow_dispatch) run=true", "deploy/kubernetes/base/gateway", "internal/gateway/resilience",
-		"steps.roll.outputs.run == 'true'", "grep -Eq '^roll-test: PASS'", "fetch-depth: 2", `- "tests/k8s/e2e/**"`, "actions/setup-go@",
+		"steps.roll.outputs.run == 'true'", "grep -E '^roll-test: ' \"$RUNNER_TEMP/k8s-roll.log\" | tail -1 | grep -q '^roll-test: PASS'", "fetch-depth: 2", `- "tests/k8s/e2e/**"`, "actions/setup-go@",
 	} {
 		if !strings.Contains(k, want) {
 			t.Errorf("kubernetes.yml lacks %q", want)

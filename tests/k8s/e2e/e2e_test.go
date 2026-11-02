@@ -446,3 +446,34 @@ func TestMainRefusesBadInput(t *testing.T) {
 		t.Errorf("a control run without failures must fail: exit %d", code)
 	}
 }
+
+// TestControlNeedsAnOutageInTheRolloutsFromTheServer: the control passes only for failures inside the rollout phases that are
+// not the generator's own; a baseline failure, or a request that could not be built, cannot make it pass.
+func TestControlNeedsAnOutageInTheRolloutsFromTheServer(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	phases := []Phase{{"baseline", at(0)}, {"roll1", at(20)}, {"roll2", at(40)}, {"after", at(60)}}
+	for _, tc := range []struct {
+		name string
+		out  []Outcome
+		pass bool
+	}{
+		{"no failure", []Outcome{{Start: at(25)}}, false},
+		{"failure only in the baseline", []Outcome{{Start: at(5), Class: ClassRefused}, {Start: at(25)}}, false},
+		{"failure only after the rollouts", []Outcome{{Start: at(65), Class: ClassRefused}}, false},
+		{"only an unbuildable request in a rollout", []Outcome{{Start: at(25), Class: ClassBadRequest}}, false},
+		{"unbuildable request and a baseline failure", []Outcome{{Start: at(5), Class: ClassStreamCut}, {Start: at(45), Class: ClassBadRequest}}, false},
+		{"a server failure in roll1", []Outcome{{Start: at(25), Class: "http_503_no_available_workers"}}, true},
+		{"a server failure in roll2 next to a generator error", []Outcome{{Start: at(45), Class: ClassBadRequest}, {Start: at(46), Class: ClassStreamCut}}, true},
+	} {
+		s := Summarize(phases, tc.out, at(80))
+		if pass, why := Verdict(s, 3000, true); pass != tc.pass {
+			t.Errorf("%s: pass=%v (%s), want %v", tc.name, pass, why, tc.pass)
+		}
+	}
+	// A request the generator could not build also fails the real run.
+	s := Summarize(phases, []Outcome{{Start: at(25), Class: ClassBadRequest}}, at(80))
+	if pass, _ := Verdict(s, 0, false); pass {
+		t.Error("a generator error passed the real run")
+	}
+}

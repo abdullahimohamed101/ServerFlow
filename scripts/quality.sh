@@ -331,6 +331,8 @@ k8s() {
     TestK11JudgesTheTrace TestObservabilityIsPartOfUp TestGrafanaIsLockedDown \
     TestNetworkPolicyIsDefaultDenyAndEqualsTheTraffic TestNetworkPolicyCatchesMutations TestProbePodIsHardenedAndOutsideTheAllowList TestK15JudgesEnforcement TestNetpolProbeRefusesOddInput \
     TestRollVariantsAreTheGatewayWithOneEditEach TestRollTestProcedure TestRollTestCIWiring \
+    TestRollTestVerdictIsTheLastLineAfterTheRestore TestRollTestFailedRestoreFailsEvenAfterAPass TestRollTestRolloutThatReplacesNothingCannotPass \
+    TestRollTestSignalsAreHandledAndTheRestoreIsProtected TestControlNeedsAnOutageInTheRolloutsFromTheServer \
     TestClassification TestTransportFailures TestRequestsAreNeverRetried TestKeyIsSentAndNeverReported TestSummaryPhasesAndVerdict TestRuleOfThree \
     TestPodObservations TestCheckLoopback TestRunEndToEnd TestRunSeesAnOutage TestMainRefusesBadInput; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
