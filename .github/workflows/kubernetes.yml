@@ -3,7 +3,7 @@ name: Kubernetes
 # Phase 17: the kind cluster. Advisory (not in the owner's required-check list, docs/development/ci.md, D24): it creates a real
 # single-node kind cluster on the runner, builds the six ServerFlow images and loads them, deploys the whole system (data
 # tier, control plane, gateways, workers with agents, usage consumer, Prometheus, Grafana, Jaeger) under Pod Security `restricted`, bootstraps tenants and
-# keys, runs the smoke checks K1-K14 and D2-D7 and the audit. It has not run on GitHub before the pull request
+# keys, runs the smoke checks K1-K15 and D2-D7 and the audit. It has not run on GitHub before the pull request
 # that adds it; until a run is green its result is unknown (docs/operations/kubernetes-deployment.md, "What is verified").
 # The static checks are the k8s-static job in ci.yml, which runs on every pull request.
 # Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
@@ -72,7 +72,7 @@ jobs:
           start=$(date +%s)
           scripts/k8s-up.sh up
           echo "k8s-up took $(( $(date +%s) - start )) s"
-      - name: Smoke checks K1-K14, D2-D7 (all must pass, none skipped)
+      - name: Smoke checks K1-K15, D2-D7 (all must pass, none skipped)
         run: |
           set -o pipefail
           scripts/k8s-up.sh smoke 2>&1 | tee "$RUNNER_TEMP/k8s-smoke.log"
