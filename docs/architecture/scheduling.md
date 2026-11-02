@@ -178,8 +178,9 @@ gateway's environment in a compose override file (the cost and signals keys belo
 - A worker the gateway cannot track (beyond 4,096) is neither favoured for its empty ledger nor exiled: it scores the median of the others.
 - Missing or invalid signals never exile a worker and never choose an ineligible one: see ADR-022 for the exact fallbacks. `scheduler_signal_fallbacks_total{model,reason}` and
   `scheduler_predicted_wait_seconds{model}` exist only for these two strategies.
-- **What is not shown.** These are simulator-validated, not hardware-validated: no experiment has compared them with the others yet (PR J), the mock worker has no batching (its tokens per second grows with its load), the
+- **What is not shown.** These are simulator-validated, not hardware-validated: the mock worker has no batching (its tokens per second grows with its load), the
   cost of a request is an upper-bound estimate, and with several gateways each sees only its own requests.
+- **What the experiments showed** (Phase 14 PR J, pre-registered, 6 to 8 seeds per cell on one machine; `docs/benchmarks/phase-14-results.md`, ADR-022): with identical workers the two strategies matched `least-active` (CONFIRMED). In a heterogeneous simulated fleet (W2, `mixed`, 14 clients) `least-work` cut p95 latency against `round-robin` by a median 51% (CONFIRMED, threshold 20%) and against `least-tokens` by a median 13% (INCONCLUSIVE: below the registered 15%). `least-tokens` against `least-active` on a heavy-tail workload in a homogeneous fleet was INCONCLUSIVE (median +0.2%, interval -4.6% to +11.2%): no benefit is claimed there. The tuned `input_weight` of 0.3 gave no demonstrated held-out gain (INCONCLUSIVE). None of this is a hardware result.
 
 ## Operating notes
 

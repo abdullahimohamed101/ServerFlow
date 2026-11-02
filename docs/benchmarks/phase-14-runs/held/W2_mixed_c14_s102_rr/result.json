@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "run_id": "run_001",
+  "metadata": {
+    "date": "2026-11-02T02:56:13Z",
+    "harness_version": "1",
+    "go_version": "go1.27.1",
+    "machine": "darwin/arm64, 15 CPUs, Apple M5 Pro",
+    "git_commit": "74a3428f0482e4104ba11d8c2184820f599af8da",
+    "git_tree": "clean",
+    "target": "embedded",
+    "target_host": "loopback",
+    "scheduler": "round-robin",
+    "scheduler_source": "embedded",
+    "models": [
+      "qwen-7b"
+    ],
+    "worker_count": 3,
+    "gpu_type": "none (mock workers)",
+    "mode": "closed",
+    "concurrency": 14,
+    "rate_per_second": 0,
+    "max_in_flight": 0,
+    "duration_seconds": 60,
+    "warmup_seconds": 5,
+    "seed": 102,
+    "workload": "mixed",
+    "stream_ratio": 0.5,
+    "plan_digest": "783dff06bd6ec30f",
+    "prompt_distribution": [
+      {
+        "name": "short",
+        "weight": 0.6,
+        "input_tokens_min": 100,
+        "input_tokens_max": 300,
+        "max_tokens_min": 50,
+        "max_tokens_max": 150
+      },
+      {
+        "name": "medium",
+        "weight": 0.3,
+        "input_tokens_min": 500,
+        "input_tokens_max": 1500,
+        "max_tokens_min": 200,
+        "max_tokens_max": 500
+      },
+      {
+        "name": "long",
+        "weight": 0.1,
+        "input_tokens_min": 2000,
+        "input_tokens_max": 8000,
+        "max_tokens_min": 500,
+        "max_tokens_max": 1500
+      }
+    ],
+    "repeat": {
+      "index": 1,
+      "of": 1,
+      "group": "run_001-1793588173"
+    },
+    "resilience": "on",
+    "experiment": {
+      "strategy": "round-robin",
+      "world": "sim:fast,medium,slow",
+      "parameter_hash": "f3cc2964f344d7c35598b41ba7465c2141ec0ef0b91fde08d7cca6889bcd497c",
+      "options": {
+        "load_overlay": "max",
+        "output_fraction": 1,
+        "input_weight": 1,
+        "capacity_halflife_ms": 60000,
+        "capacity_floor": 0.25,
+        "upstream_header_timeout_ms": 120000
+      }
+    },
+    "cluster": {
+      "worker_profile": "identical",
+      "heartbeat_interval_ms": 1000,
+      "gateway_registry_refresh_ms": 100,
+      "workers": [
+        {
+          "id": "worker-01",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128,
+          "sim_profile": "fast",
+          "sim_params_hash": "c94779ef15a7a78a21f80551e2bb224d1aac85c79eac622497608224b65d0121"
+        },
+        {
+          "id": "worker-02",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128,
+          "sim_profile": "medium",
+          "sim_params_hash": "50f7916f62b4c2e46b058a5c08fb4cd11eb777a1b5f5a6f540484c26f719ea32"
+        },
+        {
+          "id": "worker-03",
+          "model": "qwen-7b",
+          "tokens_per_second": 1000,
+          "ttft_ms": 20,
+          "max_concurrency": 8,
+          "queue_size": 128,
+          "sim_profile": "slow",
+          "sim_params_hash": "bc381ba1eee8fecc697b973572b7b5841b7d87616b0987c5df1d4ed9d9eee62b"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "sent": 91,
+    "succeeded": 91,
+    "failed": 0,
+    "warmup_excluded": 24,
+    "retried": 0,
+    "status_classes": {
+      "2xx": 91
+    },
+    "error_classes": {},
+    "latency_ms": {
+      "count": 91,
+      "min": 535.049417,
+      "mean": 10207.777063153848,
+      "p50": 3743.67075,
+      "p95": 32426.022875,
+      "p99": 64951.694916,
+      "max": 64951.694916
+    },
+    "ttft_ms": {
+      "count": 45,
+      "min": 13.883583,
+      "mean": 1467.4270045333335,
+      "p50": 64.454333,
+      "p95": 9060.724542,
+      "p99": 27267.61625,
+      "max": 27267.61625
+    },
+    "input_tokens": 95693,
+    "output_tokens": 26659,
+    "usage_requests": 46,
+    "estimated_requests": 45,
+    "window_seconds": 60,
+    "span_seconds": 107.047962583,
+    "completed_in_window": 91,
+    "warmup_completed_in_window": 14,
+    "requests_per_second": 1.5166666666666666,
+    "input_tokens_per_second": 1188.4,
+    "output_tokens_per_second": 376.5,
+    "requests_per_second_with_tail": 0.8500862398893658,
+    "input_tokens_per_second_with_tail": 893.9264016893746,
+    "output_tokens_per_second_with_tail": 249.0379018594572,
+    "error_rate": 0
+  },
+  "queue": {
+    "samples": 240,
+    "avg_total_queue_depth": 1.6833333333333333,
+    "p95_total_queue_depth": 6,
+    "max_total_queue_depth": 6,
+    "avg_total_active_requests": 12.316666666666666,
+    "gpu_utilization_mean": 51.31944444444444,
+    "gpu_utilization_max": 100,
+    "workers": [
+      {
+        "id": "worker-01",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0,
+        "mean_active_requests": 1.5833333333333333,
+        "samples": 240
+      },
+      {
+        "id": "worker-02",
+        "model": "qwen-7b",
+        "mean_queue_depth": 0.016666666666666666,
+        "mean_active_requests": 5.275,
+        "samples": 240
+      },
+      {
+        "id": "worker-03",
+        "model": "qwen-7b",
+        "mean_queue_depth": 1.6666666666666667,
+        "mean_active_requests": 5.458333333333333,
+        "samples": 240
+      }
+    ]
+  },
+  "workers": [
+    {
+      "id": "worker-01",
+      "model": "qwen-7b",
+      "completed": 37,
+      "mean_queue_depth": 0,
+      "mean_active_requests": 1.5833333333333333
+    },
+    {
+      "id": "worker-02",
+      "model": "qwen-7b",
+      "completed": 38,
+      "mean_queue_depth": 0.016666666666666666,
+      "mean_active_requests": 5.275
+    },
+    {
+      "id": "worker-03",
+      "model": "qwen-7b",
+      "completed": 30,
+      "mean_queue_depth": 1.6666666666666667,
+      "mean_active_requests": 5.458333333333333
+    }
+  ],
+  "imbalance": {
+    "request_jain": 0.9897656881228117,
+    "request_jain_partial": false,
+    "request_jain_by_model": {
+      "qwen-7b": 0.9897656881228117
+    },
+    "queue_jain": 0.3399993333999933
+  },
+  "gpu_utilization": 51.31944444444444,
+  "valid": true,
+  "invalid_reasons": [],
+  "warnings": [],
+  "stats_missing": {},
+  "timings": {
+    "prerun_seconds": 0.000016917,
+    "boot_seconds": 0.613403625,
+    "warmup_seconds": 5,
+    "window_seconds": 60,
+    "drain_seconds": 47.048226833,
+    "stats_seconds": 0.000679333,
+    "close_seconds": 0.0004085,
+    "wall_clock_seconds": 112.670673,
+    "monotonic_seconds": 112.670595709
+  },
+  "not_measured": {},
+  "sample_polls_failed": 0,
+  "samples_dropped": 0,
+  "notes": [
+    "Per-worker completed counts start when warm-up ends, so the 14 warm-up requests that finished after that are included in them.",
+    "Closed-loop clients wait for each response before sending the next, so a slow server also slows the offered load; use --rate (open loop) to offer a fixed load whatever the server does.",
+    "Streamed token counts are estimated from chunks (the gateway does not request usage for streams); non-streamed counts come from the response usage."
+  ]
+}
