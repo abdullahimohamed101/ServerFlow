@@ -1036,7 +1036,9 @@ func TestSmokeChecksAndScriptHygiene(t *testing.T) {
 			t.Errorf("%sa bearer credential on a command line: %s", where, code)
 		}
 		// Every wait is bounded: no loop without a deadline check.
-		if strings.Contains(code, "sleep ") && !strings.Contains(code, "sleep 1") && !strings.Contains(code, "sleep 2") {
+		// (The roll-test's fixed pauses, a validated phase length and 5 s of settling, are bounded by construction.)
+		if strings.Contains(code, "sleep ") && !strings.Contains(code, "sleep 1") && !strings.Contains(code, "sleep 2") &&
+			code != `sleep "$ROLL_PHASE_SECONDS"` && code != "sleep 5" {
 			t.Errorf("%sunexpected sleep: %s", where, code)
 		}
 	}

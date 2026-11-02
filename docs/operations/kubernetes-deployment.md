@@ -1,9 +1,92 @@
 # Kubernetes deployment (Phase 17)
 
-Status: **draft, extended by PR 5 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
+Status: **draft, extended by PR 6 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
 the core system (control plane, gateway, workers, usage consumer) exist, PR 4 added Prometheus, Grafana and Jaeger, and PR 5 adds NetworkPolicy
-(default deny in both directions plus the allow rules below, proved by smoke check K15). The rolling-update measurement (PR 6) is not built. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
+(default deny in both directions plus the allow rules below, proved by smoke check K15). PR 6 adds the rolling-update measurement with its negative control (`make k8s-roll-test`, section "Rolling update and the drain timeline"); it has not run on a cluster yet. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
 holds the PR 3 and PR 4 sections meanwhile; ADR-022 is Phase 14's scheduler record, so this record is ADR-023).
+
+## Rolling update and the drain timeline (PR 6)
+
+`make k8s-roll-test` (`scripts/k8s-up.sh roll-test`) answers "do clients notice a gateway rollout?" with a measurement and a control,
+not with the absence of an error message. It needs the cluster of `make k8s-up` (the smoke is not rerun; the command waits for every
+pod to be Ready with zero restarts and for the gateway to serve `mock-model`) and Go on the host (it builds `tests/k8s/e2e`).
+
+**The load.** 24 closed-loop clients (each sends its next request when its last one ends; after a failure it pauses 50 ms so that a
+refusing gateway is not hammered) call `http://127.0.0.1:28080` (kind's port mapping, node, kube-proxy, pod: the whole path) with the key of
+the `dev` tenant, read from its 0600 file by the load generator and never printed. Half the clients keep their connection alive, half open a
+connection per request, and every client alternates non-streaming and streaming requests. Only the standard library HTTP client is used.
+There are no client retries: each request is sent once, and the transport's own replay of a request on a fresh connection is disabled.
+Every request is judged completely: a non-2xx status is a failure of class `http_<status>_<error code>`; a stream must carry well-formed
+server-sent events of the OpenAI shape and end with `[DONE]` (a connection that breaks or ends before it is `stream_truncated`; a line that is
+no SSE field, a payload that is not JSON, an event without `choices` or an event after `[DONE]` is `sse_malformed`; an error event is
+`stream_error_<code>`); a non-streaming body must be complete JSON with a choice (`body_truncated`, `body_malformed`); transport failures are
+`connection_refused`, `connection_reset`, `connection_closed` (EOF before any response), `timeout`, `transport_other`.
+
+**The procedure** (the phase length is 20 s; `ROLL_PHASE_SECONDS` shortens it for debugging, which makes the pass criterion unlikely to hold):
+baseline 20 s; then rollouts that alternate two kinds of change, starting with the ConfigMap (a new generated name, so a new hash, and `GOMEMLIMIT`
+100MiB to 99MiB) and then the pod template annotation `serverflow.dev/image-tag` (an annotation change stands in for a new image tag, because no
+second image is built). Each is applied from the repository's own render with that one edit, `kubectl rollout status` is awaited, and every replaced
+pod must be gone and replaced by a new one. **The rollouts continue until at least 3000 requests were made during them**, at least two and at most
+`ROLL_MAX_ROLLOUTS` (6). D20 of the plan said "twice"; the first CI run measured about 38 requests/s (the mock workers, 24 clients, each rollout
+about 28 s), so two rollouts made 2123 requests, not 3000. The bound is not lowered: the rollouts go on, and a run that hits the cap short of 3000 fails
+saying so. The load continues 20 s after the last rollout. The report gives, per phase and in total, the requests, the failures by class, the number of
+rollouts and gateway pods replaced, the durations of every rollout (to `rollout status`, and until the last old pod disappeared), the load generator's
+throughput (overall and during the rollouts, so a shortfall is visible), and the rule-of-three bound: with no failure in n requests the true failure
+rate is below 3/n at 95 % confidence (3000 requests: 0.1 %), which is printed instead of "no failures, therefore no outage".
+
+**Pass** = zero failed requests in any phase and at least 3000 requests during the rollouts.
+
+**Negative control.** The same procedure runs again with exactly one difference, `SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=0s`, and it
+continues rolling (same cap) until a failure a missing drain explains has been seen. Why this control and not "resilience off" (the plan's first idea):
+the first CI run, with resilience off, produced 1551 failures of which 1546 were `http_503_no_capacity`, 867 of them in the baseline before any rollout.
+Without the queue, 24 clients exceed what three mock workers accept, and the gateway rejects regardless of any rollout; that is a capacity effect and
+would make a control pass for the wrong reason. With resilience on and the grace at 0 the queue, the admission limits and the capacity are those of the real
+run. What the grace changes is visible in `internal/gateway/server.go`: on SIGTERM the gateway sets `draining` (`/readyz` 503, `Connection: close`), and
+with a grace it keeps the listener open for that long while kube-proxy converges; with the grace 0 it closes the listener at once. Requests that the
+node still routes to the terminating pod during the propagation window (a second or two) are then refused or reset, and new connections of the
+connection-per-request clients are the likeliest to hit it. In the first run's resilience-off control only five such failures appeared
+(`connection_closed` 4, `connection_reset` 1), which is why the control now keeps rolling until it sees one and fails if the cap is reached without.
+The control is **judged on drain-attributable failures inside the rollout phases only**: connection refused, reset or closed, timeouts, cut or malformed
+streams and bodies, 502 and 504. Capacity 503s (any 503, any 429), failures in the baseline or after the rollouts, `transport_other`, stream error
+events and requests the generator could not build do not count; capacity 503s are reported separately, with their baseline count. If no drain-attributable failure appears the
+command fails with "the negative control produced no drain-attributable failure during the rollouts: the test cannot see the outage". It is **not** verified
+that this control reliably produces failures on a cluster; the next CI run decides, and if it does not, the fallback is to also shorten
+`terminationGracePeriodSeconds` and `shutdown_timeout` in the control so that in-flight streams are cut (the other half of the drain), which changes the
+control's definition and is therefore not done speculatively.
+The original gateway objects are applied again at the end (an exit trap, also on error or interrupt; signals are ignored while it restores), the extra ConfigMaps are deleted and the
+restoring rollout is awaited. The restore is silent and the verdict line is printed after it, so it is the last line; a restore that fails turns even a passing run into `roll-test: FAIL` with a non-zero exit status, and an interrupt exits 130 or 143. After each rollout the command checks that every gateway pod that existed before is gone and that as many exist now; a rollout that replaced nothing stops the run. The negative control passes only if the server failed requests *during the rollouts* (a failure in the baseline, or a request the generator could not build, does not count). Reports, a per-request log (`unix ms,client,stream,keep-alive,status,class,latency ms`) and the pod observations
+stay in `.dev/k8s/roll/`; `make k8s-reset` removes them.
+
+**Per replaced pod.** The harness polls the gateway pods once a second and records every pod with a `deletionTimestamp`. SIGTERM was sent at
+`deletionTimestamp - deletionGracePeriodSeconds` (45 s), and the pod object is gone about when its containers have exited, so "SIGTERM to gone"
+is reported per pod (to the second). The time from SIGTERM to the *last request that pod accepted* is **not obtainable** from the client side: the gateway puts no
+pod identity in a response, and adding one to production code was out of scope for this change. SIGTERM-to-gone is its upper bound.
+
+### The drain timeline (design values; measured values are to be filled in by CI)
+
+For a pod replaced by a rolling update (t = 0 when the API server sets `deletionTimestamp`; its replacement was already Ready, `maxSurge: 1`).
+The settings are `readiness_grace` 5 s, `shutdown_timeout` 30 s, `terminationGracePeriodSeconds` 45 s, no `preStop` hook (D19).
+
+| t | Kubernetes | gateway | measured |
+| --- | --- | --- | --- |
+| 0 | the EndpointSlice marks the pod terminating and not ready; kube-proxy rewrites its rules on its next sync; the kubelet sends SIGTERM | `/readyz` 503, `Connection: close` on every later response, `gateway_draining 1`, still serving | to be measured by CI |
+| 0 to 5 s | rules converge; keep-alive clients get `Connection: close` and reconnect to other pods | the listener stays open for the grace; connections that still arrive from stale rules are served | to be measured by CI: time until the last new connection reaches this pod |
+| 5 s | | queue and listener close; in-flight requests and streams run on | to be measured by CI |
+| up to 30 s | | in-flight work finishes; at 30 s after the signal what remains is cut | to be measured by CI: SIGTERM to gone, per pod, max |
+| 45 s | the kubelet sends SIGKILL if the container is still alive | | to be measured by CI: whether any pod needed it (it must not) |
+
+The numbers (propagation time, SIGTERM-to-gone per pod, rollout durations, request counts, the control's failures) go into
+`docs/benchmarks/phase-17-kubernetes.md` after the first CI run; none is stated here because none has been measured. If the control fails
+requests and the real run does not, the readiness grace is long enough for this cluster; if the real run fails, the fallback written in D19 is the
+native `sleep` preStop hook, and the grace and `terminationGracePeriodSeconds` are the values to tune, with the evidence, in a follow-up.
+
+### Observation runs (optional, not gating, not in the code)
+
+Run them by hand while a load runs (`.dev/k8s/roll/e2e run --key-file .dev/k8s/api_key` reads control lines on standard input, `stop` ends it) and
+record what the report says: `kubectl delete pod` of one gateway under load; a rollout to an image that never becomes ready (for example
+`kubectl set image deployment/gateway gateway=serverflow/gateway:missing`; `progressDeadlineSeconds` marks it stalled, the old pods keep serving,
+expect zero failures, then `kubectl rollout undo deployment/gateway`); a worker rolling restart (`kubectl rollout restart deployment/mock-worker`: with the 6 s
+drain announce expected zero failures); a control-plane restart (observe only: the registry is in memory and a restart is not zero-impact).
 
 ## Network policy (PR 5)
 
@@ -186,7 +269,7 @@ host) or leave them to CI. The static checks (`make k8s-check`) need neither the
 | `make k8s-down` | deletes the kind cluster and its kubeconfig and nothing else |
 | `make k8s-reset` | `down`, then removes `.dev/k8s/` (the secrets in `.dev/` and the `serverflow/*:dev` images stay; `make dev-reset` removes them) |
 | `make k8s-audit` | per-container security and resource audit of the running pods |
-| `make k8s-roll-test` | not implemented yet (PR 6) |
+| `make k8s-roll-test` | the rolling-update measurement and its negative control (see "Rolling update and the drain timeline"); about 10 minutes; restores the gateway configuration afterwards; the last line is `roll-test: PASS (...)` or `roll-test: FAIL (...)` |
 
 `scripts/k8s-up.sh status|diagnose` show pods, events and the last log lines (no secret values).
 
@@ -292,6 +375,15 @@ printed). This is evidence about the manifests and the script logic. It is **not
 `local-path` instead of kind's `standard` StorageClass), and it needed the VM's `br_netfilter` kernel module, which Colima's VM does not load: without
 it a k3s container there cannot reach any ClusterIP (pod-to-Service traffic times out; the Jobs failed with `cannot reach the database` and the script's
 failure output was checked to be secret-free). kind's kindnet does not use a bridge, so it may not be affected; that is unverified.
+
+**PR 6, not run anywhere.** Verified without a cluster: the load generator's classification and aggregation against a fake HTTP server (a truncated stream, a
+malformed SSE, an error event, an event after `[DONE]`, a truncated body, 4xx/5xx statuses with their codes, refused, reset, closed and timed-out connections, that a
+request is sent exactly once, that the key appears in no output, the phases, the verdict, the control's inverted verdict and the rule of three); the objects
+the script applies to roll the gateway (the real render with one edit each, checked against the original through the pinned `kubectl`); the procedure in the script; the CI
+wiring; shellcheck v0.10.0 on `scripts/k8s-up.sh`. NOT run: the command on a cluster, so whether 24 clients make 3000 requests during two rollouts, whether the drain really
+gives zero failures, whether the control fails (the nightly job decides), the real propagation and drain times, and the CI step's duration. Honest limits of the design: the
+load generator is a client on the host side of kind's port mapping, which adds its own hop; a failure there is counted, not explained; 24 clients on one machine are not a
+production load; an annotation change stands in for an image tag change.
 
 **PR 5, not run anywhere.** Verified without a cluster: the render and `kubeconform -strict` (59 resources valid) with the pinned tools through Docker, the `tests/k8s` suite
 including the policy-equals-traffic check, its 32 mutations, the probe-pod hardening and K15's decision logic against canned probe output, shellcheck v0.10.0, `bash -n`.

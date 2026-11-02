@@ -85,7 +85,7 @@ func runWithFake(t *testing.T, bash, context, server string, args ...string) fak
 // context explicitly, and the foreign KUBECONFIG of the environment is gone.
 func TestForeignContextIsRefused(t *testing.T) {
 	for _, bash := range bashes(t) {
-		for _, cmdName := range []string{"status", "smoke", "audit"} {
+		for _, cmdName := range []string{"status", "smoke", "audit", "roll-test"} {
 			for _, bad := range []struct{ context, server string }{
 				{"prod", "https://127.0.0.1:6443"},
 				{"docker-desktop", "https://127.0.0.1:6443"},
@@ -163,7 +163,7 @@ func TestEveryKubectlCallIsGuarded(t *testing.T) {
 		t.Error("the script must unset KUBECONFIG before anything else")
 	}
 	// guard_context runs first in every command that reaches the cluster.
-	for _, fn := range []string{"cmd_status", "cmd_smoke", "cmd_audit"} {
+	for _, fn := range []string{"cmd_status", "cmd_smoke", "cmd_audit", "cmd_roll_test"} {
 		m := regexp.MustCompile(`(?s)\n` + fn + `\(\) \{\n  guard_context\n`).MatchString(script)
 		if !m {
 			t.Errorf("%s must start with guard_context", fn)

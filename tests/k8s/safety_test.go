@@ -313,6 +313,8 @@ func TestQualityGateListsEveryTest(t *testing.T) {
 		named[n] = true
 	}
 	files, _ := filepath.Glob(filepath.Join(root(t), "tests/k8s/*_test.go"))
+	more, _ := filepath.Glob(filepath.Join(root(t), "tests/k8s/e2e/*_test.go")) // the load generator's tests run in the same gate
+	files = append(files, more...)
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
 		for _, m := range regexp.MustCompile(`(?m)^func (Test\w+)\(t \*testing\.T\)`).FindAllStringSubmatch(string(b), -1) {
