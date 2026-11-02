@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -230,7 +231,7 @@ func TestSummaryPhasesAndVerdict(t *testing.T) {
 	}
 	// One failure anywhere (even in the baseline) fails the test; it passes the control.
 	add(5, ClassStreamCut, 1)
-	add(45, "http_503_no_available_workers", 2)
+	add(45, ClassReset, 2)
 	s = Summarize(phases, out, at(80))
 	if s.Failures != 3 || s.RolloutFailures != 2 || s.Classes[ClassStreamCut] != 1 || s.Phases[0].Failures != 1 {
 		t.Fatalf("failure tally: %+v", s)
@@ -243,7 +244,7 @@ func TestSummaryPhasesAndVerdict(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	WriteText(&buf, s, 3000, false)
-	for _, want := range []string{"stream_truncated", "http_503_no_available_workers", "result: FAIL", "roll2"} {
+	for _, want := range []string{"stream_truncated", "connection_reset", "result: FAIL", "roll2"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("the report lacks %q:\n%s", want, buf.String())
 		}
@@ -447,12 +448,21 @@ func TestMainRefusesBadInput(t *testing.T) {
 	}
 }
 
-// TestControlNeedsAnOutageInTheRolloutsFromTheServer: the control passes only for failures inside the rollout phases that are
-// not the generator's own; a baseline failure, or a request that could not be built, cannot make it pass.
-func TestControlNeedsAnOutageInTheRolloutsFromTheServer(t *testing.T) {
+// TestControlNeedsADrainAttributableOutageInTheRollouts: the control passes only for failures inside the rollout phases that a
+// missing drain explains. Capacity 503s (however many, in the baseline or the rollouts), a baseline failure, a failure after
+// the rollouts and a request the generator could not build cannot make it pass.
+func TestControlNeedsADrainAttributableOutageInTheRollouts(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
 	phases := []Phase{{"baseline", at(0)}, {"roll1", at(20)}, {"roll2", at(40)}, {"after", at(60)}}
+	const capacity = "http_503_no_capacity"
+	many := func(sec int, class string, n int) []Outcome {
+		var o []Outcome
+		for i := 0; i < n; i++ {
+			o = append(o, Outcome{Start: at(sec), Class: class})
+		}
+		return o
+	}
 	for _, tc := range []struct {
 		name string
 		out  []Outcome
@@ -462,9 +472,14 @@ func TestControlNeedsAnOutageInTheRolloutsFromTheServer(t *testing.T) {
 		{"failure only in the baseline", []Outcome{{Start: at(5), Class: ClassRefused}, {Start: at(25)}}, false},
 		{"failure only after the rollouts", []Outcome{{Start: at(65), Class: ClassRefused}}, false},
 		{"only an unbuildable request in a rollout", []Outcome{{Start: at(25), Class: ClassBadRequest}}, false},
-		{"unbuildable request and a baseline failure", []Outcome{{Start: at(5), Class: ClassStreamCut}, {Start: at(45), Class: ClassBadRequest}}, false},
-		{"a server failure in roll1", []Outcome{{Start: at(25), Class: "http_503_no_available_workers"}}, true},
-		{"a server failure in roll2 next to a generator error", []Outcome{{Start: at(45), Class: ClassBadRequest}, {Start: at(46), Class: ClassStreamCut}}, true},
+		{"1500 capacity 503s in the rollouts and the baseline", append(many(5, capacity, 800), many(25, capacity, 700)...), false},
+		{"other 503 codes and 429s are load, not the drain", append(many(25, "http_503_no_available_workers", 5), many(45, "http_429_rate_limited", 5)...), false},
+		{"transport_other and stream error events are not specific", append(many(25, ClassTransport, 3), many(26, "stream_error_inference_failed", 3)...), false},
+		{"capacity 503s plus one reset in roll1", append(many(25, capacity, 500), Outcome{Start: at(26), Class: ClassReset}), true},
+		{"one connection_closed in roll2", []Outcome{{Start: at(45), Class: ClassClosed}}, true},
+		{"a 502 in roll1", []Outcome{{Start: at(25), Class: "http_502_upstream_error"}}, true},
+		{"a 504 in roll2", []Outcome{{Start: at(45), Class: "http_504"}}, true},
+		{"a cut stream in roll2", []Outcome{{Start: at(45), Class: ClassStreamCut}}, true},
 	} {
 		s := Summarize(phases, tc.out, at(80))
 		if pass, why := Verdict(s, 3000, true); pass != tc.pass {
@@ -475,5 +490,55 @@ func TestControlNeedsAnOutageInTheRolloutsFromTheServer(t *testing.T) {
 	s := Summarize(phases, []Outcome{{Start: at(25), Class: ClassBadRequest}}, at(80))
 	if pass, _ := Verdict(s, 0, false); pass {
 		t.Error("a generator error passed the real run")
+	}
+}
+
+// TestReportShowsThroughputAndSeparatesCapacity: the shortfall of requests is visible, and capacity rejections are named as a
+// load effect with their baseline count.
+func TestReportShowsThroughputAndSeparatesCapacity(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
+	phases := []Phase{{"baseline", at(0)}, {"roll1", at(20)}, {"after", at(40)}}
+	var out []Outcome
+	for i := 0; i < 100; i++ {
+		out = append(out, Outcome{Start: at(i % 60)})
+	}
+	out = append(out, Outcome{Start: at(1), Class: "http_503_no_capacity"}, Outcome{Start: at(25), Class: ClassReset})
+	s := Summarize(phases, out, at(60))
+	var buf bytes.Buffer
+	WriteText(&buf, s, 3000, true)
+	for _, want := range []string{"throughput of the load generator: 1.7 requests/s overall", "during the rollouts (20 s)", "capacity rejections (503 no_capacity): 1, of them 1 in the baseline", "drain-attributable failures", "1 during the rollouts"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the report lacks %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+// TestStatusFileCountsRolloutRequests: the caller that decides whether to keep rolling reads the counts from the status file.
+func TestStatusFileCountsRolloutRequests(t *testing.T) {
+	srv, _ := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if bytes.Contains(b, []byte(`"stream":true`)) {
+			_, _ = io.WriteString(w, chunk(goodChunk)+chunk("[DONE]"))
+			return
+		}
+		_, _ = io.WriteString(w, okBody)
+	})
+	status := filepath.Join(t.TempDir(), "status")
+	pr, pw := io.Pipe()
+	cfg := Config{URL: srv.URL, Key: testKey, Clients: 4, Timeout: time.Second, FailurePause: time.Millisecond, Status: status}
+	done := make(chan Summary, 1)
+	go func() { done <- Run(context.Background(), cfg, pr) }()
+	_, _ = io.WriteString(pw, "mark roll1\n")
+	var line string
+	for i := 0; i < 100 && (!strings.Contains(line, "rollout_requests=") || strings.Contains(line, "rollout_requests=0 ")); i++ {
+		time.Sleep(100 * time.Millisecond)
+		b, _ := os.ReadFile(status)
+		line = string(b)
+	}
+	_, _ = io.WriteString(pw, "stop\n")
+	<-done
+	if !regexp.MustCompile(`^requests=\d+ rollout_requests=[1-9]\d* rollout_failures=0 drain_failures=0 rollout_drain_failures=0\n$`).MatchString(line) {
+		t.Errorf("status line %q", line)
 	}
 }

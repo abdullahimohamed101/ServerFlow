@@ -63,7 +63,7 @@ with the machine (runner type, CPUs), the date and the commit. Tables stay empty
 | Run | Requests total | During the rollouts | Failures (by class) | Rule-of-three bound | Rollout 1 | Rollout 2 | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | rolling update with the drain (resilience on, grace 5 s) | not measured | not measured | not measured | not measured | not measured | not measured | not measured |
-| negative control (resilience off, grace 0) | not measured | not measured | not measured | not applicable | not measured | not measured | not measured |
+| negative control (readiness grace 0 only; rolls until a drain-attributable failure) | not measured | not measured | not measured | not applicable | not measured | not measured | not measured |
 
 | Per replaced pod (SIGTERM to the pod object gone, seconds resolution) | Run | Value |
 | --- | --- | --- |
@@ -72,4 +72,16 @@ with the machine (runner type, CPUs), the date and the commit. Tables stay empty
 | time until no new connection reaches a terminating pod (propagation) | with the drain | not obtainable by the current harness; to be estimated from the control's failures or from a later instrument |
 
 Observation runs (pod delete under load, a stalled rollout, a worker roll, a control-plane restart): not run.
+
+### First CI run (PR #79, before the rollout loop and the new control; the run did not pass)
+
+Source: the advisory kind job's log, GitHub-hosted runner, one run; recorded as observed, not as a result of this design.
+
+| Run | Requests | During the 2 rollouts | Failures | Throughput | Rollouts |
+| --- | --- | --- | --- | --- | --- |
+| with the drain (resilience on, grace 5 s) | 3674 | 2123 (gate of 3000 failed) | 0 | about 38 requests/s during the rollouts | 22 s to `rollout status`, 28 s until the last old pod was gone, twice |
+| control (resilience off, grace 0) | 4874 | 2431 | 1551: `http_503_no_capacity` 1546 (867 in the baseline), `connection_closed` 4, `connection_reset` 1 | about 55 requests/s overall, about 50 during the rollouts | 22-24 s |
+
+SIGTERM to the pod object gone: with the drain 4-5 s per pod (maximum about 5 s, six pods); in the resilience-off control 0-1 s. The capacity rejections
+showed that the resilience-off control conflated load with the drain, which is why the control was redefined.
 

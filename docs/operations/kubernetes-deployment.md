@@ -23,19 +23,36 @@ no SSE field, a payload that is not JSON, an event without `choices` or an event
 `connection_refused`, `connection_reset`, `connection_closed` (EOF before any response), `timeout`, `transport_other`.
 
 **The procedure** (the phase length is 20 s; `ROLL_PHASE_SECONDS` shortens it for debugging, which makes the pass criterion unlikely to hold):
-baseline 20 s; rollout 1 changes the gateway ConfigMap (a new generated name, so a new hash, and `GOMEMLIMIT` 100MiB to 99MiB); rollout 2
-changes the pod template annotation `serverflow.dev/image-tag` (an annotation change stands in for a new image tag, because no second image is
-built); each is applied from the repository's own render with that one edit, `kubectl rollout status` is awaited, and then every replaced pod
-must be gone; the load continues 20 s after. All three gateway pods are replaced twice. The report gives, per phase and in total, the requests
-and the failures by class, the durations of both rollouts (to `rollout status`, and until the last old pod disappeared), and the rule-of-three
-bound: with no failure in n requests the true failure rate is below 3/n at 95 % confidence (3000 requests: 0.1 %), which is printed instead of "no
-failures, therefore no outage".
+baseline 20 s; then rollouts that alternate two kinds of change, starting with the ConfigMap (a new generated name, so a new hash, and `GOMEMLIMIT`
+100MiB to 99MiB) and then the pod template annotation `serverflow.dev/image-tag` (an annotation change stands in for a new image tag, because no
+second image is built). Each is applied from the repository's own render with that one edit, `kubectl rollout status` is awaited, and every replaced
+pod must be gone and replaced by a new one. **The rollouts continue until at least 3000 requests were made during them**, at least two and at most
+`ROLL_MAX_ROLLOUTS` (6). D20 of the plan said "twice"; the first CI run measured about 38 requests/s (the mock workers, 24 clients, each rollout
+about 28 s), so two rollouts made 2123 requests, not 3000. The bound is not lowered: the rollouts go on, and a run that hits the cap short of 3000 fails
+saying so. The load continues 20 s after the last rollout. The report gives, per phase and in total, the requests, the failures by class, the number of
+rollouts and gateway pods replaced, the durations of every rollout (to `rollout status`, and until the last old pod disappeared), the load generator's
+throughput (overall and during the rollouts, so a shortfall is visible), and the rule-of-three bound: with no failure in n requests the true failure
+rate is below 3/n at 95 % confidence (3000 requests: 0.1 %), which is printed instead of "no failures, therefore no outage".
 
-**Pass** = zero failed requests in any phase and at least 3000 requests during the two rollouts.
+**Pass** = zero failed requests in any phase and at least 3000 requests during the rollouts.
 
-**Negative control.** The same procedure runs again after the gateway is configured with `SERVERFLOW_RESILIENCE_MODE=off` and
-`SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=0s` (the "feature off" path of Phase 15). It is expected to fail requests. If it fails none,
-the test could not have seen an outage, and the command fails with "the negative control produced no failure: the test cannot see the outage".
+**Negative control.** The same procedure runs again with exactly one difference, `SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE=0s`, and it
+continues rolling (same cap) until a failure a missing drain explains has been seen. Why this control and not "resilience off" (the plan's first idea):
+the first CI run, with resilience off, produced 1551 failures of which 1546 were `http_503_no_capacity`, 867 of them in the baseline before any rollout.
+Without the queue, 24 clients exceed what three mock workers accept, and the gateway rejects regardless of any rollout; that is a capacity effect and
+would make a control pass for the wrong reason. With resilience on and the grace at 0 the queue, the admission limits and the capacity are those of the real
+run. What the grace changes is visible in `internal/gateway/server.go`: on SIGTERM the gateway sets `draining` (`/readyz` 503, `Connection: close`), and
+with a grace it keeps the listener open for that long while kube-proxy converges; with the grace 0 it closes the listener at once. Requests that the
+node still routes to the terminating pod during the propagation window (a second or two) are then refused or reset, and new connections of the
+connection-per-request clients are the likeliest to hit it. In the first run's resilience-off control only five such failures appeared
+(`connection_closed` 4, `connection_reset` 1), which is why the control now keeps rolling until it sees one and fails if the cap is reached without.
+The control is **judged on drain-attributable failures inside the rollout phases only**: connection refused, reset or closed, timeouts, cut or malformed
+streams and bodies, 502 and 504. Capacity 503s (any 503, any 429), failures in the baseline or after the rollouts, `transport_other`, stream error
+events and requests the generator could not build do not count; capacity 503s are reported separately, with their baseline count. If no drain-attributable failure appears the
+command fails with "the negative control produced no drain-attributable failure during the rollouts: the test cannot see the outage". It is **not** verified
+that this control reliably produces failures on a cluster; the next CI run decides, and if it does not, the fallback is to also shorten
+`terminationGracePeriodSeconds` and `shutdown_timeout` in the control so that in-flight streams are cut (the other half of the drain), which changes the
+control's definition and is therefore not done speculatively.
 The original gateway objects are applied again at the end (an exit trap, also on error or interrupt; signals are ignored while it restores), the extra ConfigMaps are deleted and the
 restoring rollout is awaited. The restore is silent and the verdict line is printed after it, so it is the last line; a restore that fails turns even a passing run into `roll-test: FAIL` with a non-zero exit status, and an interrupt exits 130 or 143. After each rollout the command checks that every gateway pod that existed before is gone and that as many exist now; a rollout that replaced nothing stops the run. The negative control passes only if the server failed requests *during the rollouts* (a failure in the baseline, or a request the generator could not build, does not count). Reports, a per-request log (`unix ms,client,stream,keep-alive,status,class,latency ms`) and the pod observations
 stay in `.dev/k8s/roll/`; `make k8s-reset` removes them.

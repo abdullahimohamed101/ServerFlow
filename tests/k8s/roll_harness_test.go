@@ -39,7 +39,7 @@ case "$*" in
     grep -o 'gateway-config-[a-z0-9]*' "$D/applied.yaml" | head -1 >> "$D/applied.log"
     if [ -f "$D/failrestore" ] && ! grep -q 'gateway-config-roll' "$D/applied.yaml"; then exit 1; fi
     if [ ! -f "$D/static" ]; then n=$(cat "$D/gen" 2>/dev/null || echo 0); echo $((n + 1)) > "$D/gen"; fi
-    if grep -q 'RESILIENCE_MODE: "off"' "$D/applied.yaml"; then : > "$D/outage"; else rm -f "$D/outage"; fi
+    if grep -q 'READINESS_GRACE: 0s' "$D/applied.yaml"; then echo "${FAKE_OUTAGE:-abort}" > "$D/outage"; else rm -f "$D/outage"; fi
     ;;
 esac
 exit 0
@@ -53,6 +53,10 @@ type rollRun struct {
 }
 
 func runRollTest(t *testing.T, bash string, files ...string) rollRun {
+	return runRollTestEnv(t, bash, nil, files...)
+}
+
+func runRollTestEnv(t *testing.T, bash string, extra []string, files ...string) rollRun {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("bash scripts")
@@ -74,6 +78,10 @@ func runRollTest(t *testing.T, bash string, files ...string) rollRun {
 	const key = "sf_live_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"
 	must(os.WriteFile(filepath.Join(state, "api_key"), []byte(key+"\n"), 0o600))
 
+	slow := false
+	for _, e := range extra {
+		slow = slow || e == "FAKE_SLOW=1"
+	}
 	var n atomic.Int64
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -82,11 +90,17 @@ func runRollTest(t *testing.T, bash string, files ...string) rollRun {
 			_, _ = io.WriteString(w, `{"data":[{"id":"mock-model"}]}`)
 		default:
 			n.Add(1)
+			if slow {
+				time.Sleep(450 * time.Millisecond) // about 50 requests a second: the real cluster's shortfall in miniature
+			}
 			time.Sleep(20 * time.Millisecond) // about 1000 requests a second: fast enough for 3000 in a rollout, slow enough not to exhaust ports
-			if _, err := os.Stat(filepath.Join(fake, "outage")); err == nil {
-				w.WriteHeader(503)
-				_, _ = io.WriteString(w, `{"error":{"code":"no_available_workers"}}`)
-				return
+			if kind, err := os.ReadFile(filepath.Join(fake, "outage")); err == nil {
+				if strings.TrimSpace(string(kind)) == "capacity" { // load, not the drain
+					w.WriteHeader(503)
+					_, _ = io.WriteString(w, `{"error":{"code":"no_capacity"}}`)
+					return
+				}
+				panic(http.ErrAbortHandler) // the drain's absence: connections cut
 			}
 			b, _ := io.ReadAll(r.Body)
 			if strings.Contains(string(b), `"stream":true`) {
@@ -103,6 +117,7 @@ func runRollTest(t *testing.T, bash string, files ...string) rollRun {
 	cmd.Dir = root(t)
 	cmd.Env = append(os.Environ(), "PATH="+fake+string(os.PathListSeparator)+os.Getenv("PATH"), "K8S_UP_DIR="+state, "FAKE_DIR="+fake,
 		"FAKE_VERSION="+pins(t)["KUBERNETES_VERSION"], "K8S_UP_TEST_GATEWAY_PORT="+u.Port(), "ROLL_PHASE_SECONDS=1", "K8S_UP_WAIT=5")
+	cmd.Env = append(cmd.Env, extra...)
 	b, err := cmd.CombinedOutput()
 	out := string(b)
 	if strings.Contains(out, key) {
@@ -190,5 +205,45 @@ func TestRollTestSignalsAreHandledAndTheRestoreIsProtected(t *testing.T) {
 	}
 	if strings.Contains(r[:strings.Index(r, "\nroll_cleanup() {")], "roll-test: PASS") {
 		t.Error("only roll_cleanup may print the verdict: nothing before it prints PASS")
+	}
+}
+
+// TestRollTestControlIsNotFooledByCapacityRejections: with the grace removed the fake gateway answers only capacity 503s, which
+// are load and not the drain. The control must not pass: the command fails, says the test cannot see the outage, still restores
+// the gateway, and the real run was not affected.
+func TestRollTestControlIsNotFooledByCapacityRejections(t *testing.T) {
+	r := runRollTestEnv(t, "bash", []string{"FAKE_OUTAGE=capacity", "ROLL_MAX_ROLLOUTS=3"})
+	if r.err == nil || strings.Contains(r.out, "roll-test: PASS") {
+		t.Fatalf("capacity rejections made the control pass\n%s", r.out)
+	}
+	if !strings.HasPrefix(lastLine(r), "roll-test: FAIL (the negative control produced no drain-attributable failure") {
+		t.Errorf("last line %q", lastLine(r))
+	}
+	if !strings.Contains(r.out, "capacity rejections (503 no_capacity)") || !strings.Contains(r.out, "the cap of 3 rollouts was reached") {
+		t.Errorf("the capacity rejections or the cap are not reported\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "result: PASS") {
+		t.Errorf("the real run should have passed before the control failed\n%s", r.out)
+	}
+}
+
+// TestRollTestKeepsRollingUntilEnoughRequests: the rollouts continue past two until 3000 requests were made during them, and the
+// cap stops a run that cannot get there with a clear failure. The fake gateway answers about 50 requests a second here, so
+// two 3 s rollouts make far fewer than 3000.
+func TestRollTestKeepsRollingUntilEnoughRequests(t *testing.T) {
+	r := runRollTestEnv(t, "bash", []string{"FAKE_SLOW=1", "ROLL_MAX_ROLLOUTS=3"})
+	if r.err == nil {
+		t.Fatalf("a run that could not reach 3000 requests passed\n%s", r.out)
+	}
+	for _, want := range []string{"main: roll3 replaced 3 gateway pods", "the cap of 3 rollouts was reached", "at least 3000 are needed"} {
+		if !strings.Contains(r.out, want) {
+			t.Errorf("the output lacks %q\n%s", want, r.out)
+		}
+	}
+	if strings.Contains(r.out, "main: roll4") {
+		t.Error("the cap was exceeded")
+	}
+	if !strings.HasPrefix(lastLine(r), "roll-test: FAIL") {
+		t.Errorf("last line %q", lastLine(r))
 	}
 }

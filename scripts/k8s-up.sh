@@ -16,7 +16,7 @@
 #   scripts/k8s-up.sh render    the rendered manifests of the kind overlay (no Secret content), safe to paste
 #   scripts/k8s-up.sh check     the static checks without a cluster (render, kubeconform, tests/k8s): same as `make k8s-check`
 #   scripts/k8s-up.sh roll-test the rolling-update measurement (D20): 24 clients through 127.0.0.1:28080 while the gateway is replaced
-#                               twice, then the negative control with the drain off; the gateway configuration is restored
+#                               replaced until 3000 requests were made (2 to 6 rollouts), then the negative control (readiness grace 0); the gateway configuration is restored
 #                               afterwards; the last line (printed after the restore) is "roll-test: PASS (...)" or "roll-test: FAIL (...)"
 #   scripts/k8s-up.sh roll-render [normal|control] [TAG]   the gateway objects as roll-test applies them (no cluster; a test reads it)
 #   scripts/k8s-up.sh --check-context NAME   exit 0 only for the one allowed context, kind-serverflow (needs no Docker or kubectl)
@@ -993,19 +993,24 @@ cmd_diagnose() {
 
 # ---------------------------------------------------------------------------------------------------------
 # roll-test: the rolling-update measurement with its negative control (D20). A closed-loop load of 24 clients
-# (tests/k8s/e2e) runs through the host entry point while the gateway is replaced twice; the verdict is the load
+# (tests/k8s/e2e) runs through the host entry point while the gateway is replaced (at least twice, until 3000 requests were made); the verdict is the load
 # generator's: zero failed requests and at least 3000 during the rollouts. Then the same procedure with the drain switched
-# off (resilience off, readiness grace 0) must produce failures, or the test cannot see the outage and the command fails.
+# off (the readiness grace 0, everything else identical) must produce failures a missing drain explains, or the test cannot see
+# the outage and the command fails. Rollouts continue (hash change, annotation change, alternating) until at least 3000 requests
+# were made during them, up to ROLL_MAX_ROLLOUTS, because the measured throughput is far below the plan's first estimate.
 # The gateway's configuration is restored afterwards (an exit trap), whatever happens.
 # ---------------------------------------------------------------------------------------------------------
 ROLL_DIR="$K8S_DIR/roll"
 ROLL_BIN="$ROLL_DIR/e2e"
 ROLL_PHASE_SECONDS="${ROLL_PHASE_SECONDS:-20}"
 ROLL_MIN_REQUESTS=3000
+ROLL_MIN_ROLLOUTS=2
+ROLL_MAX_ROLLOUTS="${ROLL_MAX_ROLLOUTS:-6}"
 ROLL_DIRTY=0
 ROLL_LG_PID=""
 ROLL_POLLER_PID=""
 ROLL_STEP_DESC=""
+ROLL_STEP_REPLACED=0
 ROLL_VERDICT=""
 
 # gateway_docs: the rendered gateway ConfigMap and Deployment, nothing else of the overlay.
@@ -1021,7 +1026,8 @@ gateway_docs() {
 }
 
 # gateway_variant SUFFIX MEMLIMIT PROFILE TAG: the gateway objects with a new ConfigMap name (so a new hash, which rolls the
-# pods), GOMEMLIMIT changed (a harmless edit), the drain switched off when PROFILE is control, and the pod template annotation
+# pods), GOMEMLIMIT changed (a harmless edit), the readiness grace set to 0s when PROFILE is control (resilience stays on, so the
+# queue and the capacity behave as in the real run and the grace is the only difference; see docs), and the pod template annotation
 # serverflow.dev/image-tag set to TAG when TAG is not empty. Every line that is edited must exist, else the render changed.
 gateway_variant() {
   local suffix="$1" mem="$2" profile="$3" tag="$4" docs line
@@ -1031,7 +1037,7 @@ gateway_variant() {
   done
   printf '%s\n' "$docs" | sed -e "s/gateway-config-[a-z0-9]*/gateway-config-$suffix/g" -e "s/^  GOMEMLIMIT: 100MiB\$/  GOMEMLIMIT: $mem/" |
     if [ "$profile" = control ]; then
-      sed -e 's/^  SERVERFLOW_RESILIENCE_MODE: "on"$/  SERVERFLOW_RESILIENCE_MODE: "off"/' -e 's/^  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 5s$/  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 0s/'
+      sed -e 's/^  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 5s$/  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 0s/'
     else
       cat
     fi |
@@ -1119,19 +1125,42 @@ roll_step() {
   survivors="$(printf '%s\n' "$after" | grep -Fx -f <(printf '%s\n' "$before") || true)"
   [ -z "$survivors" ] || die "$1: the rollout did not replace every gateway pod (still there: $(printf '%s' "$survivors" | tr '\n' ' '))"
   [ "$(printf '%s\n' "$after" | wc -l | tr -d ' ')" = "$(printf '%s\n' "$before" | wc -l | tr -d ' ')" ] || die "$1: the gateway had $(printf '%s\n' "$before" | wc -l | tr -d ' ') pods before and has a different number now"
-  say "$2: $1 replaced $(printf '%s\n' "$before" | wc -l | tr -d ' ') gateway pods"
+  ROLL_STEP_REPLACED="$(printf '%s\n' "$before" | wc -l | tr -d ' ')"
+  say "$2: $1 replaced $ROLL_STEP_REPLACED gateway pods"
 }
 
-# roll_scenario NAME PROFILE EXPECT: baseline, two rollouts, after; the report goes to the terminal. Returns the load
-# generator's verdict (0 = as expected for EXPECT).
+# status_value KEY FILE: a number from the load generator's status file (0 when there is none yet).
+status_value() {
+  [ -r "$2" ] || { echo 0; return; }
+  tr ' ' '\n' <"$2" | sed -n "s/^$1=\\([0-9][0-9]*\\)\$/\\1/p" | head -1 | grep . || echo 0
+}
+
+# roll_wants_more NAME EXPECT COUNT: whether another rollout is needed. At least ROLL_MIN_ROLLOUTS happen. The real run goes on
+# until 3000 requests were made during the rollouts; the control until a failure a missing drain explains was seen (the same
+# procedure, only longer, and capped); both stop at ROLL_MAX_ROLLOUTS.
+roll_wants_more() {
+  local st="$ROLL_DIR/$1.status"
+  [ "$3" -lt "$ROLL_MAX_ROLLOUTS" ] || return 1
+  [ "$3" -ge "$ROLL_MIN_ROLLOUTS" ] || return 0
+  sleep 1 # the status file is rewritten twice a second: let it include the end of the last rollout
+  if [ "$2" = failures ]; then
+    [ "$(status_value rollout_drain_failures "$st")" -lt 1 ]
+  else
+    [ "$(status_value rollout_requests "$st")" -lt "$ROLL_MIN_REQUESTS" ]
+  fi
+}
+
+# roll_scenario NAME PROFILE EXPECT: baseline, rollouts that alternate the ConfigMap hash change and the annotation change, after;
+# the report goes to the terminal. Returns the load generator's verdict (0 = as expected for EXPECT).
 roll_scenario() {
-  local name="$1" profile="$2" expect="$3" d1 d2 rc=0 fifo="$ROLL_DIR/control"
+  local name="$1" profile="$2" expect="$3" rc=0 fifo="$ROLL_DIR/control" i=0 suffix="" descs="" replaced=0
   : >"$ROLL_DIR/$name.pods"
+  : >"$ROLL_DIR/$name.status"
   rm -f "$fifo"
   mkfifo "$fifo"
   exec 9<>"$fifo"
   "$ROLL_BIN" run --key-file "$K8S_DIR/api_key" --url "$GATEWAY_URL" --clients 24 --min-rollout "$ROLL_MIN_REQUESTS" --expect "$expect" \
-    --log "$ROLL_DIR/$name.requests.csv" --json "$ROLL_DIR/$name.json" <"$fifo" >"$ROLL_DIR/$name.report" 2>"$ROLL_DIR/$name.err" &
+    --log "$ROLL_DIR/$name.requests.csv" --json "$ROLL_DIR/$name.json" --status "$ROLL_DIR/$name.status" <"$fifo" >"$ROLL_DIR/$name.report" 2>"$ROLL_DIR/$name.err" &
   ROLL_LG_PID=$!
   pod_poller "$ROLL_DIR/$name.pods" &
   ROLL_POLLER_PID=$!
@@ -1139,10 +1168,18 @@ roll_scenario() {
   sleep "$ROLL_PHASE_SECONDS"
   kill -0 "$ROLL_LG_PID" 2>/dev/null || { cat "$ROLL_DIR/$name.err" >&2; die "the load generator stopped during the baseline"; }
 
-  roll_step roll1 "$name" "roll${name}1" "$profile" ""
-  d1="$ROLL_STEP_DESC"
-  roll_step roll2 "$name" "roll${name}1" "$profile" "$name-$ROLL_T0"
-  d2="$ROLL_STEP_DESC"
+  while roll_wants_more "$name" "$expect" "$i"; do
+    i=$((i + 1))
+    if [ $((i % 2)) = 1 ]; then
+      suffix="roll${name}${i}"
+      roll_step "roll$i" "$name" "$suffix" "$profile" ""
+      descs="$descs"$'\n'"rollout $i (ConfigMap hash): $ROLL_STEP_DESC"
+    else
+      roll_step "roll$i" "$name" "$suffix" "$profile" "$name-$i-$ROLL_T0"
+      descs="$descs"$'\n'"rollout $i (image tag annotation): $ROLL_STEP_DESC"
+    fi
+    replaced=$((replaced + ROLL_STEP_REPLACED))
+  done
 
   printf 'mark after\n' >&9
   say "$name: load continues for $ROLL_PHASE_SECONDS s"
@@ -1159,7 +1196,10 @@ roll_scenario() {
   printf '== %s ==\n' "$name"
   cat "$ROLL_DIR/$name.report"
   cat "$ROLL_DIR/$name.err" >&2
-  printf 'rollout 1 (ConfigMap hash): %s\nrollout 2 (image tag annotation): %s\n' "$d1" "$d2"
+  printf 'rollouts: %d (at least %d, at most %d), gateway pods replaced in total: %d%s\n' "$i" "$ROLL_MIN_ROLLOUTS" "$ROLL_MAX_ROLLOUTS" "$replaced" "$descs"
+  if [ "$i" -ge "$ROLL_MAX_ROLLOUTS" ] && [ "$rc" != 0 ]; then
+    printf 'the cap of %d rollouts was reached; see the verdict above for what was still missing\n' "$ROLL_MAX_ROLLOUTS"
+  fi
   "$ROLL_BIN" pods "$ROLL_DIR/$name.pods" || true
   return "$rc"
 }
@@ -1170,6 +1210,8 @@ cmd_roll_test() {
   command -v curl >/dev/null 2>&1 || die "curl is not installed"
   [ -s "$K8S_DIR/api_key" ] || die "there is no API key in $K8S_DIR (make k8s-up creates it)"
   case "$ROLL_PHASE_SECONDS" in '' | *[!0-9]*) die "ROLL_PHASE_SECONDS must be a whole number of seconds" ;; esac
+  case "$ROLL_MAX_ROLLOUTS" in '' | *[!0-9]*) die "ROLL_MAX_ROLLOUTS must be a whole number" ;; esac
+  [ "$ROLL_MAX_ROLLOUTS" -ge "$ROLL_MIN_ROLLOUTS" ] || die "ROLL_MAX_ROLLOUTS must be at least $ROLL_MIN_ROLLOUTS"
   (umask 077 && mkdir -p "$ROLL_DIR")
   say "building the load generator"
   go build -o "$ROLL_BIN" ./tests/k8s/e2e || die "could not build tests/k8s/e2e"
@@ -1184,7 +1226,7 @@ cmd_roll_test() {
   ROLL_DIRTY=1
   roll_scenario main normal none || main=$?
 
-  say "negative control: resilience off and readiness grace 0 (the drain switched off); this run is expected to fail requests"
+  say "negative control: the same procedure with the readiness grace 0 and nothing else changed; this run is expected to fail requests"
   ROLL_T0="$(date +%s)"
   gateway_variant rollctl0 100MiB control "" | kc apply -f - >/dev/null || die "could not apply the control configuration"
   roll_wait
@@ -1195,13 +1237,13 @@ cmd_roll_test() {
   printf 'duration: %ds\n' "$(($(date +%s) - started))"
   # The verdict is printed by roll_cleanup, after the gateway is restored, so that it is the last line.
   if [ "$main" = 0 ] && [ "$control" = 0 ]; then
-    ROLL_VERDICT='roll-test: PASS (no failed request with the drain; the control without it failed requests, so the test can see the outage)'
+    ROLL_VERDICT='roll-test: PASS (no failed request with the drain; the control without the readiness grace failed requests, so the test can see the outage)'
     return 0
   fi
   if [ "$main" != 0 ]; then
     ROLL_VERDICT='roll-test: FAIL (the rolling update with the drain failed requests or made too few; see the report above)'
   else
-    ROLL_VERDICT='roll-test: FAIL (the negative control produced no failure during the rollouts: the test cannot see the outage)'
+    ROLL_VERDICT='roll-test: FAIL (the negative control produced no drain-attributable failure during the rollouts: the test cannot see the outage)'
   fi
   return 1
 }

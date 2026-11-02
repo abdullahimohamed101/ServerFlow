@@ -29,18 +29,40 @@ type PhaseSummary struct {
 
 // Summary is the result of a run.
 type Summary struct {
-	Phases          []PhaseSummary `json:"phases"`
-	Requests        int            `json:"requests"`
-	Failures        int            `json:"failures"`
-	Classes         map[string]int `json:"failures_by_class"`
-	RolloutRequests int            `json:"requests_during_rollouts"`
-	RolloutFailures int            `json:"failures_during_rollouts"`
-	// GeneratorErrors are failures of the generator itself (a request it could not build), not observations of the server;
-	// RolloutGeneratorErrors are those inside the rollout phases. The negative control does not count them.
-	GeneratorErrors        int `json:"generator_errors"`
-	RolloutGeneratorErrors int `json:"generator_errors_during_rollouts"`
-	StreamRequests         int `json:"stream_requests"`
-	KeepAliveRequest       int `json:"keep_alive_requests"`
+	Phases           []PhaseSummary `json:"phases"`
+	Seconds          float64        `json:"seconds"`
+	Requests         int            `json:"requests"`
+	Failures         int            `json:"failures"`
+	Classes          map[string]int `json:"failures_by_class"`
+	RolloutSeconds   float64        `json:"rollout_seconds"`
+	RolloutRequests  int            `json:"requests_during_rollouts"`
+	RolloutFailures  int            `json:"failures_during_rollouts"`
+	StreamRequests   int            `json:"stream_requests"`
+	KeepAliveRequest int            `json:"keep_alive_requests"`
+	// GeneratorErrors are failures of the generator itself (a request it could not build), not observations of the server.
+	GeneratorErrors int `json:"generator_errors"`
+	// CapacityRejections are 503 no_capacity answers: the gateway or its workers were full. That is load, not the drain, so the
+	// negative control does not count them (they are reported separately, and in the baseline they show the load alone does it).
+	CapacityRejections         int `json:"capacity_rejections"`
+	BaselineCapacityRejections int `json:"capacity_rejections_in_baseline"`
+	// DrainFailures are the failures a missing drain explains: connections refused, reset or closed, timeouts, cut streams,
+	// malformed or truncated streams and bodies, 502 and 504. RolloutDrainFailures are those inside the rollout phases.
+	DrainFailures        int `json:"drain_failures"`
+	RolloutDrainFailures int `json:"drain_failures_during_rollouts"`
+}
+
+// IsCapacityRejection reports whether a failure class is a capacity 503 (http_503_no_capacity).
+func IsCapacityRejection(class string) bool { return class == "http_503_no_capacity" }
+
+// IsDrainAttributable reports whether a failure class is one that a rollout without a drain explains. Statuses other than 502
+// and 504 (a 503 of any code, a 429) say the gateway or its workers were overloaded or unready, which the load alone can cause;
+// transport_other and stream error events are not specific enough; request_not_built is the generator's own.
+func IsDrainAttributable(class string) bool {
+	switch class {
+	case ClassRefused, ClassReset, ClassClosed, ClassTimeout, ClassStreamCut, ClassSSEMalformed, ClassBodyCut, ClassBodyMalformed:
+		return true
+	}
+	return strings.HasPrefix(class, "http_502") || strings.HasPrefix(class, "http_504")
 }
 
 func isRollout(name string) bool { return strings.HasPrefix(name, "roll") }
@@ -53,7 +75,12 @@ func Summarize(phases []Phase, outcomes []Outcome, end time.Time) Summary {
 		if i+1 < len(phases) {
 			stop = phases[i+1].Start
 		}
-		s.Phases = append(s.Phases, PhaseSummary{Name: p.Name, Seconds: stop.Sub(p.Start).Seconds(), Classes: map[string]int{}})
+		d := stop.Sub(p.Start).Seconds()
+		s.Phases = append(s.Phases, PhaseSummary{Name: p.Name, Seconds: d, Classes: map[string]int{}})
+		s.Seconds += d
+		if isRollout(p.Name) {
+			s.RolloutSeconds += d
+		}
 	}
 	for _, o := range outcomes {
 		i := sort.Search(len(phases), func(i int) bool { return phases[i].Start.After(o.Start) }) - 1
@@ -81,11 +108,20 @@ func Summarize(phases []Phase, outcomes []Outcome, end time.Time) Summary {
 			if o.Class == ClassBadRequest {
 				s.GeneratorErrors++
 			}
+			if IsCapacityRejection(o.Class) {
+				s.CapacityRejections++
+				if ps.Name == "baseline" {
+					s.BaselineCapacityRejections++
+				}
+			}
+			if IsDrainAttributable(o.Class) {
+				s.DrainFailures++
+				if roll {
+					s.RolloutDrainFailures++
+				}
+			}
 			if roll {
 				s.RolloutFailures++
-				if o.Class == ClassBadRequest {
-					s.RolloutGeneratorErrors++
-				}
 			}
 		}
 	}
@@ -103,12 +139,12 @@ func RuleOfThree(n int) float64 {
 // Verdict applies D20. expectFailures is the negative control: it passes only when the outage was seen.
 func Verdict(s Summary, minRollout int, expectFailures bool) (pass bool, why string) {
 	if expectFailures {
-		// The outage must show during the rollouts, and as something the server did: a request the generator could not even
-		// build, or a failure in the baseline, is not the outage.
-		if seen := s.RolloutFailures - s.RolloutGeneratorErrors; seen > 0 {
-			return true, fmt.Sprintf("the negative control produced %d failures during the rollouts: the test can see the outage", seen)
+		// The outage must show during the rollouts, as a failure a missing drain explains. Capacity rejections, failures in the
+		// baseline or after the rollouts, and requests the generator could not build are not the outage.
+		if s.RolloutDrainFailures > 0 {
+			return true, fmt.Sprintf("the negative control produced %d drain-attributable failures during the rollouts: the test can see the outage", s.RolloutDrainFailures)
 		}
-		return false, "the negative control produced no server-side failure during the rollouts: the test cannot see the outage"
+		return false, fmt.Sprintf("the negative control produced no drain-attributable failure during the rollouts (%d capacity rejections do not count): the test cannot see the outage", s.CapacityRejections)
 	}
 	switch {
 	case s.GeneratorErrors > 0:
@@ -152,6 +188,19 @@ func WriteText(w io.Writer, s Summary, minRollout int, expectFailures bool) {
 		p("requests during the rollouts: %d, failures among them: %d\n", s.RolloutRequests, s.RolloutFailures)
 	} else {
 		p("requests during the rollouts: %d (at least %d are needed), failures among them: %d\n", s.RolloutRequests, minRollout, s.RolloutFailures)
+	}
+	if s.Seconds > 0 {
+		p("throughput of the load generator: %.1f requests/s overall", float64(s.Requests)/s.Seconds)
+		if s.RolloutSeconds > 0 {
+			p(", %.1f requests/s during the rollouts (%.0f s)", float64(s.RolloutRequests)/s.RolloutSeconds, s.RolloutSeconds)
+		}
+		p("\n")
+	}
+	if s.CapacityRejections > 0 {
+		p("capacity rejections (503 no_capacity): %d, of them %d in the baseline, before any rollout: the gateway or its workers were full, a load effect and not the drain\n", s.CapacityRejections, s.BaselineCapacityRejections)
+	}
+	if expectFailures {
+		p("drain-attributable failures (refused, reset, closed, timeout, cut or malformed streams and bodies, 502, 504): %d, of them %d during the rollouts\n", s.DrainFailures, s.RolloutDrainFailures)
 	}
 	if s.Failures == 0 && s.Requests > 0 {
 		p("rule of three: 0 failures in %d requests bounds the true failure rate below %.3f%% at 95%% confidence (not a claim of no outage)\n", s.Requests, 100*RuleOfThree(s.Requests))

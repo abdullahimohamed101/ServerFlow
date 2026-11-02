@@ -55,7 +55,7 @@ func configMapRefOf(dep map[string]any) string {
 
 // TestRollVariantsAreTheGatewayWithOneEditEach: what roll-test applies is the real gateway ConfigMap and Deployment with a new
 // ConfigMap name (a new hash, which rolls the pods), the Deployment pointing at it, GOMEMLIMIT changed, and nothing else; the
-// control additionally switches resilience off and the readiness grace to 0; the annotation appears on the pod template only
+// control additionally sets the readiness grace to 0 (and nothing else); the annotation appears on the pod template only
 // when asked for; and a stream of exactly the two objects comes out.
 func TestRollVariantsAreTheGatewayWithOneEditEach(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -129,7 +129,8 @@ func TestRollVariantsAreTheGatewayWithOneEditEach(t *testing.T) {
 	}
 	check("normal", "normal", "", with(map[string]any{"GOMEMLIMIT": "99MiB"}))
 	check("normal with the annotation", "normal", "rollmain-1700000000", with(map[string]any{"GOMEMLIMIT": "99MiB"}))
-	control := with(map[string]any{"GOMEMLIMIT": "99MiB", "SERVERFLOW_RESILIENCE_MODE": "off", "SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE": "0s"})
+	// The control differs from the real run in the readiness grace only: resilience stays on, so queueing and capacity are the same.
+	control := with(map[string]any{"GOMEMLIMIT": "99MiB", "SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE": "0s"})
 	check("control", "control", "", control)
 	check("control with the annotation", "control", "rollcontrol-1700000000", control)
 }
@@ -151,7 +152,7 @@ func TestRollTestProcedure(t *testing.T) {
 	r := scriptRegion(t)
 	for _, want := range []string{
 		`--clients 24`, `ROLL_MIN_REQUESTS=3000`, `--url "$GATEWAY_URL"`, `--key-file "$K8S_DIR/api_key"`, `ROLL_PHASE_SECONDS:-20`,
-		`roll_step roll1`, `roll_step roll2`, `printf 'mark after\n'`, `--expect "$expect"`,
+		`roll_step "roll$i"`, `ROLL_MAX_ROLLOUTS`, `ROLL_MIN_ROLLOUTS=2`, `roll_wants_more`, `rollout_drain_failures`, `gateway pods replaced in total`, `--status "$ROLL_DIR/$name.status"`, `printf 'mark after\n'`, `--expect "$expect"`,
 		`roll_scenario main normal none`, `roll_scenario control control failures`,
 		`rollout status deployment/gateway --timeout=300s`, `trap roll_cleanup EXIT`, `ROLL_DIRTY=1`,
 		`roll_restore`, `ROLL_VERDICT='roll-test: PASS`, `the test cannot see the outage`, `did not replace every gateway pod`,
@@ -160,9 +161,10 @@ func TestRollTestProcedure(t *testing.T) {
 			t.Errorf("the roll-test section lacks %q", want)
 		}
 	}
-	// The control switches exactly the two settings the plan names.
-	if !regexp.MustCompile(`RESILIENCE_MODE: "off"`).MatchString(r) || !regexp.MustCompile(`DRAIN_READINESS_GRACE: 0s`).MatchString(r) {
-		t.Error("the control must switch resilience off and the readiness grace to 0")
+	// The control sets the readiness grace to 0 and touches nothing else: in particular resilience stays on, because with it off the
+	// 24 clients exceed capacity (503 no_capacity) with or without a rollout and the control would pass for that reason.
+	if strings.Contains(r, `RESILIENCE_MODE: "off"`) || !regexp.MustCompile(`DRAIN_READINESS_GRACE: 0s`).MatchString(r) {
+		t.Error("the control must set the readiness grace to 0 and must not switch resilience off")
 	}
 	// The restore comes from the repository's own render, and runs from the exit trap only when something was changed.
 	if !regexp.MustCompile(`(?s)roll_cleanup\(\) \{.*ROLL_DIRTY.*roll_restore`).MatchString(r) {
