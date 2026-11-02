@@ -1,0 +1,120 @@
+benchmark verdict (simulator-validated, not hardware-validated)
+frozen predictions text sha256 b567f73065ffd983ae72b1baf6692d5a177349c708a2acd59ff9a3132f537e80
+predictions match the freeze recorded at 2026-11-01T18:16:59Z
+124 result files loaded
+confirmatory family (Holm, alpha 0.05): H3, H4a, H4b
+Statistics: percentile bootstrap interval and p-value of the median paired relative difference (see internal/bench/verdict/doc.go). A verdict describes the simulated worlds, workloads and seeds in the result files; it is not a claim about hardware.
+
+H1  equivalence  CONFIRMED
+    claim: the ledger overlay does not change least-active p95 latency in a healthy fleet (guard)
+    latency_p95, median relative difference B against A: +0.02% [-0.01%, +0.08%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.2354
+    t-TOST (descriptive, never decides): mean +0.03%, p 9.954e-12 (lower 9.391e-12, upper 9.954e-12)
+    - the 95% interval lies entirely inside +/-5.00%
+
+H2a  equivalence  CONFIRMED
+    claim: least-tokens is equivalent to least-active on p95 latency with identical workers
+    latency_p95, median relative difference B against A: +0.00% [-0.02%, +0.09%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.5809
+    t-TOST (descriptive, never decides): mean +0.02%, p 2.887e-11 (lower 2.752e-11, upper 2.887e-11)
+    - the 95% interval lies entirely inside +/-5.00%
+
+H2b  equivalence  CONFIRMED
+    claim: least-work is equivalent to least-active on p95 latency with identical workers
+    latency_p95, median relative difference B against A: +0.00% [-0.01%, +0.02%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.2476
+    t-TOST (descriptive, never decides): mean +0.01%, p 8.973e-14 (lower 8.871e-14, upper 8.973e-14)
+    - the 95% interval lies entirely inside +/-5.00%
+
+H2  all_of  CONFIRMED
+    claim: H2: both work-aware strategies are equivalent to least-active on identical workers
+    - H2a: CONFIRMED
+    - H2b: CONFIRMED
+
+H3  superiority  INVALID
+    claim: least-tokens cuts p95 latency against least-active on heavy-tail in a homogeneous batching world
+    - run run_001 is INVALID (error rate 6.78% (12 of 177 requests failed) exceeds 5.00%: latency, TTFT and balance describe only the 165 survivors; the load probably exceeded what the target can take); inv...
+    - run run_001 is INVALID (error rate 6.63% (11 of 166 requests failed) exceeds 5.00%: latency, TTFT and balance describe only the 155 survivors; the load probably exceeded what the target can take); inv...
+
+H4a  superiority  INCONCLUSIVE
+    claim: least-work cuts p95 latency against least-tokens on mixed in a heterogeneous batching world
+    latency_p95, median effect (improvement as a share of A): +13.14% [+1.63%, +22.43%] at 95%, 8 pairs, 10000 resamples, seed 20260101
+    p-value 0.0172; Holm-adjusted 0.0344 (family of 3)
+    - the interval excludes zero but the median effect 13.14% is below the confirmation threshold 15.00% and the interval is not entirely below the refutation threshold 5.00%
+
+H4b  superiority  CONFIRMED
+    claim: round-robin is at least 25 percent worse than least-work on p95 latency (least-work at least 20 percent lower) on mixed in a heterogeneous batching world
+    latency_p95, median effect (improvement as a share of A): +51.05% [+25.76%, +67.67%] at 95%, 8 pairs, 10000 resamples, seed 20260101
+    p-value 0.007812 (bootstrap 0.0002 raised to the exact sign-test floor for 8 non-zero pairs); Holm-adjusted 0.02344 (family of 3)
+    - median effect 51.05% reaches the threshold 20.00% and its 95% interval excludes zero
+    - Holm-adjusted p-value 0.02344 (family of 3) is below 0.05
+
+H4  all_of  INCONCLUSIVE
+    claim: H4: least-work beats least-tokens and round-robin by the registered margins
+    - H4a: INCONCLUSIVE
+    - H4b: CONFIRMED
+
+H5a  tuned_range  CONFIRMED
+    claim: the input_weight that minimises p95 on the tuning set lies in [0.1, 0.5]
+    - tuned input_weight = 0.3 lies in [0.1, 0.5]
+
+H5b  superiority  INCONCLUSIVE
+    claim: on held-out prefill-heavy the tuned input_weight cuts least-work p95 latency against input_weight 1 (exploratory)
+    latency_p95, median effect (improvement as a share of A): +2.68% [-5.25%, +5.23%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.4806
+    - the 95% interval includes zero
+
+H11-W0-rr  equivalence  CONFIRMED
+    claim: round-robin is equivalent to least-active on p95 latency in the W0 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: +0.00% [-0.01%, +0.06%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.8581
+    t-TOST (descriptive, never decides): mean +0.01%, p 1.111e-10 (lower 1.06e-10, upper 1.111e-10)
+    - the 95% interval lies entirely inside +/-3.00%
+
+H11-W0-lt  equivalence  CONFIRMED
+    claim: least-tokens is equivalent to least-active on p95 latency in the W0 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: +0.00% [-0.02%, +0.05%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.8619
+    t-TOST (descriptive, never decides): mean +0.01%, p 3.084e-11 (lower 2.997e-11, upper 3.084e-11)
+    - the 95% interval lies entirely inside +/-3.00%
+
+H11-W0-lw  equivalence  CONFIRMED
+    claim: least-work is equivalent to least-active on p95 latency in the W0 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: +0.01% [-0.01%, +0.05%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.252
+    t-TOST (descriptive, never decides): mean +0.02%, p 1.721e-11 (lower 1.625e-11, upper 1.721e-11)
+    - the 95% interval lies entirely inside +/-3.00%
+
+H11-W1-rr  equivalence  INCONCLUSIVE
+    claim: round-robin is equivalent to least-active on p95 latency in the W1 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: -0.07% [-3.93%, +1.02%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.7179
+    t-TOST (descriptive, never decides): mean -0.99%, p 0.07034 (lower 0.07034, upper 0.008781)
+    - the 95% interval is neither inside +/-3.00% nor outside +/-3.00%
+
+H11-W1-lt  equivalence  INCONCLUSIVE
+    claim: least-tokens is equivalent to least-active on p95 latency in the W1 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: -1.16% [-5.01%, +3.46%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.4858
+    t-TOST (descriptive, never decides): mean -0.90%, p 0.1587 (lower 0.1587, upper 0.04689)
+    - the 95% interval is neither inside +/-3.00% nor outside +/-3.00%
+
+H11-W1-lw  equivalence  INCONCLUSIVE
+    claim: least-work is equivalent to least-active on p95 latency in the W1 control (uniform-short, 7 clients)
+    latency_p95, median relative difference B against A: -1.32% [-5.73%, +6.45%] at 95%, 6 pairs, 10000 resamples, seed 20260101
+    p-value 0.6257
+    t-TOST (descriptive, never decides): mean -0.20%, p 0.1588 (lower 0.1588, upper 0.1302)
+    - the 95% interval is neither inside +/-3.00% nor outside +/-3.00%
+
+H11  all_of  INCONCLUSIVE
+    claim: H11: no strategy differs from least-active in the negative controls; a difference outside 5 percent invalidates the harness
+    - H11-W0-rr: CONFIRMED
+    - H11-W0-lt: CONFIRMED
+    - H11-W0-lw: CONFIRMED
+    - H11-W1-rr: INCONCLUSIVE
+    - H11-W1-lt: INCONCLUSIVE
+    - H11-W1-lw: INCONCLUSIVE
+
+Summary: 9 confirmed, 0 refuted, 7 inconclusive, 1 invalid of 17.
+benchmark: 1 of 17 verdicts are INVALID: the evidence cannot answer them (see above)
+exit status 1

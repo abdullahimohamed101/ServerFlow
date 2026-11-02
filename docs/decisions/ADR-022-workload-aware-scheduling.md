@@ -158,8 +158,8 @@ package has no logger and no other numeric override logs, so none is added. (10)
 5.5 / 6.7 us at 50, 118 / 96 us at 1,000; `least-work` 0.8 / 1.0, 5.6 / 6.8, 113 / 101 us. The ledger path with `least-active` costs the same (5.8 / 7.1 us at 50). The budget is 25 us at 50 workers and 400 us at 1,000.
 The strategy alone (`BenchmarkSelect`) is 0.3 to 0.5 us at 3 to 50 workers and 3.4 us at 1,000 with three allocations whatever the fleet size; most of the router's time is the private copy of the view.
 
-**Honest limits.** Everything here is simulator-validated, not hardware-validated, and no scheduler comparison has been run: hypotheses H3 and H4 (the confirmatory primaries) are evaluated only in PR J, after the
-predictions freeze (PR I). In particular: (a) the mock worker counts words as tokens, its `recent_tokens_per_second` is the sum of its active generations (it grows with load, so the peak measures the highest
+**Honest limits.** Everything here is simulator-validated, not hardware-validated. When this section was written no scheduler comparison had been run; hypotheses H3 and H4 (the confirmatory primaries) were evaluated in PR J, after the
+predictions freeze (PR I): see "[PR J] Results" below. In particular: (a) the mock worker counts words as tokens, its `recent_tokens_per_second` is the sum of its active generations (it grows with load, so the peak measures the highest
 demand seen, not a hardware limit), and it has no batching: on it `least-work`'s capacity term is a demand signal, which is exactly why PR E builds the richer simulator; (b) the cost of a request is an estimate
 (`max_tokens` is an upper bound on output, the input estimate is low for dense text, ADR-015) and a request counts its full cost until it ends; (c) other gateways' load is visible only through the reported active count and priced at
 the mean; with several gateways each gateway's ledger sees its own share (Phase 8); (d) a worker that flaps out of the snapshot loses its ledger entry while its requests run, so `WorkAhead` is a lower bound
@@ -212,7 +212,27 @@ Docs only. `docs/benchmarks/phase-14-predictions.md` registers H1 (a guard), H2,
 **Load and the upstream header timeout (also changes from the plan).** The plan's 80% and 50% of capacity are replaced by 14 clients (58% of 24 slots, inside the harness's 60% safe limit) in the main cells and 7 (29%) in the controls, runs of 60 s, with the harness's default 5% error gate kept for every cell and arm. Errors seen in early probes were 504 UPSTREAM_TIMEOUT from the embedded gateway's fixed 30 s header timeout (a long non-streaming request sends headers only when generation completes), not a load effect; every cell therefore runs with `--upstream-header-timeout 120s` (PR #75), and **PR I depends on PR #75: cells run without it are invalid**. The verdict selectors cannot match the option, so the verifier audits `upstream_header_timeout_ms` = 120000 in each result. Separately, `round-robin` piling long requests on the slow, KV-poor worker (strict first-in-first-out admission in the simulator) is an expected, reportable finding in W2. That a 504 is not retried (`attempts: 1`) is unexplained and unchanged. Details in the predictions file.
 
 The rest of PR G-lite's neighbours are recorded here as they land: `latency-aware` and the TTFT signal (PR C2), the rest of D24
-and the results (PR J). Until then the plan is the source of truth. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
+and the results (PR J, below). The plan is the source of truth for what is not yet built. The defaults do not change: `scheduler.strategy` stays `round-robin` and the overlay stays `max`.
+
+### [PR J] Results of the pre-registered experiments (D23, D26, D28 steps 4 to 6)
+
+Full tables, per-arm numbers, error rates and caveats: `docs/benchmarks/phase-14-results.md`; the verdict tool's output verbatim: `docs/benchmarks/phase-14-runs/verdict-final.txt`; compact archive of the `result.json` files: `docs/benchmarks/phase-14-runs/`. All results are simulator-validated, not hardware-validated, from one machine, one gateway and a non-blind pre-registration.
+
+Tuning pass (H5a): `least-work` `input_weight` tuned on seeds 1 to 10, W1 and W2, `mixed` and `heavy-tail`, to **0.3** (mean ratio 0.984 against weight 1.0; the differences between weights are within seed noise). The tuned-values file and freeze fields were committed before any held-out run.
+
+| Hypothesis | Verdict (tool output) |
+| --- | --- |
+| H1 guard (ledger does not change `least-active` p95, W0) | CONFIRMED |
+| H2 (`least-tokens`, `least-work` equal `least-active`, identical workers) | CONFIRMED (H2a, H2b) |
+| **H3** (`least-tokens` cuts p95 by at least 10% against `least-active`, W1 `heavy-tail`) | **INCONCLUSIVE** (+0.20%, interval -4.58% to +11.17%, 8 pairs) |
+| **H4a** (`least-work` cuts p95 by at least 15% against `least-tokens`, W2 `mixed`) | **INCONCLUSIVE** (+13.14%, interval +1.63% to +22.43%; median below the threshold) |
+| **H4b** (`round-robin` at least 25% worse than `least-work`, W2 `mixed`) | **CONFIRMED** (+51.05%, interval +25.76% to +67.67%, Holm-adjusted p 0.02344) |
+| H4 (roll-up) | INCONCLUSIVE |
+| H5a (tuned weight in [0.1, 0.5]) | CONFIRMED (0.3) |
+| H5b (tuned weight cuts held-out `prefill-heavy` p95 by at least 5%) | INCONCLUSIVE (+2.68%, interval -5.25% to +5.23%) |
+| H11 (controls: W0 all three strategies; W1 all three) | INCONCLUSIVE (W0 three CONFIRMED; W1 three INCONCLUSIVE) |
+
+What this supports: in a heterogeneous simulated fleet (three hardware generations) at 58% load, `least-work` had a 51% lower median p95 than `round-robin`; `least-work` did better than `least-tokens` in that fleet in the median (13%, interval excluding zero) but not by the registered 15%; and the work-aware strategies are indistinguishable from `least-active` on identical constant-speed workers. What it does not support: the claim that `least-tokens` beats `least-active` on a heavy-tail workload in a homogeneous fleet (H3 is inconclusive, the interval includes zero), that `least-work` beats `least-tokens` by 15% (H4a), or any claim from the tuned weight (H5b inconclusive). No prediction was REFUTED. Two invalid H3 runs (error rate above 5%, coinciding with a wall-clock jump on the machine) were rerun by the predictions document's rule; both attempts are reported in the results page. The defaults do not change, and nothing here meets D26's criteria for flipping one.
 
 ## Consequences
 
