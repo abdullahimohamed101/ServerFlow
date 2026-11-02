@@ -2,7 +2,7 @@
 # The local Kubernetes deployment of ServerFlow on kind (Phase 17, docs/operations/kubernetes-deployment.md).
 # The cluster, the six images, the Secrets, the data tier (PostgreSQL, Redis, Redpanda) with its one-shot jobs (PR 2) and the
 # core system: control plane, gateway, mock workers with their agents, usage consumer, the tenants and keys (PR 3).
-# Prometheus, Grafana and Jaeger with tracing switched on (PR 4). NetworkPolicy arrives in PR 5, the rolling-update test in PR 6.
+# Prometheus, Grafana and Jaeger with tracing switched on (PR 4). NetworkPolicy (PR 5). The rolling-update test (PR 6).
 #
 #   scripts/k8s-up.sh up        preflight, secrets, cluster, images, namespace, Secrets, data tier, jobs; idempotent
 #   scripts/k8s-up.sh down      delete the kind cluster and its kubeconfig (nothing else is touched)
@@ -15,7 +15,10 @@
 #   scripts/k8s-up.sh diagnose  status, events, descriptions and the last log lines of every pod (secret-free), for a failed run
 #   scripts/k8s-up.sh render    the rendered manifests of the kind overlay (no Secret content), safe to paste
 #   scripts/k8s-up.sh check     the static checks without a cluster (render, kubeconform, tests/k8s): same as `make k8s-check`
-#   scripts/k8s-up.sh roll-test not implemented yet (PR 6)
+#   scripts/k8s-up.sh roll-test the rolling-update measurement (D20): 24 clients through 127.0.0.1:28080 while the gateway is replaced
+#                               twice, then the negative control with the drain off; the gateway configuration is restored
+#                               afterwards; the last line is "roll-test: PASS (...)" or "roll-test: FAIL (...)"
+#   scripts/k8s-up.sh roll-render [normal|control] [TAG]   the gateway objects as roll-test applies them (no cluster; a test reads it)
 #   scripts/k8s-up.sh --check-context NAME   exit 0 only for the one allowed context, kind-serverflow (needs no Docker or kubectl)
 #
 # Safety (AC 12): every kubectl call goes through kc(), which passes the dedicated kubeconfig .dev/k8s/kubeconfig and the
@@ -986,6 +989,194 @@ cmd_diagnose() {
   kc -n "$NAMESPACE" describe pods 2>&1 || true
 }
 
+# ---------------------------------------------------------------------------------------------------------
+# roll-test: the rolling-update measurement with its negative control (D20). A closed-loop load of 24 clients
+# (tests/k8s/e2e) runs through the host entry point while the gateway is replaced twice; the verdict is the load
+# generator's: zero failed requests and at least 3000 during the rollouts. Then the same procedure with the drain switched
+# off (resilience off, readiness grace 0) must produce failures, or the test cannot see the outage and the command fails.
+# The gateway's configuration is restored afterwards (an exit trap), whatever happens.
+# ---------------------------------------------------------------------------------------------------------
+ROLL_DIR="$K8S_DIR/roll"
+ROLL_BIN="$ROLL_DIR/e2e"
+ROLL_PHASE_SECONDS="${ROLL_PHASE_SECONDS:-20}"
+ROLL_MIN_REQUESTS=3000
+ROLL_DIRTY=0
+ROLL_LG_PID=""
+ROLL_POLLER_PID=""
+ROLL_STEP_DESC=""
+
+# gateway_docs: the rendered gateway ConfigMap and Deployment, nothing else of the overlay.
+gateway_docs() {
+  render | awk '
+    function flush() {
+      if ((doc ~ /\nkind: ConfigMap\n/ && doc ~ /\n  name: gateway-config-[a-z0-9]+\n/) || (doc ~ /\nkind: Deployment\n/ && doc ~ /\n  name: gateway\n/)) printf "---\n%s", doc
+      doc = ""
+    }
+    /^---$/ { flush(); next }
+    { doc = doc $0 "\n" }
+    END { flush() }'
+}
+
+# gateway_variant SUFFIX MEMLIMIT PROFILE TAG: the gateway objects with a new ConfigMap name (so a new hash, which rolls the
+# pods), GOMEMLIMIT changed (a harmless edit), the drain switched off when PROFILE is control, and the pod template annotation
+# serverflow.dev/image-tag set to TAG when TAG is not empty. Every line that is edited must exist, else the render changed.
+gateway_variant() {
+  local suffix="$1" mem="$2" profile="$3" tag="$4" docs line
+  docs="$(gateway_docs)" || die "could not render the gateway objects"
+  for line in '  GOMEMLIMIT: 100MiB' '  SERVERFLOW_RESILIENCE_MODE: "on"' '  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 5s'; do
+    printf '%s\n' "$docs" | grep -qxF -- "$line" || die "the rendered gateway ConfigMap has no line '$line'; roll-test must be updated"
+  done
+  printf '%s\n' "$docs" | sed -e "s/gateway-config-[a-z0-9]*/gateway-config-$suffix/g" -e "s/^  GOMEMLIMIT: 100MiB\$/  GOMEMLIMIT: $mem/" |
+    if [ "$profile" = control ]; then
+      sed -e 's/^  SERVERFLOW_RESILIENCE_MODE: "on"$/  SERVERFLOW_RESILIENCE_MODE: "off"/' -e 's/^  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 5s$/  SERVERFLOW_RESILIENCE_DRAIN_READINESS_GRACE: 0s/'
+    else
+      cat
+    fi |
+    awk -v tag="$tag" '{ print } tag != "" && $0 == "    metadata:" { print "      annotations:"; print "        serverflow.dev/image-tag: \"" tag "\"" }'
+}
+
+gateway_terminating() { kc -n "$NAMESPACE" get pods -l app.kubernetes.io/component=gateway -o 'jsonpath={range .items[*]}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null | grep -c . || true; }
+
+gateway_settled() {
+  local want
+  want="$(kc -n "$NAMESPACE" get deployment gateway -o 'jsonpath={.spec.replicas}' 2>/dev/null || true)"
+  [ -n "$want" ] && [ "$(gateway_terminating)" = 0 ] && [ "$(gateway_pods | wc -l | tr -d ' ')" = "$want" ]
+}
+
+# roll_wait: the rollout is complete and every replaced pod is gone (rollout status returns while the last old pod still drains).
+roll_wait() {
+  kc -n "$NAMESPACE" rollout status deployment/gateway --timeout=300s >"$ROLL_DIR/rollout.log" 2>&1 || { explain "the gateway rollout did not complete"; die "the gateway rollout did not complete"; }
+  ROLL_STEP_DESC="$(($(date +%s) - ROLL_T0)) s (rollout status)"
+  poll 120 gateway_settled || { explain "replaced gateway pods did not terminate"; die "replaced gateway pods did not terminate within 120 s"; }
+  ROLL_STEP_DESC="$ROLL_STEP_DESC, $(($(date +%s) - ROLL_T0)) s until the last old pod was gone"
+}
+ROLL_T0=0
+
+# pod_poller FILE: once a second, one line per terminating gateway pod: "<unix seconds> <pod> <deletionTimestamp> <grace>".
+pod_poller() {
+  local now
+  while :; do
+    now="$(date +%s)"
+    kc -n "$NAMESPACE" get pods -l app.kubernetes.io/component=gateway -o 'jsonpath={range .items[*]}{.metadata.name} {.metadata.deletionTimestamp} {.metadata.deletionGracePeriodSeconds}{"\n"}{end}' 2>/dev/null |
+      awk -v now="$now" 'NF == 3 { print now, $0 }' >>"$1" || true
+    sleep 1
+  done
+}
+
+# roll_restore: the gateway as `make k8s-up` applied it. The annotation of the second rollout was applied from a render too, so
+# applying the original render removes it.
+roll_restore() {
+  local keep cm
+  gateway_docs | kc apply -f - >/dev/null 2>&1 || say "WARNING: could not re-apply the original gateway objects; run make k8s-up"
+  keep="$(gateway_docs | sed -n 's/^  name: \(gateway-config-[a-z0-9]*\)$/\1/p' | head -1)"
+  for cm in $(kc -n "$NAMESPACE" get configmaps -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^gateway-config-roll' || true); do
+    [ "$cm" = "$keep" ] || kc -n "$NAMESPACE" delete configmap "$cm" --ignore-not-found >/dev/null 2>&1 || true
+  done
+  kc -n "$NAMESPACE" rollout status deployment/gateway --timeout=300s >/dev/null 2>&1 || say "WARNING: the restored gateway rollout did not complete"
+}
+
+roll_cleanup() {
+  local rc=$?
+  trap - EXIT INT TERM
+  [ -z "$ROLL_LG_PID" ] || kill "$ROLL_LG_PID" 2>/dev/null || true
+  [ -z "$ROLL_POLLER_PID" ] || kill "$ROLL_POLLER_PID" 2>/dev/null || true
+  exec 9>&-
+  if [ "$ROLL_DIRTY" = 1 ]; then
+    say "restoring the gateway configuration"
+    roll_restore
+  fi
+  rm -f "$ROLL_DIR/control"
+  exit "$rc"
+}
+
+# roll_step MARK NAME SUFFIX PROFILE TAG: starts the load phase MARK, applies the changed gateway objects, waits for the
+# rollout and for the replaced pods to be gone; ROLL_STEP_DESC holds the durations.
+roll_step() {
+  printf 'mark %s\n' "$1" >&9
+  ROLL_T0="$(date +%s)"
+  if [ -n "$5" ]; then say "$2: $1, the image tag annotation changes"; else say "$2: $1, the ConfigMap hash changes"; fi
+  gateway_variant "$3" 99MiB "$4" "$5" | kc apply -f - >/dev/null || die "could not apply the gateway objects"
+  roll_wait
+}
+
+# roll_scenario NAME PROFILE EXPECT: baseline, two rollouts, after; the report goes to the terminal. Returns the load
+# generator's verdict (0 = as expected for EXPECT).
+roll_scenario() {
+  local name="$1" profile="$2" expect="$3" d1 d2 rc=0 fifo="$ROLL_DIR/control"
+  : >"$ROLL_DIR/$name.pods"
+  rm -f "$fifo"
+  mkfifo "$fifo"
+  exec 9<>"$fifo"
+  "$ROLL_BIN" run --key-file "$K8S_DIR/api_key" --url "$GATEWAY_URL" --clients 24 --min-rollout "$ROLL_MIN_REQUESTS" --expect "$expect" \
+    --log "$ROLL_DIR/$name.requests.csv" --json "$ROLL_DIR/$name.json" <"$fifo" >"$ROLL_DIR/$name.report" 2>"$ROLL_DIR/$name.err" &
+  ROLL_LG_PID=$!
+  pod_poller "$ROLL_DIR/$name.pods" &
+  ROLL_POLLER_PID=$!
+  say "$name: 24 clients started; baseline for $ROLL_PHASE_SECONDS s"
+  sleep "$ROLL_PHASE_SECONDS"
+  kill -0 "$ROLL_LG_PID" 2>/dev/null || { cat "$ROLL_DIR/$name.err" >&2; die "the load generator stopped during the baseline"; }
+
+  roll_step roll1 "$name" "roll${name}1" "$profile" ""
+  d1="$ROLL_STEP_DESC"
+  roll_step roll2 "$name" "roll${name}1" "$profile" "$name-$ROLL_T0"
+  d2="$ROLL_STEP_DESC"
+
+  printf 'mark after\n' >&9
+  say "$name: load continues for $ROLL_PHASE_SECONDS s"
+  sleep "$ROLL_PHASE_SECONDS"
+  printf 'stop\n' >&9
+  wait "$ROLL_LG_PID" || rc=$?
+  ROLL_LG_PID=""
+  kill "$ROLL_POLLER_PID" 2>/dev/null || true
+  wait "$ROLL_POLLER_PID" 2>/dev/null || true
+  ROLL_POLLER_PID=""
+  exec 9>&-
+  rm -f "$fifo"
+
+  printf '== %s ==\n' "$name"
+  cat "$ROLL_DIR/$name.report"
+  cat "$ROLL_DIR/$name.err" >&2
+  printf 'rollout 1 (ConfigMap hash): %s\nrollout 2 (image tag annotation): %s\n' "$d1" "$d2"
+  "$ROLL_BIN" pods "$ROLL_DIR/$name.pods" || true
+  return "$rc"
+}
+
+cmd_roll_test() {
+  guard_context
+  command -v go >/dev/null 2>&1 || die "go is not installed (the load generator is built from tests/k8s/e2e)"
+  command -v curl >/dev/null 2>&1 || die "curl is not installed"
+  [ -s "$K8S_DIR/api_key" ] || die "there is no API key in $K8S_DIR (make k8s-up creates it)"
+  case "$ROLL_PHASE_SECONDS" in '' | *[!0-9]*) die "ROLL_PHASE_SECONDS must be a whole number of seconds" ;; esac
+  (umask 077 && mkdir -p "$ROLL_DIR")
+  say "building the load generator"
+  go build -o "$ROLL_BIN" ./tests/k8s/e2e || die "could not build tests/k8s/e2e"
+  say "waiting for a healthy stack (every pod ready with zero restarts, the gateway serving mock-model)"
+  poll 120 k1_pods_ready || { explain "the stack is not healthy; run make k8s-smoke"; die "the stack is not healthy"; }
+  poll 60 k2_gateway_ready || die "the gateway does not answer through $GATEWAY_URL"
+  trap roll_cleanup EXIT INT TERM
+  local started main=0 control=0
+  started=$(date +%s)
+  ROLL_DIRTY=1
+  roll_scenario main normal none || main=$?
+
+  say "negative control: resilience off and readiness grace 0 (the drain switched off); this run is expected to fail requests"
+  ROLL_T0="$(date +%s)"
+  gateway_variant rollctl0 100MiB control "" | kc apply -f - >/dev/null || die "could not apply the control configuration"
+  roll_wait
+  poll 60 k2_gateway_ready || die "the gateway does not answer after the control configuration"
+  sleep 5
+  roll_scenario control control failures || control=$?
+
+  printf 'duration: %ds\n' "$(($(date +%s) - started))"
+  if [ "$main" = 0 ] && [ "$control" = 0 ]; then
+    printf 'roll-test: PASS (no failed request with the drain; the control without it failed requests, so the test can see the outage)\n'
+    return 0
+  fi
+  [ "$main" = 0 ] || printf 'roll-test: FAIL (the rolling update with the drain failed requests or made too few; see the report above)\n'
+  [ "$control" = 0 ] || printf 'roll-test: FAIL (the negative control produced no failure: the test cannot see the outage)\n'
+  return 1
+}
+
 # check: the static checks (no cluster); the same stage CI runs.
 cmd_check() { exec "$ROOT/scripts/quality.sh" k8s; }
 
@@ -1002,9 +1193,10 @@ case "$CMD" in
   check) cmd_check ;;
   diagnose) cmd_diagnose ;;
   audit) cmd_audit ;;
-  roll-test) die "roll-test is not implemented yet (the rolling-update test is PR 6)" ;;
+  roll-test) cmd_roll_test ;;
+  roll-render) gateway_variant rolldemo 99MiB "${1:-normal}" "${2:-}" ;;
   *)
-    printf 'usage: scripts/k8s-up.sh up|down|reset|status|smoke|render|check|diagnose|audit|roll-test | --check-context NAME\n' >&2
+    printf 'usage: scripts/k8s-up.sh up|down|reset|status|smoke|render|check|diagnose|audit|roll-test|roll-render | --check-context NAME\n' >&2
     exit 2
     ;;
 esac

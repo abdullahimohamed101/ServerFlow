@@ -54,3 +54,22 @@ The Colima VM here has 3.81 GiB, below the 4 GB the scripts demand, and the plan
 the following was run locally on kind: cold and warm `make k8s-up`, kind node memory and the disk a loaded cluster uses, whether `kind load docker-image` works
 with Docker 29's image store (the `docker save` fallback is written, untested), the CI job's duration against the 30-minute budget, the data tier's
 real memory use against its limits. They are recorded by the first advisory CI run and by the PRs that follow.
+
+## Rolling update and drain (PR 6): structure only, nothing measured yet
+
+No number below exists yet. The command is `make k8s-roll-test`; the first nightly or manual advisory CI run produces the figures, which are copied here
+with the machine (runner type, CPUs), the date and the commit. Tables stay empty until then; a number without a run behind it does not belong here.
+
+| Run | Requests total | During the rollouts | Failures (by class) | Rule-of-three bound | Rollout 1 | Rollout 2 | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| rolling update with the drain (resilience on, grace 5 s) | not measured | not measured | not measured | not measured | not measured | not measured | not measured |
+| negative control (resilience off, grace 0) | not measured | not measured | not measured | not applicable | not measured | not measured | not measured |
+
+| Per replaced pod (SIGTERM to the pod object gone, seconds resolution) | Run | Value |
+| --- | --- | --- |
+| maximum over all replaced pods | with the drain | not measured |
+| p99 | with the drain | not measured (needs more pods than one run replaces: aggregate several runs) |
+| time until no new connection reaches a terminating pod (propagation) | with the drain | not obtainable by the current harness; to be estimated from the control's failures or from a later instrument |
+
+Observation runs (pod delete under load, a stalled rollout, a worker roll, a control-plane restart): not run.
+

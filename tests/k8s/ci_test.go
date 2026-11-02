@@ -188,8 +188,8 @@ func TestWorkflowTokenHygiene(t *testing.T) {
 		t.Error("the diagnostics must be filtered (grep for the generated values, remove the file on a hit) before the artifact upload")
 	}
 	// Every file the artifact uploads goes through that loop.
-	if !strings.Contains(k, "for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log; do") {
-		t.Error("the secret filter must cover the diagnose, smoke and audit logs: all three are uploaded")
+	if !strings.Contains(k, "for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log k8s-roll.log; do") {
+		t.Error("the secret filter must cover the diagnose, smoke, audit and roll-test logs: all four are uploaded")
 	}
 	for _, uploaded := range regexp.MustCompile(`runner\.temp \}\}/(\S+)`).FindAllStringSubmatch(k, -1) {
 		if !strings.Contains(k, "for f in ") || !strings.Contains(k[strings.Index(k, "for f in k8s-diagnose"):strings.Index(k, "actions/upload-artifact@")], uploaded[1]) {
@@ -204,7 +204,7 @@ func TestWorkflowTokenHygiene(t *testing.T) {
 	}
 }
 
-// TestKindJobTriggersAndBudget (D24): advisory, 30-minute budget, triggers on the files that change what runs in the cluster, on
+// TestKindJobTriggersAndBudget (D24): advisory, 40-minute budget (the rolling-update test adds about 10 minutes to the 30 of the smoke), triggers on the files that change what runs in the cluster, on
 // every push to master and nightly, and the node image comes from the pinned mirror.
 func TestKindJobTriggersAndBudget(t *testing.T) {
 	text := read(t, ".github/workflows/kubernetes.yml")
@@ -213,7 +213,7 @@ func TestKindJobTriggersAndBudget(t *testing.T) {
 			t.Errorf("kubernetes.yml does not trigger on %s", path)
 		}
 	}
-	for _, want := range []string{"timeout-minutes: 30", "schedule:", "branches: [master, main]", "workflow_dispatch:"} {
+	for _, want := range []string{"timeout-minutes: 40", "schedule:", "branches: [master, main]", "workflow_dispatch:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("kubernetes.yml lost %q", want)
 		}

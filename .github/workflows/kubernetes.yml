@@ -5,6 +5,9 @@ name: Kubernetes
 # tier, control plane, gateways, workers with agents, usage consumer, Prometheus, Grafana, Jaeger) under Pod Security `restricted`, bootstraps tenants and
 # keys, runs the smoke checks K1-K15 and D2-D7 and the audit. It has not run on GitHub before the pull request
 # that adds it; until a run is green its result is unknown (docs/operations/kubernetes-deployment.md, "What is verified").
+# The rolling-update test (D20: 24 clients while the gateway is replaced twice, plus the negative control) runs in the nightly
+# schedule, on manual dispatch, and on pull requests that change the gateway manifests, the drain code, the test script or its
+# load generator; it adds roughly 10 minutes to those runs. It is advisory like the rest of the job.
 # The static checks are the k8s-static job in ci.yml, which runs on every pull request.
 # Actions are pinned to commit SHAs (the comment names the release); Dependabot keeps them current.
 
@@ -19,6 +22,7 @@ on:
       - "internal/worker/**"
       - "observability/**"
       - "scripts/k8s-up.sh"
+      - "tests/k8s/e2e/**"
       - "scripts/k8s-tool.sh"
       - "scripts/dev-up.sh"
       - "scripts/dev-pull.sh"
@@ -44,11 +48,13 @@ jobs:
   kind-smoke:
     name: k8s kind smoke (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Two commits: on a pull request HEAD is the merge commit, and HEAD^1 is the base, so the changed files are known.
+          fetch-depth: 2
       - name: Pinned tool versions (deploy/kubernetes/tools.env is the single source)
         run: grep -E '^(KUBERNETES_VERSION|KUBECTL_LINUX_AMD64_SHA256|KIND_VERSION|KIND_LINUX_AMD64_SHA256)=' deploy/kubernetes/tools.env >> "$GITHUB_ENV"
       - name: Install kubectl and kind (checksum verified)
@@ -82,13 +88,36 @@ jobs:
           set -o pipefail
           scripts/k8s-up.sh audit 2>&1 | tee "$RUNNER_TEMP/k8s-audit.log"
           tail -1 "$RUNNER_TEMP/k8s-audit.log" | grep -Eq '^audit: [0-9]+ pods, [0-9]+ containers, 0 exceptions$'
+      - name: Does this run include the rolling-update test (nightly, manual, or a change to the gateway manifests or drain code)?
+        id: roll
+        run: |
+          run=false
+          case "${{ github.event_name }}" in
+            schedule | workflow_dispatch) run=true ;;
+            pull_request)
+              if git diff --name-only HEAD^1 HEAD | grep -Eq '^(deploy/kubernetes/base/gateway|internal/gateway/resilience|scripts/k8s-up\.sh$|tests/k8s/e2e/|\.github/workflows/kubernetes\.yml$)'; then run=true; fi
+              ;;
+          esac
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "rolling-update test: $run"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.roll.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Rolling-update test with its negative control (24 clients, the gateway replaced twice; zero failures and at least 3000 requests)
+        if: steps.roll.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          scripts/k8s-up.sh roll-test 2>&1 | tee "$RUNNER_TEMP/k8s-roll.log"
+          tail -1 "$RUNNER_TEMP/k8s-roll.log" | grep -Eq '^roll-test: PASS'
       - name: Cluster state on failure (secret-free by construction, and checked)
         if: failure()
         run: |
           scripts/k8s-up.sh diagnose > "$RUNNER_TEMP/k8s-diagnose.txt" 2>&1 || true
           # Belt and braces for the artifact: withhold the log if any generated secret value appears in it (nothing is printed).
           { for f in .dev/*.env; do sed -n 's/^[A-Z_]*=//p' "$f"; done; for f in .dev/k8s/api_key*; do [ -f "$f" ] && tr -d '\n' < "$f" && echo; done; } | grep -E '.{12,}' > "$RUNNER_TEMP/needles" || true
-          for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log; do
+          for f in k8s-diagnose.txt k8s-smoke.log k8s-audit.log k8s-roll.log; do
             if [ -f "$RUNNER_TEMP/$f" ] && grep -qF -f "$RUNNER_TEMP/needles" "$RUNNER_TEMP/$f"; then
               echo "a generated secret appeared in $f; that file is withheld"
               rm -f "$RUNNER_TEMP/$f"
@@ -104,6 +133,7 @@ jobs:
             ${{ runner.temp }}/k8s-diagnose.txt
             ${{ runner.temp }}/k8s-smoke.log
             ${{ runner.temp }}/k8s-audit.log
+            ${{ runner.temp }}/k8s-roll.log
           if-no-files-found: ignore
       - name: Delete the cluster and check nothing is left behind
         if: always()
