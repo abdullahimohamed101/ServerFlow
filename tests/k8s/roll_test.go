@@ -191,6 +191,10 @@ func TestRollTestProcedure(t *testing.T) {
 			t.Errorf("the roll-test section uses %q", bad)
 		}
 	}
+	// A failed test's assertion text is in the gate's summary (go test -v prints it before the "--- FAIL" line).
+	if q := read(t, "scripts/quality.sh"); !strings.Contains(q, "--- assertion messages (file_test.go:line: message) in the full log ---") {
+		t.Error("quality.sh's failure summary must include the assertion lines of failed tests")
+	}
 	// Every state the test creates is under the script's own state directory.
 	if !strings.Contains(r, `ROLL_DIR="$K8S_DIR/roll"`) {
 		t.Error("the roll-test files must live under $K8S_DIR")

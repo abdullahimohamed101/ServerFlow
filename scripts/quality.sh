@@ -71,6 +71,14 @@ show_failures() {
   local found
   found="$(grep -E -A12 '^(--- FAIL|    --- FAIL|FAIL|panic:|WARNING: DATA RACE)' "$log" | head -300 || true)"
   printf '%s\n' "${found:-(none matched; see the tail below)}" >&2
+  # go test -v prints a failed test's assertion text (t.Errorf, t.Fatalf: "file_test.go:LINE: message") BEFORE its
+  # "--- FAIL" line, so the lines above show only the name. These are the assertion lines themselves, with the lines that
+  # continue a multi-line message.
+  local asserts
+  asserts="$(grep -E -A8 '^ +[A-Za-z0-9_]+_test\.go:[0-9]+:' "$log" | head -200 || true)"
+  if [ -n "$asserts" ]; then
+    printf -- '--- assertion messages (file_test.go:line: message) in the full log ---\n%s\n' "$asserts" >&2
+  fi
   printf -- '--- last 80 lines ---\n' >&2
 }
 

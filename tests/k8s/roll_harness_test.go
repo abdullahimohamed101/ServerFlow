@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,17 @@ case "$*" in
   *"get pods"*"{.metadata.name}"*) n=$(cat "$D/gen" 2>/dev/null || echo 0); printf 'g%s-1\ng%s-2\ng%s-3\n' "$n" "$n" "$n" ;;
   *"get deployment gateway"*) echo 3 ;;
   *"get configmaps"*) printf 'gateway-config-rollmain1\n' ;;
-  *"rollout status"*) sleep "${FAKE_ROLL_SLEEP:-3}" ;;
+  *"rollout status"*)
+    # A rollout lasts as long as it takes the fake gateway to serve FAKE_ROLL_REQUESTS more requests, not a number of seconds:
+    # the verdicts then never depend on how fast the machine is. With no load running (the restore) the count stands still and
+    # the wait ends after 2 s.
+    c0=$(curl -s "$FAKE_GW/__count" || echo 0); last=$c0; idle=0; t=0
+    while [ $((c0 + ${FAKE_ROLL_REQUESTS:-1600})) -gt "$last" ] && [ "$idle" -lt 4 ] && [ "$t" -lt 240 ]; do
+      sleep 0.5; t=$((t + 1)); c=$(curl -s "$FAKE_GW/__count" || echo "$last")
+      if [ "$c" = "$last" ]; then idle=$((idle + 1)); else idle=0; fi
+      last=$c
+    done
+    ;;
   *"apply -f -"*)
     cat > "$D/applied.yaml"
     grep -o 'gateway-config-[a-z0-9]*' "$D/applied.yaml" | head -1 >> "$D/applied.log"
@@ -78,6 +89,8 @@ func runRollTestEnv(t *testing.T, bash string, extra []string, files ...string) 
 	const key = "sf_live_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"
 	must(os.WriteFile(filepath.Join(state, "api_key"), []byte(key+"\n"), 0o600))
 
+	// FAKE_SLOW=1 caps the fake gateway at about 50 requests a second (24 clients, 450 ms each). A machine can only be slower than
+	// that, never faster, so a run that needs more than 3000 requests during a few rollouts cannot get there on any machine.
 	slow := false
 	for _, e := range extra {
 		slow = slow || e == "FAKE_SLOW=1"
@@ -86,14 +99,16 @@ func runRollTestEnv(t *testing.T, bash string, extra []string, files ...string) 
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/readyz":
+		case "/__count": // read by the stub kubectl to time a rollout by requests served
+			_, _ = fmt.Fprint(w, n.Load())
 		case "/v1/models":
 			_, _ = io.WriteString(w, `{"data":[{"id":"mock-model"}]}`)
 		default:
 			n.Add(1)
 			if slow {
-				time.Sleep(450 * time.Millisecond) // about 50 requests a second: the real cluster's shortfall in miniature
+				time.Sleep(450 * time.Millisecond)
 			}
-			time.Sleep(20 * time.Millisecond) // about 1000 requests a second: fast enough for 3000 in a rollout, slow enough not to exhaust ports
+			time.Sleep(20 * time.Millisecond) // slow enough not to exhaust local ports; rollouts are timed by requests served (the stub), not by seconds
 			if kind, err := os.ReadFile(filepath.Join(fake, "outage")); err == nil {
 				if strings.TrimSpace(string(kind)) == "capacity" { // load, not the drain
 					w.WriteHeader(503)
@@ -116,7 +131,7 @@ func runRollTestEnv(t *testing.T, bash string, extra []string, files ...string) 
 	cmd := exec.Command(bash, "-u", filepath.Join(root(t), "scripts/k8s-up.sh"), "roll-test")
 	cmd.Dir = root(t)
 	cmd.Env = append(os.Environ(), "PATH="+fake+string(os.PathListSeparator)+os.Getenv("PATH"), "K8S_UP_DIR="+state, "FAKE_DIR="+fake,
-		"FAKE_VERSION="+pins(t)["KUBERNETES_VERSION"], "K8S_UP_TEST_GATEWAY_PORT="+u.Port(), "ROLL_PHASE_SECONDS=1", "K8S_UP_WAIT=5")
+		"FAKE_VERSION="+pins(t)["KUBERNETES_VERSION"], "K8S_UP_TEST_GATEWAY_PORT="+u.Port(), "FAKE_GW="+gw.URL, "ROLL_PHASE_SECONDS=1", "K8S_UP_WAIT=5")
 	cmd.Env = append(cmd.Env, extra...)
 	b, err := cmd.CombinedOutput()
 	out := string(b)
@@ -228,10 +243,11 @@ func TestRollTestControlIsNotFooledByCapacityRejections(t *testing.T) {
 }
 
 // TestRollTestKeepsRollingUntilEnoughRequests: the rollouts continue past two until 3000 requests were made during them, and the
-// cap stops a run that cannot get there with a clear failure. The fake gateway answers about 50 requests a second here, so
-// two 3 s rollouts make far fewer than 3000.
+// cap stops a run that cannot get there with a clear failure. The fake gateway is capped at about 50 requests a
+// second and a rollout of the stub kubectl lasts for 100 served requests, so three rollouts make some hundreds of requests on
+// any machine (a slower one makes fewer).
 func TestRollTestKeepsRollingUntilEnoughRequests(t *testing.T) {
-	r := runRollTestEnv(t, "bash", []string{"FAKE_SLOW=1", "ROLL_MAX_ROLLOUTS=3"})
+	r := runRollTestEnv(t, "bash", []string{"FAKE_SLOW=1", "FAKE_ROLL_REQUESTS=100", "ROLL_MAX_ROLLOUTS=3"})
 	if r.err == nil {
 		t.Fatalf("a run that could not reach 3000 requests passed\n%s", r.out)
 	}
