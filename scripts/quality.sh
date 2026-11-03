@@ -75,7 +75,7 @@ show_failures() {
   # "--- FAIL" line, so the lines above show only the name. These are the assertion lines themselves, with the lines that
   # continue a multi-line message.
   local asserts
-  asserts="$(grep -E -A8 '^ +[A-Za-z0-9_]+_test\.go:[0-9]+:' "$log" | head -200 || true)"
+  asserts="$(grep -E -A60 '^ +[A-Za-z0-9_]+_test\.go:[0-9]+:' "$log" | head -600 || true)"
   if [ -n "$asserts" ]; then
     printf -- '--- assertion messages (file_test.go:line: message) in the full log ---\n%s\n' "$asserts" >&2
   fi
@@ -341,7 +341,7 @@ k8s() {
     TestRollVariantsAreTheGatewayWithOneEditEach TestRollTestProcedure TestRollTestCIWiring \
     TestRollTestVerdictIsTheLastLineAfterTheRestore TestRollTestFailedRestoreFailsEvenAfterAPass TestRollTestRolloutThatReplacesNothingCannotPass \
     TestRollTestSignalsAreHandledAndTheRestoreIsProtected TestControlNeedsADrainAttributableOutageInTheRollouts TestReportShowsThroughputAndSeparatesCapacity TestStatusFileCountsRolloutRequests \
-    TestRollTestControlIsNotFooledByCapacityRejections TestRollTestKeepsRollingUntilEnoughRequests \
+    TestRollTestControlIsNotFooledByCapacityRejections TestRollTestKeepsRollingUntilEnoughRequests TestOutageFlagIsNeverReadAsAnAbortWhileItIsRewritten \
     TestClassification TestTransportFailures TestRequestsAreNeverRetried TestKeyIsSentAndNeverReported TestSummaryPhasesAndVerdict TestRuleOfThree \
     TestPodObservations TestCheckLoopback TestRunEndToEnd TestRunSeesAnOutage TestMainRefusesBadInput; do
     grep -q -- "--- PASS: $t " "$log" || fail "expected $t to run and pass"
