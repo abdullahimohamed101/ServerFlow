@@ -14,7 +14,7 @@ Phase 16 runs the whole system in Docker Compose on one machine. Spec section 58
 readiness/liveness, resource limits; rolling gateway update with no outage". ADR-021 and the Phase 16 plan (D29) handed over what Kubernetes
 must decide: the worker agent's liveness signal, the registry and image tags, TLS for the control-plane token, Secrets instead of `env_file`,
 metrics scraping without `dns_sd`, and `gateway.worker_networks`. Phase 15 (`docs/operations/resilience.md`) left real balancers and
-termination grace periods to this phase. No Kubernetes cluster or tool existed on the development machine, the Docker VM there has 4 GiB, and
+termination grace periods to this phase. No Kubernetes cluster or tool existed on the development machine, the Docker VM there has 3.81 GiB, and
 the owner delegated the open decisions to the coordinator (plan, "Decisions on the open questions"); every default was taken and any of them can
 be overridden on review.
 
