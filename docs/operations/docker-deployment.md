@@ -195,5 +195,5 @@ Bumping an image: see "Operational notes" in ADR-021 (Dependabot's compose suppo
 
 ## What is deliberately not here
 
-TLS between services, secrets management, HA data stores, image signing or SBOMs, Kubernetes manifests (Phase 17 reuses these six images, the
-`healthcheck` binary as an exec probe and the variable names above), native Windows support for the scripts (use WSL2).
+TLS between services, secrets management, HA data stores, image signing or SBOMs, Kubernetes manifests in this stack (Phase 17 did them separately: it reuses these six images, the
+`healthcheck` binary as an exec probe and the variable names above; see `docs/operations/kubernetes-deployment.md` and ADR-023), native Windows support for the scripts (use WSL2).

@@ -75,6 +75,9 @@ per-worker concurrency.
   `make dev-up` (Phase 16, `docs/operations/docker-deployment.md`) runs the whole system in containers with its own Prometheus and Grafana on
   `19091` and `13000`, using `observability/prometheus/compose/` (the same job names, rules and dashboards; the gateway and control-plane jobs present the
   metrics bearer token and the gateway replicas are found by DNS). The two stacks use different ports and project names, but running both is pointless.
+  `make k8s-up` (Phase 17, `docs/operations/kubernetes-deployment.md`, ADR-023 D14) runs the same rules and dashboards in a kind cluster: Prometheus finds pods with
+  `kubernetes_sd_configs` (no `dns_sd`, no Prometheus operator, a namespaced Role limited to reading pods), uses `observability/prometheus/kubernetes/prometheus.yml`
+  with the same job names, and sets `worker_id` to the pod name, which is the agent's registered ID. A test keeps the three Prometheus files in step.
 - The containers reach the host's processes through `host.docker.internal` (`observability/prometheus/targets/local.yml`). A loopback-bound
   metrics listener is reachable that way on Colima (verified for Phase 10). If it is not on your Docker, either bind the listener to a reachable
   address with a token (`SERVERFLOW_METRICS_LISTEN=0.0.0.0:9100 SERVERFLOW_METRICS_TOKEN=...` and `credentials_file` in the scrape job) or

@@ -136,7 +136,7 @@ lists every file, Git checked the sources out with CRLF line endings (the reposi
 | 14 | Workload-aware scheduler | In progress: the in-flight ledger, the opt-in `ledger` overlay and the `least-tokens` / `least-work` strategies are implemented (simulator-validated at best); the pre-registered experiments ran (PR J, `docs/benchmarks/phase-14-results.md`): `least-work` beat `round-robin` in a heterogeneous simulated fleet, other registered gains were inconclusive |
 | 15 | Fault tolerance | Complete (`docs/operations/resilience.md`, ADR-020, `docs/benchmarks/phase-15-chaos.md`); **on by default in registry mode, see the note below** |
 | 16 | Dockerized multi-service deployment | Complete (`docs/operations/docker-deployment.md`, ADR-021) |
-| 17 | Kubernetes | Not started |
+| 17 | Kubernetes | Complete on kind (`docs/operations/kubernetes-deployment.md`, ADR-023, `docs/benchmarks/phase-17-kubernetes.md`); advisory CI jobs, no cloud, multi-node or HA claim |
 | 18 | Kubernetes GPU workers | Not started |
 | 19 | Autoscaling | Not started |
 | 20 | Model-aware scaling | Not started |

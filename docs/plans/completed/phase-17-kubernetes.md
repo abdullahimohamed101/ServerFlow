@@ -1,6 +1,6 @@
 # Phase 17 — Kubernetes Deployment
 
-Status: Proposed (written 2026-10-22, awaiting approval of the decisions marked "Open decisions for the user"). No code, manifests or tools exist yet.
+Status: Completed (2026-11-02, PRs 1-7). Written 2026-10-22 as a proposal; the text below is the plan as approved and is not rewritten, see Implementation Notes at the end for what changed and what was not verified. The decision record is ADR-023 (the plan says ADR-022; that is Phase 14's).
 Owner: coding agent
 Depends on: Phase 16 merged (this plan was written against master `88954f1`, which also has Phase 15 pull requests A-F). Phase 15 PR G (the `resilience.mode` default flip, dashboard, alerts) may still be in flight: the manifests set the mode explicitly (D12), so the order does not matter.
 Spec: `docs/architecture/serverflow-spec.md` §37 (Kubernetes architecture: namespace `serverflow`, Deployments, stateful redis/kafka/postgres, monitoring), §38 (GPU resources, only kept possible), §39 (pod Running is not Ready), §40 (graceful drain, "test rolling deployments under load"), §44 (security: secrets via env/K8s secrets, no public Redis/Kafka/workers, TLS externally), §48 (`deploy/kubernetes (base/overlays)`, `helm`), §50 (configuration), §58 Phase 17 ("Deploy, service, configmap/secret, readiness/liveness, resource limits; rolling gateway update with no outage") and Phase 18 (GPU workers, out of scope)
@@ -260,3 +260,100 @@ The user was away and asked the coordinator to follow its own recommendations; t
   - Compose: the agents set `SERVERFLOW_WORKER_STATUS_LISTEN=127.0.0.1:9102` and their healthcheck runs `healthcheck http://127.0.0.1:9102/readyz` (readiness, not liveness, because Docker has one check and "registered" is what `docker compose ps` should show).
 
 - **PR 3 (core system) implemented** on `feature/p17-pr3-workloads`, not yet run on a cluster or on GitHub. Control plane, gateway, mock-worker pods with agent sidecar, usage consumer, kind overlay NodePorts, tenant/key bootstrap through one-off hardened admin pods, smoke K1-K7, K10, K12-K14 plus D2-D7, `k8s-audit`, and the advisory kind job in its first full form (renamed `kind-smoke`, nightly schedule, wider path triggers). Deviations: admin pods are created bare and read after completion instead of `kubectl run --rm -i` (attach loses output of fast containers); K6 reads `worker_requests_total` of each worker through the API server pod proxy because Prometheus does not exist yet; K14 uses the gateways' `rate limited` log lines to show 429s came from at least two pods; the Phase 17 ADR is ADR-023 because ADR-022 is Phase 14's.
+
+## Implementation Notes
+
+Built in seven pull requests (PR 1 on `plan/phase-17`, PRs 2-6 as `feature/p17-pr*`, PR 7 this close-out). Records: `docs/decisions/ADR-023-kubernetes-deployment.md`,
+`docs/operations/kubernetes-deployment.md`, `docs/benchmarks/phase-17-kubernetes.md`. The cluster numbers in this section come from the advisory kind job on PR #79,
+copied from its logs by hand; they are not reproduced in the repository.
+
+### Deviations from the plan
+
+- **ADR-023, not 022** (ADR-022 is Phase 14's scheduler record).
+- **D20 "twice" became "until at least 3000 requests".** The first CI run measured about 38 requests/s, so two rollouts made 2123 requests and the gate failed.
+  The loop alternates ConfigMap and annotation rollouts until 3000 requests were made during them, at most 6 rollouts (the main run needed 3, replacing nine pods).
+  The 3000-request bound was kept; the number of rollouts was not.
+- **The negative control uses readiness grace 0 with resilience on, not "resilience off".** The first run's resilience-off control failed 1546 requests with
+  `http_503_no_capacity` (867 before any rollout): a capacity effect, not the drain. The control is judged only on drain-attributable failures inside the rollouts
+  (refused, reset, closed, timeouts, cut or malformed streams and bodies, 502, 504) and keeps rolling until it sees one.
+- **Per-pod "SIGTERM to the last request" became "SIGTERM to the pod object gone".** Responses carry no pod identity and adding one to the gateway was out of scope;
+  the second is an upper bound of the first. The propagation time is therefore not measured, and the benchmark note says so.
+- **The image tag change is an annotation change** (`serverflow.dev/image-tag`), because no second image is built.
+- **Admin pods are created bare and read after completion** instead of `kubectl run --rm -i` (attach loses the output of fast containers); the single stdout line still goes
+  to a 0600 file.
+- **K6 reads `worker_requests_total` through the API server pod proxy** (Prometheus came later), and K14 shows the 429s came from at least two gateway pods through their
+  `rate limited` log lines.
+- **The engine memory minimum rose from 4096 to 6144 MB** in PR 4 (sum of limits 2848 MiB plus the node is 3872 MiB).
+- **Rolling-update CI step:** the job budget rose from 30 to 40 minutes; the step runs in the nightly and manual runs and on pull requests that touch the gateway manifests, the
+  drain code, the script, the load generator or the workflow.
+- **NetworkPolicy:** the node-source ranges (`10.244.0.1/32`, `172.16.0.0/12`, `192.168.0.0/16`) are a reasoned guess about kind's addressing, not narrowed to the node subnet.
+  Plan D16's Calico/k3d options were not needed: K15 passed on the runner, so kindnet enforced.
+- **Unchanged from the plan:** kustomize, kind, the loopback status endpoint, the agent as a sidecar container, Secrets from `dev-up.sh`, single-instance StatefulSets with PVCs,
+  `kubernetes_sd_configs`, no registry, no preStop hook, 5/30/45 s.
+
+### Acceptance criteria and evidence
+
+| AC | Result | Evidence |
+| --- | --- | --- |
+| 1 | met in CI; not run on a developer machine from the docs | kind job: `smoke: 21 of 21 checks passed` on PR #79 (K1-K15, D2-D7). No clean-room run by someone following only the docs |
+| 2 | met | `tests/k8s` image tests (six local images, third-party digests equal `docker-compose.yml`) |
+| 3 | admission met in CI; the audit's own result is not recorded here | the namespace enforces `restricted` (the pods were admitted, K1); `make k8s-audit` is a step of the job; `tests/k8s` states the same hardening independently |
+| 4 | partly | liveness independent of dependencies and the probe map: `tests/k8s` probe tests; the worker's removal on a killed pod: K12. The scale-to-0, killed-agent and stalled-rollout cases were not run as recorded observations |
+| 5 | not met as written | every container has requests and a memory limit and the sum is below the engine minimum (a test); K1 requires zero restarts; the 60 s load at concurrency 12 with restart counts was not run |
+| 6 | met on kind | main run: 4892 requests, 0 failed, 3360 during three rollouts (nine pods replaced), per-pod SIGTERM-to-gone 4-5 s, rollout 21-23 s; negative control 3-9 drain-attributable failures per run. Deviation: rollouts "until 3000", grace-0 control |
+| 7 | not met | `rollout restart` of the workers under load was not run; only the drain contract in `resilience.md` and the worker-pod tests cover it |
+| 8 | met for what the smoke covers | K13 (pod logs, non-Secret objects, events, node logs; searched, never printed), `TestNoSecretsCommitted` over `deploy/kubernetes/`, the render has no Secret values. Image layers were not searched |
+| 9 | met | `TestNetworkPolicyCatchesMutations` (32 mutations), the derived-equals-rendered test, K15 passed on the runner (enforced; allowed flows work; probes stayed green because K1 passed under the policies) |
+| 10 | met for targets | K8 (targets up, requests counted), K9 (five dashboards, datasource healthy), `quality.sh observability` unchanged. "Panels show data after the smoke" was not separately checked |
+| 11 | partly | PVC and `emptyDir` as designed (`tests/k8s`); the restart of PostgreSQL and Redpanda keeping data was checked on k3s only, not on kind; `kind delete cluster` leaving nothing was not compared with a snapshot |
+| 12 | met by tests | the context guard against a fake `kubectl` reporting other contexts and servers, state-directory and ownership tests with stub `kind` and `docker`; no run against a real second cluster |
+| 13 | met | PR 1: unit and race tests of `/healthz` and `/readyz`, config tests, Compose agent healthcheck |
+| 14 | met | `kubectl kustomize`, `kubeconform -strict`, `tests/k8s`, the CI gate that fails when a named test did not run; `quality.sh full` in each PR |
+| 15 | met except the deliberate break | both jobs ran green on GitHub with the smoke's last line recorded; "a deliberately broken readiness path makes the job fail" was not done on GitHub (the static tests that catch that mutation are below) |
+| 16 | partly | CI job time, tool sizes and the smoke are in the benchmark note; cold and warm `k8s-up`, node memory and Colima disk before and after are **not measured** |
+| 17 | met | `go test ./...`, `TestMakefileTargets` and the unchanged host targets in each PR |
+
+### Mutation checks
+
+The plan asks that each mutation be caught by a named test or smoke check. They exist as tests that break a rendered object and require the policy to report it:
+
+- `TestPolicyCatchesMutations` (`tests/k8s/mutation_test.go`): hardening, probes, resources, image pins, secrets and exposure mutations on the rendered manifests, and the unmutated render must be clean.
+- `TestGatewayDrainMutationsOnTheManifest` and `TestWorkerPodMutations` (`tests/k8s/core_test.go`): no `RESILIENCE_MODE=on`, grace 0 or above `shutdown_timeout`, termination period too short, `maxUnavailable: 1`, one replica, liveness on `/readyz`, a missing readiness probe, the worker pod shape.
+- `TestNetworkPolicyCatchesMutations` (`tests/k8s/netpol_test.go`): 32 loosenings and removals of NetworkPolicy edges.
+- The roll harness tests (`tests/k8s/roll_harness_test.go`, `tests/k8s/e2e`): the load generator classifies a cut stream, malformed SSE, truncated body, refusal, reset and timeout, the control's inverted verdict, and the key never appears in output.
+- The agent's `/readyz` before registration: the PR 1 unit tests.
+
+Results of the close-out run (2026-11-02, this PR, `go test -count=1 ./tests/k8s/...` with the pinned `kubectl` and `kubeconform` images through Docker, nothing pulled):
+see "Close-out verification" below. Not covered by a mutation check: the plan's "load generator replaced by a client that ignores errors" is covered only by the generator's own classification tests, not by running the control with such a client.
+
+### Close-out verification
+
+`go test -count=1 ./tests/k8s/...` passed: `serverflow/tests/k8s` (151 s, rendering through the pinned `kubectl` image) and `serverflow/tests/k8s/e2e`. With `-v`:
+`TestPolicyCatchesMutations` 56 mutations caught, `TestNetworkPolicyCatchesMutations` 32 mutations caught, `TestGatewayDrainMutationsOnTheManifest` and `TestWorkerPodMutations` pass.
+These are static results on the development Mac; they prove the policy tests detect the listed breakages, not that a cluster behaves.
+
+### What could not be verified
+
+The plan's own list stands: a real cloud load balancer and its deregistration delay (which decides whether a 5 s grace is enough in production), multi-node behaviour,
+GPU nodes, managed Kubernetes, other Kubernetes minors than 1.36.4, amd64 anywhere but the CI runner, Docker Desktop and rootful Docker, Ingress and TLS, autoscaling,
+encryption at rest and external secret stores. In addition, for lack of a machine or a decision:
+
+- Cold and warm `k8s-up`, node memory and disk, on a developer machine (the Colima VM has 3.81 GiB; the decision was not to resize it or add a profile).
+- The independent `verify-change` run with the plan's ten-point brief (clean clone, second foreign cluster, a client written in another tool, deliberate breakage, node-log
+  secret hunt by someone else, comparison of the machine before and after) was **not run**: it needs a machine that can run kind. The CI smoke, the static tests and
+  the reviews done inside each pull request are the verification that exists.
+- The worker rolling restart, the control-plane restart, the pod delete under load and the stalled rollout as recorded observation runs; a deliberately broken readiness
+  path on GitHub.
+- The CI jobs were read from their logs by hand; the logs are not stored in the repository.
+
+### Follow-ups
+
+- Narrow the NetworkPolicy node-source ipBlocks to the kind node subnet (read it from the cluster) instead of the three wide ranges.
+- Propose the kind jobs as required checks after ten consecutive green runs on master (owner decision, `docs/development/ci.md`); until then they are advisory.
+- Run the plan's verification brief and the acceptance criteria that are open (AC 5, 7, parts of 4, 11, 16) on a machine that can host kind, and record cold and warm `k8s-up`.
+- Put a pod identity in a gateway response header (or read it from tracing) to measure the time from SIGTERM to the last request a pod accepted and the propagation time.
+- Record several runs of the roll test to estimate the negative control's variance (3 to 9 failures so far).
+- If the grace proves short behind a real balancer, use the native `sleep` preStop hook that D19 names, with a measurement.
+- A Helm chart wrapping the same base, if a multi-environment need appears (D1).
+- Persistence or leader election for the control plane's registry, TLS or a mesh for the control-plane token (W1), encryption at rest and an external secret store, publishing and signing images.
+- Phase 18: GPU workers on the same pod shape; Phase 19: autoscaling.

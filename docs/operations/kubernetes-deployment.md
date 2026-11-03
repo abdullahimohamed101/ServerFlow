@@ -1,9 +1,9 @@
 # Kubernetes deployment (Phase 17)
 
-Status: **draft, extended by PR 6 of Phase 17** (`docs/plans/active/phase-17-kubernetes.md`). The static foundation, the data tier and
-the core system (control plane, gateway, workers, usage consumer) exist, PR 4 added Prometheus, Grafana and Jaeger, and PR 5 adds NetworkPolicy
-(default deny in both directions plus the allow rules below, proved by smoke check K15). PR 6 adds the rolling-update measurement with its negative control (`make k8s-roll-test`, section "Rolling update and the drain timeline"); it has not run on a cluster yet. The decision record is written in PR 7 (`docs/decisions/ADR-023-kubernetes-deployment.md`
-holds the PR 3 and PR 4 sections meanwhile; ADR-022 is Phase 14's scheduler record, so this record is ADR-023).
+Status: **complete (Phase 17)**. Decision record: `docs/decisions/ADR-023-kubernetes-deployment.md` (ADR-022 is Phase 14's scheduler record). Plan and
+Implementation Notes: `docs/plans/completed/phase-17-kubernetes.md`. Measured numbers: `docs/benchmarks/phase-17-kubernetes.md`. The sections below
+are in reverse build order (PR 6 first); the "PR n" labels say which pull request added a part. What ran on a cluster, and what did not, is under
+"What is verified and what is not".
 
 ## Rolling update and the drain timeline (PR 6)
 
@@ -62,27 +62,28 @@ stay in `.dev/k8s/roll/`; `make k8s-reset` removes them.
 is reported per pod (to the second). The time from SIGTERM to the *last request that pod accepted* is **not obtainable** from the client side: the gateway puts no
 pod identity in a response, and adding one to production code was out of scope for this change. SIGTERM-to-gone is its upper bound.
 
-### The drain timeline (design values; measured values are to be filled in by CI)
+### The drain timeline (design values, with what CI measured)
 
 For a pod replaced by a rolling update (t = 0 when the API server sets `deletionTimestamp`; its replacement was already Ready, `maxSurge: 1`).
 The settings are `readiness_grace` 5 s, `shutdown_timeout` 30 s, `terminationGracePeriodSeconds` 45 s, no `preStop` hook (D19).
 
 | t | Kubernetes | gateway | measured |
 | --- | --- | --- | --- |
-| 0 | the EndpointSlice marks the pod terminating and not ready; kube-proxy rewrites its rules on its next sync; the kubelet sends SIGTERM | `/readyz` 503, `Connection: close` on every later response, `gateway_draining 1`, still serving | to be measured by CI |
-| 0 to 5 s | rules converge; keep-alive clients get `Connection: close` and reconnect to other pods | the listener stays open for the grace; connections that still arrive from stale rules are served | to be measured by CI: time until the last new connection reaches this pod |
-| 5 s | | queue and listener close; in-flight requests and streams run on | to be measured by CI |
-| up to 30 s | | in-flight work finishes; at 30 s after the signal what remains is cut | to be measured by CI: SIGTERM to gone, per pod, max |
-| 45 s | the kubelet sends SIGKILL if the container is still alive | | to be measured by CI: whether any pod needed it (it must not) |
+| 0 | the EndpointSlice marks the pod terminating and not ready; kube-proxy rewrites its rules on its next sync; the kubelet sends SIGTERM | `/readyz` 503, `Connection: close` on every later response, `gateway_draining 1`, still serving | not measured (see below) |
+| 0 to 5 s | rules converge; keep-alive clients get `Connection: close` and reconnect to other pods | the listener stays open for the grace; connections that still arrive from stale rules are served | not measured: zero failures in 3360 rollout requests show the 5 s was enough on kind, not how much of it was needed |
+| 5 s | | queue and listener close; in-flight requests and streams run on | not measured |
+| up to 30 s | | in-flight work finishes; at 30 s after the signal what remains is cut | SIGTERM to the pod object gone: about 4-5 s per replaced pod with the drain (0-1 s with the grace at 0); the pods did not run to 30 s |
+| 45 s | the kubelet sends SIGKILL if the container is still alive | | not recorded per pod; the 4-5 s above show no replaced pod needed it |
 
-The numbers (propagation time, SIGTERM-to-gone per pod, rollout durations, request counts, the control's failures) go into
-`docs/benchmarks/phase-17-kubernetes.md` after the first CI run; none is stated here because none has been measured. If the control fails
-requests and the real run does not, the readiness grace is long enough for this cluster; if the real run fails, the fallback written in D19 is the
-native `sleep` preStop hook, and the grace and `terminationGracePeriodSeconds` are the values to tune, with the evidence, in a follow-up.
+The numbers from the CI runs (requests, failures, rollout durations, the control's failures) are in `docs/benchmarks/phase-17-kubernetes.md`: the main run made
+4892 requests with 0 failed, 3360 of them during three rollouts that replaced nine gateway pods (about 38 requests/s); rollouts took 21-23 s to
+`rollout status` and 28 s until the last old pod was gone. The negative control (readiness grace 0) produced 9 drain-attributable failures in 1954 rollout requests in
+one run and 3 in 1881 in an earlier one, so the control sees the outage but its count is not stable. The preStop fallback written in D19 (the native `sleep` hook)
+was not needed on kind and was not tried. This is a statement about kind's kube-proxy path only; a cloud balancer's deregistration delay is untested.
 
 ### Observation runs (optional, not gating, not in the code)
 
-Run them by hand while a load runs (`.dev/k8s/roll/e2e run --key-file .dev/k8s/api_key` reads control lines on standard input, `stop` ends it) and
+None of these was run as a recorded observation in Phase 17. Run them by hand while a load runs (`.dev/k8s/roll/e2e run --key-file .dev/k8s/api_key` reads control lines on standard input, `stop` ends it) and
 record what the report says: `kubectl delete pod` of one gateway under load; a rollout to an image that never becomes ready (for example
 `kubectl set image deployment/gateway gateway=serverflow/gateway:missing`; `progressDeadlineSeconds` marks it stalled, the old pods keep serving,
 expect zero failures, then `kubectl rollout undo deployment/gateway`); a worker rolling restart (`kubectl rollout restart deployment/mock-worker`: with the 6 s
@@ -361,6 +362,15 @@ These are ceilings, not measurements; nothing has been measured on a running clu
 
 ## What is verified and what is not
 
+**On a cluster, in CI (the close-out of Phase 17).** The advisory kind job on GitHub-hosted runners ran the whole path: PR #79's smoke ended `smoke: 21 of 21 checks
+passed` (K1-K15 and D2-D7, so NetworkPolicy was enforced by the runner's kindnet and the node-source ranges below let probes and NodePorts through), and the
+rolling-update run passed with the numbers above. The per-PR paragraphs that follow were written before any cluster run and say "not run"; they are kept as the
+record of what each pull request could check on its own, and the "NOT run" lists in them were settled by those CI runs only to the extent the smoke checks and the
+roll test cover them. Still not verified by anything: cold and warm `k8s-up` and memory and disk on a developer machine, a 60 s load at concurrency 12 with
+restart counts, the worker roll and control-plane restart as recorded observations, a clean-room run of these docs by someone else, a second foreign kube context
+against the real scripts, amd64 outside the runner, other Kubernetes minors, multi-node, and everything listed under "Not verified" in ADR-023. The NetworkPolicy
+node-source ranges (`10.244.0.1/32`, `172.16.0.0/12`, `192.168.0.0/16`) are wider than kind's actual node subnet; narrowing them is a follow-up.
+
 Verified in this pull request (no cluster): the manifests render with the pinned `kubectl`; `kubeconform -strict` accepts the rendered
 overlay against the Kubernetes 1.36.4 schemas; `tests/k8s` states the hardening, probe, resource, label, image-pin and secret policies and
 proves each fails when broken; the scripts are shellcheck-clean, run under bash 3.2 and 5 with `set -u`, and refuse a foreign context.
@@ -404,11 +414,11 @@ produced by a throwaway kustomize-library program standing in for `kubectl kusto
 admission of the new pods, probes, the agent registering, the gateway becoming Ready, the NodePorts, every smoke check K1-K14 and the audit's
 jsonpath), any image build, `kind load`. The advisory CI job `k8s kind smoke` is the first real run.
 
-**Not verified until the advisory job `k8s kind smoke` (`.github/workflows/kubernetes.yml`) has run on GitHub:** that kind itself creates the
+**Settled by the advisory job `k8s kind smoke` (`.github/workflows/kubernetes.yml`) having run on GitHub, since the smoke passed there:** that kind itself creates the
 cluster with this configuration; that `kind load docker-image` works with the runner's Docker; that the node pulls the three third-party images from
 `mirror.gcr.io` on a runner; that kind's `standard` StorageClass binds the claims; the amd64 builds of everything (the development Mac is arm64; CI is
-the amd64 proof). Also unverified: other Kubernetes minors, multi-node behaviour, and every managed Kubernetes difference
-(`docs/plans/active/phase-17-kubernetes.md`, "What cannot be verified here").
+the amd64 proof). Still unverified: other Kubernetes minors, multi-node behaviour, and every managed Kubernetes difference
+(`docs/plans/completed/phase-17-kubernetes.md`, "What cannot be verified here").
 
 ## Troubleshooting
 
