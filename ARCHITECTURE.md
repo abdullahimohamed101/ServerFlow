@@ -103,7 +103,7 @@ inference backend and is not in the data path. Location: `cmd/worker-agent` +
 `internal/worker`. Owns: worker lifecycle, capacity reporting. Status:
 implemented (Phase 4) with a mock-worker backend; a vLLM backend arrives in
 Phase 13. An optional loopback-only status endpoint (`/healthz`, `/readyz`; off by
-default, `worker.status_listen`; Phase 17) lets a Docker or Kubernetes probe tell a
+default, `worker.status_listen`; Phase 17, ADR-023 D6) lets a Docker or Kubernetes probe tell a
 registered agent from a hung one; see `docs/architecture/worker-lifecycle.md`.
 
 
@@ -135,7 +135,15 @@ distroless non-root images), the root `docker-compose.yml` with `docker-compose.
 (link-time version stamp), `observability/prometheus/compose` (Prometheus for the container network) and the static tests in `tests/deploy`.
 Every container is read-only, capability-free, memory-limited and on an internal network; only the gateway (or load balancer), the control plane,
 Prometheus, Grafana and the Jaeger UI publish a port, on `127.0.0.1`. Status: implemented (Phase 16). See ADR-021 and
-`docs/operations/docker-deployment.md`; Kubernetes (Phase 17) reuses the images.
+`docs/operations/docker-deployment.md`.
+
+### Kubernetes deployment
+
+`deploy/kubernetes/` (kustomize `base`, the `overlays/kind` overlay and the kind cluster config), `scripts/k8s-up.sh` (behind `make k8s-*`), `observability/prometheus/kubernetes`
+and the static tests in `tests/k8s` (the load generator of the rolling-update test is `tests/k8s/e2e`). The same six images run in a single-node kind cluster in
+a namespace that enforces Pod Security `restricted`, behind default-deny NetworkPolicy; the gateway is a three-replica Deployment that drains on SIGTERM with no
+`preStop` hook, and a measurement with a negative control backs the claim that a rollout is invisible to clients (on kind). Status: implemented (Phase 17).
+See ADR-023 and `docs/operations/kubernetes-deployment.md`. Not a production deployment: no HA, no TLS, no Ingress, no registry, a single in-memory control plane.
 
 ### Tracing (OpenTelemetry)
 Purpose: follow one request across the gateway and the worker, including retries. Location: `internal/tracing` (provider setup, bounded
@@ -279,6 +287,9 @@ make dev-up && make dev-smoke                                      # the whole s
 - **The container stack is a development stack** (Phase 16): no TLS between services, one broker and one database, the control-plane token crosses
   the private network in plain http by an explicit opt-in (`control_plane.allow_insecure_transport`, ADR-021). amd64, Docker Desktop and rootful
   Docker are unverified from the development machine.
+- **The Kubernetes deployment is a local kind cluster** (Phase 17, ADR-023): single node, single control plane with an in-memory registry (a restart is not
+  zero-impact), plain-HTTP control-plane token, Secrets base64 in etcd, NetworkPolicy node ranges wider than kind's real subnet, no cloud load balancer,
+  multi-node or GPU claim. The rolling-update result holds for kind's kube-proxy path only.
 - **Resilience is on by default in registry mode** (Phase 15, ADR-020): an upgraded gateway ejects failing workers, queues and sheds, enforces `admission.max_global_requests` and drains on SIGTERM without any configuration change (the list is in README and `docs/operations/resilience.md`). Breakers, the retry budget, the queue and the global cap are
   per gateway: N gateways allow N times each. Measured with mock workers on loopback only (`docs/benchmarks/phase-15-chaos.md`).
 - **Scheduler strategy claims** must be backed by benchmark evidence before

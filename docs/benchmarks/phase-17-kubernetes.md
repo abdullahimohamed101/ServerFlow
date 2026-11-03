@@ -1,7 +1,8 @@
 # Phase 17 benchmark note: Kubernetes (started in PR 2)
 
-Every number here is from a run, with its machine. PR 2 measures what can be measured without a cluster; the cluster numbers (cold and
-warm `k8s-up`, node memory, Colima disk, drain and rolling-update runs) are **not measured yet** and are listed as such. PR 3 and PR 6 fill them.
+Every number here is from a run, with its machine. PR 2 measured what can be measured without a cluster on the development Mac. The cluster
+numbers come from the advisory kind job on GitHub-hosted runners (PR #79 and its re-runs), copied from the job logs by hand when Phase 17 was
+closed; the logs themselves are not stored in the repository and expire. What was not measured says so.
 
 Machine: macOS arm64 (Apple silicon), 24 GB RAM; Docker engine Colima 0.10.3, Docker 29.8.2, Ubuntu 24.04 aarch64 VM with 2 CPUs and 3.81 GiB
 of memory, 60 GiB disk of which 28 GiB were free at the start. Date 2026-10-22.
@@ -48,40 +49,79 @@ ran as one privileged container with `--memory 2200m`, then `docker rm -fv`. It 
 | secrets hunt (non-Secret objects, events, logs, descriptions, node container logs, the render) | 0 matches for the generated values |
 | the VM's kernel | lacks `br_netfilter` by default; k3s could not reach ClusterIPs until the module was loaded. **How:** `modprobe br_netfilter` from a throwaway *privileged* container with the VM's `/lib/modules` mounted read-only, which loads the module into the shared Colima VM's kernel (the VM the user's other containers run in). It was unloaded the same way after the run (`modprobe -r`); the coordinator has since said not to repeat this, and it was not repeated |
 
-## Not measured yet (needs a kind cluster)
+## Cluster measurements from CI (kind job on a GitHub-hosted runner)
 
-The Colima VM here has 3.81 GiB, below the 4 GB the scripts demand, and the plan's decision is not to resize it or create a second profile, so none of
-the following was run locally on kind: cold and warm `make k8s-up`, kind node memory and the disk a loaded cluster uses, whether `kind load docker-image` works
-with Docker 29's image store (the `docker save` fallback is written, untested), the CI job's duration against the 30-minute budget, the data tier's
-real memory use against its limits. They are recorded by the first advisory CI run and by the PRs that follow.
+Source: the logs of the advisory `k8s kind smoke` job on PR #79 (Phase 17 PR 6), as read by the person who closed the phase. The runner is a
+GitHub-hosted Linux runner (amd64); its CPU count was not recorded here. Several runs of the job are cited, and where they differ the difference is
+shown rather than averaged. Nothing in this section was measured on the development Mac.
 
-## Rolling update and drain (PR 6): structure only, nothing measured yet
+| Measurement | Result |
+| --- | --- |
+| cluster smoke | `smoke: 21 of 21 checks passed` (K1-K15 and D2-D7, the last line of the contract; K15 is the NetworkPolicy enforcement check) |
+| kind smoke job duration | about 9 min 35 s to 9 min 58 s (runs seen), against the 40-minute budget of the job |
+| `k8s static` job duration | about 1 to 4 minutes |
 
-No number below exists yet. The command is `make k8s-roll-test`; the first nightly or manual advisory CI run produces the figures, which are copied here
-with the machine (runner type, CPUs), the date and the commit. Tables stay empty until then; a number without a run behind it does not belong here.
+## Rolling update and the drain (PR 6)
 
-| Run | Requests total | During the rollouts | Failures (by class) | Rule-of-three bound | Rollout 1 | Rollout 2 | Verdict |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| rolling update with the drain (resilience on, grace 5 s) | not measured | not measured | not measured | not measured | not measured | not measured | not measured |
-| negative control (readiness grace 0 only; rolls until a drain-attributable failure) | not measured | not measured | not measured | not applicable | not measured | not measured | not measured |
+`make k8s-roll-test`: 24 closed-loop clients, no client retries, through the host entry point of kind, while the three gateway pods are replaced by
+alternating rollouts (a ConfigMap hash change, then an annotation change) until at least 3000 requests were made during the rollouts. Full procedure:
+`docs/operations/kubernetes-deployment.md`.
 
-| Per replaced pod (SIGTERM to the pod object gone, seconds resolution) | Run | Value |
+### The main run (the real run, with the drain)
+
+| Measurement | Result |
+| --- | --- |
+| requests in total | 4892 |
+| failed requests | 0 |
+| requests during the 3 rollouts | 3360 |
+| gateway pods replaced | 9 |
+| throughput | about 38 requests/s |
+| rollout duration | 21-23 s to `kubectl rollout status`; 28 s until the last old pod was gone |
+| SIGTERM to the pod object gone (upper bound for "last request served") | about 4-5 s per replaced pod |
+| rule-of-three bound | 0 failures in 3360 requests: the true failure rate during rollouts is below about 0.09 % at 95 % confidence (3/3360); the gate of 3000 gives below about 0.1 % |
+| verdict | `roll-test: PASS` |
+
+### Earlier runs of the same job, recorded as observed
+
+The first run of the job (before the loop that keeps rolling until 3000 requests, and before the control was redefined) did not pass:
+
+| Run | Requests | During rollouts | Failures | Notes |
+| --- | --- | --- | --- | --- |
+| with the drain, first run | 3674 | 2123 in 2 rollouts (gate of 3000 unmet) | 0 | about 38 requests/s; 22 s to `rollout status`, 28 s until the last old pod was gone, twice |
+| control with resilience off and grace 0, first run | 4874 | 2431 | 1551: `http_503_no_capacity` 1546 (867 in the baseline), `connection_closed` 4, `connection_reset` 1 | about 55 requests/s overall, about 50 during the rollouts; 22-24 s per rollout |
+
+The capacity rejections showed that "resilience off" conflates load with the drain, which is why the control became "readiness grace 0, resilience on".
+The first run's SIGTERM to gone was 4-5 s per pod with the drain (about 5 s at most, six pods) and 0-1 s in the resilience-off control.
+
+### The negative control (readiness grace 0)
+
+| Run | Drain-attributable failures | Rollout requests |
 | --- | --- | --- |
-| maximum over all replaced pods | with the drain | not measured |
-| p99 | with the drain | not measured (needs more pods than one run replaces: aggregate several runs) |
-| time until no new connection reaches a terminating pod (propagation) | with the drain | not obtainable by the current harness; to be estimated from the control's failures or from a later instrument |
+| one run (the later of the two readiness-grace-0 runs; whether it is the run of the main result above was not recorded) | 9 | 1954 |
+| an earlier run (readiness grace 0) | 3 | 1881 |
+| the first run's resilience-off control, counting only drain-attributable classes (`connection_closed` 4, `connection_reset` 1) | 5 | 2431 |
 
-Observation runs (pod delete under load, a stalled rollout, a worker roll, a control-plane restart): not run.
+SIGTERM to gone was about 0-1 s without the drain.
 
-### First CI run (PR #79, before the rollout loop and the new control; the run did not pass)
+**How to read the control.** It must see at least one drain-attributable failure inside the rollouts, and it did in every run listed; that is what shows
+the test can see the outage. The count varied from 3 to 9 across runs of about the same size, so it is not a stable quantity and must not be quoted as
+"the drain prevents N failures": there are only three data points, from different versions of the control, and no variance estimate. The real run and
+the control also differ in more than the drain's visible effect (the control rolls until it fails, the real run until 3000 requests), so their request
+counts are not comparable.
 
-Source: the advisory kind job's log, GitHub-hosted runner, one run; recorded as observed, not as a result of this design.
+### What is not available from these runs
 
-| Run | Requests | During the 2 rollouts | Failures | Throughput | Rollouts |
-| --- | --- | --- | --- | --- | --- |
-| with the drain (resilience on, grace 5 s) | 3674 | 2123 (gate of 3000 failed) | 0 | about 38 requests/s during the rollouts | 22 s to `rollout status`, 28 s until the last old pod was gone, twice |
-| control (resilience off, grace 0) | 4874 | 2431 | 1551: `http_503_no_capacity` 1546 (867 in the baseline), `connection_closed` 4, `connection_reset` 1 | about 55 requests/s overall, about 50 during the rollouts | 22-24 s |
+- The time from SIGTERM to the last request a given pod accepted: responses carry no pod identity. SIGTERM to gone is an upper bound only.
+- Propagation time (how long until no new connection reaches a terminating pod): not obtainable with the current harness. The 5 s grace is shown
+  sufficient for this kind topology by zero failures in 3360 requests, not by a measured propagation time.
+- A per-pod p99: a run replaces nine pods; aggregating several runs was not done.
+- Observation runs (pod delete under load, a stalled rollout, a worker roll, a control-plane restart): not run as recorded observations.
+- Any figure for another machine, another runner type, a cloud balancer or more than one node.
 
-SIGTERM to the pod object gone: with the drain 4-5 s per pod (maximum about 5 s, six pods); in the resilience-off control 0-1 s. The capacity rejections
-showed that the resilience-off control conflated load with the drain, which is why the control was redefined.
+## Not measured
 
+The Colima VM here has 3.81 GiB, below the 4 GB the scripts demand, and the decision was not to resize it or create a second profile, so none of the
+following exists as a number: cold and warm `make k8s-up` on a developer machine, kind node memory and the disk a loaded cluster uses (the sum of memory
+limits, 2848 MiB, and the engine minimum of 6144 MiB are computed by a test from the manifests, not measured), the data tier's real memory use against its
+limits, a 60 s load at concurrency 12 with restart counts (acceptance criterion 5), and whether `kind load docker-image` works with Docker 29's image store
+locally (the CI job loads the images on the runner; the `docker save` fallback is written and unused). The CI job's time against the budget is above.

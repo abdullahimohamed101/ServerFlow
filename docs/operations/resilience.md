@@ -235,8 +235,16 @@ counts them. (4) A worker restart shows retries (`inference_retries_total`) and 
 
 **Metrics.** `gateway_draining` (gauge, only with the feature on): 1 from the first signal. Alert on a gateway that stays 1 for longer than `shutdown_timeout` (it has not exited).
 
-**Verified with mock workers and loopback only.** Process tests send real signals to the gateway, mock worker, agent and control plane binaries (`tests/integration/drain_process_test.go`); the results are in `docs/benchmarks/phase-15-chaos.md`. Real balancers, Kubernetes
-preStop and termination grace periods, and vLLM's own drain behaviour are Phase 13, 17 and 18 and have not been tested.
+**Verified with mock workers and loopback only.** Process tests send real signals to the gateway, mock worker, agent and control plane binaries (`tests/integration/drain_process_test.go`); the results are in `docs/benchmarks/phase-15-chaos.md`. Real cloud balancers and vLLM's own drain behaviour are Phase 13 and 18 and have not been tested.
+
+**Verified on Kubernetes (Phase 17, kind only).** The gateway runs in a three-replica Deployment with `resilience.mode: on`, `readiness_grace` 5 s,
+`shutdown_timeout` 30 s, `terminationGracePeriodSeconds` 45 s and **no `preStop` hook** (the wait is the gateway's own; ADR-023 D19). `make k8s-roll-test`
+replaced the gateway pods under 24 closed-loop clients without retries: in the run recorded in `docs/benchmarks/phase-17-kubernetes.md`, 4892 requests,
+0 failed, 3360 of them during three rollouts that replaced nine pods. A negative control with only the readiness grace set to 0 failed 3 to 9
+requests per run inside the rollouts, so the test can see the outage. The replaced pods were gone 4-5 s after SIGTERM with the grace (0-1 s without).
+Not tested: a cloud load balancer's deregistration delay (the 5 s grace was shown sufficient only for kind's kube-proxy path), more than one node, a native
+`sleep` preStop hook (the documented fallback if the grace proves too short), and a worker rolling restart or a control-plane restart as recorded
+observation runs. A control-plane restart is not zero-impact: its registry is in memory.
 
 ## Known limits of the queue (PR E)
 
