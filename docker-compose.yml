@@ -205,7 +205,7 @@ services:
   postgres:
     <<: *hardened
     profiles: [data]
-    image: ${POSTGRES_IMAGE:-mirror.gcr.io/library/postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab}
+    image: ${POSTGRES_IMAGE:-mirror.gcr.io/library/postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139}
     user: "70:70"
     env_file: [.dev/postgres.env]
     environment:
@@ -224,7 +224,7 @@ services:
   redis:
     <<: *hardened
     profiles: [data]
-    image: ${REDIS_IMAGE:-mirror.gcr.io/library/redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f}
+    image: ${REDIS_IMAGE:-mirror.gcr.io/library/redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b}
     user: "999:1000"
     env_file: [.dev/redis.env]
     # The password reaches redis-server through a config file on tmpfs, not on the command line (visible in `docker top`).
@@ -400,7 +400,7 @@ services:
   jaeger:
     <<: *hardened
     profiles: [tracing]
-    image: ${JAEGER_IMAGE:-quay.io/jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17}
+    image: ${JAEGER_IMAGE:-quay.io/jaegertracing/jaeger:2.23.0@sha256:3823829974ccfc2485d2e48b165579091f32295022ae80ca49704e2f4834116e}
     tmpfs: ["/tmp:uid=10001,gid=0,mode=1777,size=64m"]
     ports: ["127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"]
     networks: [backend, edge]
