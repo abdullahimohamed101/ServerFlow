@@ -234,7 +234,7 @@ cmd/*  →  internal/*  →  pkg/protocol
 - **End-to-end tests**: full gateway → worker → (mock) vLLM path with
   OpenAI-compatible client.
 - **Load tests**: benchmark harness (`cmd/benchmark`; `make bench`).
-- **Chaos tests**: fault injection (`tests/chaos`, `make chaos-*`).
+- **Chaos tests**: fault injection (`tests/chaos`, run by `go test ./...`; the chaos benchmark is `go run ./cmd/benchmark chaos`, see `docs/benchmarks/phase-15-chaos-harness.md`).
 
 Commands:
 

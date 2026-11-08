@@ -471,3 +471,76 @@ Docs: the observability runbook now states the measured alert times (warning 15.
 ## Completion
 
 All acceptance criteria 1-24 have evidence in the progress notes above (A-F) and G. Known risks, as carried into the default-on release: N gateways decide alone; the global cap (1000) is live; the vLLM 503 vocabulary is unverified (Phase 13); streams aborting after the first byte are ejected slowly by design; only mock workers and loopback were measured; Linux behaviour is verified by CI only. Rollback: `resilience.mode: off` (configuration) or revert the flip commit.
+
+## Implementation Notes
+
+Built in seven pull requests: A (#25, 2026-10-11), B (#26, 2026-10-11), C (#34, 2026-10-11), D (#38, 2026-10-22), E (#41 and #43, 2026-10-22), F (#42, 2026-10-22), G (#45, the default flip, 2026-10-22). This section consolidates the per-PR progress notes above; it does not replace them. Records: `docs/decisions/ADR-020-fault-tolerance.md` (numbered deviation lists per PR), `docs/operations/resilience.md`, `docs/benchmarks/phase-15-chaos.md`, `docs/benchmarks/phase-15-chaos-harness.md`. Every number below is copied from one of those files or from this plan; none was re-measured for this close-out. The pull request texts and CI logs are not stored in the repository, so what they contained is not restated here.
+
+### Deviations from the plan
+
+The full numbered lists are in ADR-020 ("Deviations and decisions made while implementing PR A / C / D / E / F / G") and in the progress notes above. The ones that change what the plan said:
+
+- **The ejection cap is per model, not gateway-wide (D9).** PR C and D shipped a gateway-wide denominator; PR G found that the sole worker of one model could be ejected while other models had room, and fixed it (`TestEjectionCapIsPerModel*`, `TestTheEjectionCapIsPerModel`, `TestRandomPerModelCapInvariant`, red on the old code). ADR-020, PR G item 1.
+- **An ok is counted at the first byte and a later abort converts it into a fault (`Breakers.RecordAbort`).** The first cut counted a success at completion and the independent verification showed it ejecting mostly healthy workers on long streams. The shipped design is symmetric; the cost is that a worker aborting every stream is ejected slowly (ratio rule, 13-14 s in the benchmark). ADR-020 PR D item 1; the benchmark note reports the effect.
+- **The first-byte deadline is a per-attempt timer disarmed at the first byte, not a context deadline;** the derived default is header + idle + the 5 s dial timeout (185 s with the defaults) so no single attempt is cut shorter than before. D25 item 5 was narrowed accordingly in the fix round after PR G's verification (per attempt; a slow header phase plus a retry plus a late first byte beyond about 185 s now gets 504).
+- **`AttemptEnd` gained `Probe` and `Verdict`; `RequestRecorder` ordering was not changed** (so "a panic in the recorder before the first attempt" is tested as a panic after the first attempt started). ADR-020 PR A item 1, PR D item 2.
+- **Library behaviours the plan left open** (ADR-020 PR C): `failure_ratio: 0` disables the ratio rule; the cool-down level is kept on a pass-then-retrip; the budget limit is `floor(ratio x first attempts)`; a misspelled `SERVERFLOW_RESILIENCE_MODE` fails validation instead of being ignored like the numeric keys; config defaults that depend on the gateway (`probe_header_timeout`, `queue.max_wait`, `readiness_grace`) are derived when unset.
+- **Queue credit and hand-off** were reworked twice after verification (PR C item 9); refresh-wake order is not a FIFO guarantee, the hand-off path is.
+- **Drain (PR F):** one shutdown budget from the first signal covers the grace; the registry refresh, key usage and lease renewal keep running through grace and drain when the feature is effective; `/readyz` while draining uses the overload shed body, no new error code (ADR-020 PR F, 8 items).
+- **Default flip (PR G):** tests that assumed the default off were changed to state the mode they need, and only those; no assertion was loosened (ADR-020 PR G item 2). The compose stack gained `SF_RESILIENCE_MODE`. The dashboard has no panel for `inference_deadline_exceeded_total`. The spec file was not edited.
+- **ADR numbering:** the record is ADR-020 as planned (Phase 17's record is ADR-023 and Phase 16's is ADR-021 because of this plan's reservation of 020).
+- **Post-merge CI flake fixes (not in the plan):** #46 (2026-10-23, three test flakes fixed at the cause), #50 (2026-10-23, drain-related flakes; one was a real retry bug: an attempt that fails with net/http's "server closed idle connection" is now retried, with notes in ADR-012 and ADR-020) and #44 (2026-10-24, the refused-worker test helper holds its port). Details are in those merge commits, not re-verified here.
+- **No `make chaos-*` targets.** The plan's section "Chaos tests vs harness runs" proposed `make chaos-worker-kill`, `chaos-worker-delay` and `chaos-network-loss` (spec §36 names). The Makefile has none; the scenarios run through `go run ./cmd/benchmark chaos` and the assertion tests through `go test ./tests/chaos/...`. The spec file still lists the targets.
+- **Docs path:** this plan was moved from `docs/plans/active/` to `docs/plans/completed/` in PR G; this close-out only adds the section you are reading.
+
+### Acceptance criteria and evidence
+
+"Met" means a named test or a recorded measurement in the repository covers it. Test names are the ones recorded in the progress notes above; the numbers are in the cited file.
+
+| AC | Result | Evidence |
+| --- | --- | --- |
+| 1 Panic safety | met | `attempt_panic_test.go` (internal/gateway); red on pre-fix code, green after (PR A notes) |
+| 2 Model pre-check | met | `precheck_test.go`, `snapshot_test.go` |
+| 3 Second-routing metric | met | `nextroute_test.go` |
+| 4 Off means off; default-on differs as documented | met | (a) `TestDifferentialModeOffAndStaticAreIdenticalToMaster`, 39 shapes against recordings of master 16dda6b; (b) `TestDifferentialDefaultOnDiffersFromMasterExactlyByTheD25List` (38 of 39 identical apart from new series and attempt-line fields) and `TestEveryD25ItemNamesATestThatExists`, which checks only that each D25 item names a test that exists, and items 5, 6, 9 and 10 have no evidence tests (stated in the PR G fix round); (c) config and gateway process tests green with the flip |
+| 5 Taxonomy | met | `TestTheFailureTaxonomyRowByRow` (25 rows), peek-intact, terminal-503 and stalled-peek tests (PR D notes) |
+| 6 No retry after the first byte | met | `TestAFailureAfterTheFirstByteIsOneAttemptAndAFaultWithoutRetry` |
+| 7 Retry budget | met | `internal/resilience/budget_test.go`, `resilience_budget_test.go` (120 concurrent requests never overshoot) |
+| 8 Deadline | met | `resilience_deadline_test.go`; explicit-below-header refusal in the config test |
+| 9 Breaker state machine | met | `breaker_*_test.go`, randomized model check (240 runs); ticket at first byte through the gateway call-site tests |
+| 10 Ejection cap | met, after a fix | `breaker_cap_test.go`; per-model correction in PR G (see deviations) |
+| 11 Eligibility | met | `TestRoutingNeverSelectsAnOpenOrIneligibleWorker` (60 random views), `TestALostTicketRaceReselectsInsideRouteBeforeAnyObserverFires`, `/readyz` ignoring breakers test |
+| 12 Queue | met | `queue_test.go`, `queue_stress_test.go` (10,000 cancellations), `resilience_queue_test.go`, `resilience_queue_route_test.go` |
+| 13 Shedding and Phase 8 | met | PR E table: every reason is 503 `NO_CAPACITY`, never 429; fake-limiter call counts |
+| 14 Seam | met | `observer_seam_test.go`, `reqSeq` sequences, 0 allocs/op for the metrics observer methods (`BenchmarkMetricsObserverQueueEvents`); PR A recorded 102/109 allocs/op for the request benchmark, identical to master |
+| 15 Cardinality and content | met | 1,000 x 1,000 ceiling test (1,009 series against a bound of 1,500 for the breaker and retry series), no new label names, hostile-text and span allow-list tests, overhead histogram excludes the wait (ADR-020 PR E) |
+| 16 Configuration | met | `resilience_test.go` (defaults, YAML, env overlay for all 20 keys, validation matrix) |
+| 17 Gateway drain | met | `TestProcessGatewayDrainSequence` and the second-signal tests (`tests/integration/drain_process_test.go`, real binaries); repeated `-count=30` (1,843 s) per `docs/benchmarks/phase-15-chaos.md` |
+| 18 Worker drain | met | `tests/chaos/drain_test.go`: announce 1.5 s 0 failures and 0 retries; announce 0 reports the retries; process-level worker roll (announce 1 s: 0 failed, 0 retries; announce 0: 0 failed, 3 retries) |
+| 19 Chaos tests | met | `tests/chaos` (503 at 100% and 80%, always-500, resets, midstream, freeze, slow below and beyond the header timeout) |
+| 20 Rate-limit unavailability | met | `TestRateLimitUnavailableTouchesNeitherBreakersNorBudget` |
+| 21 Silent agent and alerts | partly | The 5 s warning, the new alerts and their promtool cases exist and pass; the kill experiment was repeated and is reported. **The critical alert still fires 20.5 and 20.9 s after the kill, against the 10 s target of spec §31** (isolation about 4.1-4.2 s; warning 15.4 and 15.8 s). The plan allowed this ("as the plan said it might be") and the benchmark note says the extra 4 s over Phase 10's 16.3 s was not isolated. Run 2's raw data was not retained |
+| 22 Benchmark deliverable | met, with limits | `docs/benchmarks/phase-15-chaos.md`: before/after tables with 3-repeat ranges and spread verdicts, invalid runs and reasons, Run A (overload 64-68% to 100% fault-window success, Run A error rate 19% to 0), baselines under `docs/benchmarks/phase-15-baseline/`. `worker-crash` and the `slow-worker`, `error-burst-*` and `conn-reset` scenarios were not repeated in the final batch (PR D's table holds them). No scenario got worse in the two primary measures. Time to isolate for freeze and midstream (12-14 s) is the harness' inflated figure and is not asserted |
+| 23 Quality gate | partly | One `scripts/quality.sh full` with all servers exit 0 is recorded for PR G; `internal/gateway` `TestDrain*` `-race -count=30` and `tests/chaos` `TestDrainRoll*` `-race -count=10` are recorded. Per-PR gate results live in the pull requests, not in the repository. A chaos run "under CPU load" is not recorded anywhere I could find |
+| 24 Default-on documentation | met, except the PR text | `TestD25ListIsRepeatedVerbatimInTheDocuments` compares this plan, ADR-020, the operations guide and the README; `resilience.mode: off` reproduces Run A (19% errors) per the table above. The PR text cannot be checked from the repository |
+
+### What could not be verified
+
+- **Anything beyond mock workers and loopback:** real vLLM error vocabulary and overload behaviour (the 503 code list is a constant to extend in Phase 13), real packet loss and partitions, load-balancer deregistration, Kubernetes rolling updates (Phase 17 measured the gateway on kind; the worker side is not a Phase 15 result), multi-host clock skew, more than one gateway (each decides alone: N times the budget, N breakers, N caps), a crowd that reaches the default global cap of 1000 (no run did).
+- **Linux:** TCP-reset and closed-listener behaviour was verified on the Mac and by CI only.
+- **Crash detection by the breaker:** the embedded cluster's registry removes a crashed worker before a breaker can act, so the breaker's crash handling is not shown by the benchmark.
+- **Mid-stream aborts** are only partly handled by design; fault-window success rose from 87.58% to 91.61-91.82% (benchmark note).
+- **Run 2 of the kill experiment** was copied from console output; only run 1's raw data and the text file are in `docs/benchmarks/phase-15-assets/`.
+- **Wall-clock steps on the Mac:** the chaos harness rejects a run when the wall clock moves more than 250 ms against the monotonic clock. A `TestRealScenarios/drain-roll` failure during PR F was a 15.6 s wall-clock step and the re-run was valid (recorded above). Several runs are listed as invalid for that reason in the benchmark note.
+- **CI coverage of the chaos tests:** there is no dedicated chaos job and no `make chaos-*` target. The tests in `tests/chaos` and `internal/bench/chaos` run inside `scripts/quality.sh unit`, `race` and the integration step as part of `go test ./...` and skip under `-short`. The benchmark scenarios (`cmd/benchmark chaos`) are run by hand and are not a CI gate.
+- **Mutation checks** were run by hand on scratch copies (PR A, C, D and G notes: 37 mutants in D and in G, all killed or argued equivalent); they are not repeatable from a repository target.
+
+### Follow-ups
+
+- Tighten the silent-agent alert path toward the spec's 10 s (scrape and evaluation lag is about 11 s on top of the age tested); isolate the extra seconds over Phase 10.
+- Check the vLLM 503 vocabulary and extend the taxonomy constant (Phase 13).
+- Multi-gateway budget, breaker and cap coordination, or documenting per-gateway sizing guidance, if more than a few gateways run (accepted in the plan as per-gateway decisions).
+- Tenant-aware shedding and fairness (Phase 22); latency-aware scheduling and load estimation (Phase 14); the hand-off bypasses the scheduler strategy by design.
+- Worker-side rolling restart and load-balancer deregistration measurement (Phase 17-18).
+- A dashboard panel for `inference_deadline_exceeded_total`, if a deterministic way to trigger the deadline in the test cluster is found.
+- Make the chaos scenarios reachable from a `make` target or an advisory CI job; `ARCHITECTURE.md` named `make chaos-*` targets that do not exist (corrected in this close-out).
