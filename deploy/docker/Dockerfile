@@ -7,7 +7,7 @@
 # this builds without buildx. FROM lines are literal and digest-pinned (no FROM ${ARG}); bump them with the
 # Dependabot "docker" ecosystem. The builder comes from mirror.gcr.io (Google's anonymous Docker Hub mirror, same digests) because Docker Hub rate-limits shared CI runners and public.ecr.aws refused them from 2026-10-16.
 
-FROM mirror.gcr.io/library/golang:1.27.3@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS build
+FROM mirror.gcr.io/library/golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS build
 # Labels let `make dev-reset` find the dangling build stages the classic builder leaves behind (each is 2+ GB).
 LABEL org.serverflow.stage="build"
 WORKDIR /src
@@ -28,7 +28,7 @@ RUN go build -trimpath -buildvcs=false \
       ./cmd/gateway ./cmd/control-plane ./cmd/worker-agent ./cmd/mock-worker ./cmd/usage-consumer ./cmd/admin ./cmd/healthcheck
 
 # Shared runtime base: distroless static (no shell, no package manager), non-root, the health probe binary.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99 AS runtime
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931 AS runtime
 ARG VERSION=dev
 ARG COMMIT=unknown
 LABEL org.opencontainers.image.source="https://github.com/abdullahimohamed101/ServerFlow" \
